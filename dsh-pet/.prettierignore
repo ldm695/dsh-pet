@@ -1,6 +1,9 @@
 lib
 node_modules
 assets
+portable-dist
+portable-dist-*/
+.build-temp-icon-*/
 runtime/electron-helper/shared-core.js
 cordis.patch.yml
 package-lock.json

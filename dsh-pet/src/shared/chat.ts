@@ -169,6 +169,7 @@ export function mountChatDialog(opts: {
     closed = true;
     document.removeEventListener('mousedown', onDocPointerDown, true);
     document.removeEventListener('keydown', onDocKeyDown, true);
+    window.removeEventListener('blur', onWindowBlur, true);
     root.remove();
     if (onClose) onClose();
   };
@@ -181,8 +182,12 @@ export function mountChatDialog(opts: {
     if (closed) return;
     if (e.key === 'Escape') close();
   };
+  // 点击宠物窗口以外的其它应用时，Electron 不会把 mousedown 派发到本窗口的 document；
+  // 这时只能通过窗口失焦关闭弹窗，否则输入框失焦了，弹窗仍会留在桌面上。
+  const onWindowBlur = (): void => close();
   document.addEventListener('mousedown', onDocPointerDown, true);
   document.addEventListener('keydown', onDocKeyDown, true);
+  window.addEventListener('blur', onWindowBlur, true);
 
   const doSend = (): void => {
     if (closed || sending) return;

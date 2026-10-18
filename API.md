@@ -1,15 +1,13 @@
-# dsh-pet 对外 HTTP 接口一览
+# DSH Pet HTTP API 概览
 
-dsh-pet 的宿主半侧向 DSH 自己的 Web 服务注册了**一条前缀路由** `/dsh-pet-7340`，浏览器端、
-桌面端、设置页与第三方插件全都访问同一份实现。本文只做**功能预览**（接口名 + 一句话），
-完整契约——参数、响应体、字段含义、错误码与示例——见根目录的 [`openapi.yaml`](openapi.yaml)。
+DSH Pet 在 DSH Web 服务中注册统一的 `/dsh-pet-7340` 路由前缀。浏览器端、桌面端、设置页和第三方插件共用同一组接口实现。本文提供接口概览；参数、响应结构、字段定义、错误码和示例请参阅根目录的 [`openapi.yaml`](openapi.yaml)。
 
 - **基址**：`http://127.0.0.1:<port>/dsh-pet-7340`，`<port>` 是 DSH Web 服务实际监听的端口
 - **只监听 127.0.0.1，且没有鉴权**：任何能访问本机该端口的进程都能调用，请勿转发到公网
 
 ---
 
-## 一、读状态
+## 状态查询
 
 | 接口 | 功能 |
 | --- | --- |
@@ -19,7 +17,7 @@ dsh-pet 的宿主半侧向 DSH 自己的 Web 服务注册了**一条前缀路由
 | `GET /dsh-pet-7340/models` | 可用服务商与模型清单（与 DSH 自己的模型选择器同源） |
 | `GET /dsh-pet-7340/chat?pet=` | 读某只桌宠最近的对话记忆窗口 |
 
-## 二、让桌宠做事
+## 操作
 
 | 接口 | 功能 |
 | --- | --- |
@@ -30,7 +28,7 @@ dsh-pet 的宿主半侧向 DSH 自己的 Web 服务注册了**一条前缀路由
 | `POST /dsh-pet-7340/balance` | 立即刷新一次余额 |
 | `POST /dsh-pet-7340/reload` | 重载桌面端（重启桌面宠物进程，按最新配置重建窗口） |
 
-## 三、改配置
+## 配置管理
 
 | 接口 | 功能 |
 | --- | --- |
@@ -38,7 +36,7 @@ dsh-pet 的宿主半侧向 DSH 自己的 Web 服务注册了**一条前缀路由
 | `POST /dsh-pet-7340/pet-display` | **改单只宠物的显示位置**（`web` / `desktop` / `both` / `none`）：只传 `{ id, display }`，**不必回传整段 pets**——写哪一层（主配置还是 `pet/<前缀>-config.json`）由宿主按 id 反查；两端右键菜单「显示位置」走的就是它。返回改动后的成品聚合 |
 | `POST /dsh-pet-7340/config` | 用内置默认整份覆盖用户配置，即「恢复默认」 |
 
-## 四、素材
+## 静态资源
 
 | 接口 | 功能 |
 | --- | --- |
@@ -48,7 +46,7 @@ dsh-pet 的宿主半侧向 DSH 自己的 Web 服务注册了**一条前缀路由
 
 ---
 
-## 三条要记住的约定
+## 接口约定
 
 1. **数据只有一个出口**：`GET /state`。它返回宿主内存里的已发布状态，每个状态位是
    `{ counter, data }`。
@@ -58,7 +56,7 @@ dsh-pet 的宿主半侧向 DSH 自己的 Web 服务注册了**一条前缀路由
    状态位的路径（如 `sections.balance`、`pets.<id>.say`）请当作**不透明键**使用——
    宠物 id 允许含点号，**不要按 `.` 切分**。
 
-## 快速试一下
+## 请求示例
 
 ```bash
 BASE=http://127.0.0.1:<port>/dsh-pet-7340
@@ -79,18 +77,15 @@ curl -s -X POST "$BASE/anim?pet=main" \
      -d '{"name":"东张西望"}'
 ```
 
-## 独立模式（不打开 DSH）
+## 独立模式
 
-不启动 DSH 时，同一份 `/dsh-pet-7340` 契约由一个本机 HTTP 服务提供（`src/standalone/server.ts`，
-用法见 [`dsh-pet/README.md`](dsh-pet/README.md) 的「🧍 独立运行（完全不打开 DSH）」）：
+不启动 DSH 时，同一组 `/dsh-pet-7340` 接口由本机 HTTP 服务提供（`src/standalone/server.ts`，用法见 [`dsh-pet/README.md`](dsh-pet/README.md) 的独立运行章节）：
 
 ```bash
-BASE=http://127.0.0.1:3080/dsh-pet-7340   # 独立模式默认端口 3080（被占用则顺延）
+BASE=http://127.0.0.1:6952/dsh-pet-7340   # 默认端口；被占用时自动向后顺延
 ```
 
-**上表所有端点与约定在这里完全不变** —— 独立模式把插件的宿主半边跑在伪 ctx 上，
-路由表仍是 `src/host/index.ts` 那一份（桌面助手照旧走 bridge 管道）。因此本文件与
-[`openapi.yaml`](openapi.yaml) 描述的 `/dsh-pet-7340` 契约**不需要为独立模式做任何改动**。
+独立模式将插件的宿主部分运行在独立上下文中，并复用 `src/host/index.ts` 的路由实现。桌面助手仍通过 bridge 管道通信。因此，本文件与 [`openapi.yaml`](openapi.yaml) 所描述的 `/dsh-pet-7340` 契约在两种运行方式下保持一致。
 
 独立模式另外多两个只属于该服务的运维端点（不在 `/dsh-pet-7340` 前缀下，故不在 OpenAPI 契约里）：
 
@@ -99,7 +94,7 @@ BASE=http://127.0.0.1:3080/dsh-pet-7340   # 独立模式默认端口 3080（被�
 | `GET /`、`GET /health` | 服务与插件信息：名称、插件根与版本、监听端口、已运行秒数 |
 | `POST /shutdown` | 优雅停机：释放插件注册的 effect（停止桌面助手、清掉周期定时器）后关闭服务，进程退出码 0 |
 
-依赖 DSH 的能力在独立模式下**明确降级**（结构化失败，不假装成功）：`POST /whisper`、`POST /chat`
+依赖 DSH 的能力在独立模式下不可用，并以结构化结果返回：`POST /whisper`、`POST /chat`
 回 `{ ok: false, reason: 'provider-missing' }`（没有模型服务），`POST /balance` 回
 `{ ok: false, reason: 'unsupported' }`，`GET /state` 的各状态位保持空闲初始值。
 

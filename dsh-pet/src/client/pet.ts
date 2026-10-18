@@ -505,15 +505,51 @@ export function makePetUI(rt: {
     //   success/error（"这事结束了"）10s 自动收起；
     //   state=null（空闲，回合 aborted 等）收起气泡回待机。
     // 动画循环语义：进行中档位循环播（once=false），终态档位播一遍（once=true）回 idle 链。
-    const prevWorkTickRef = useRef(0);
+    const prevWorkInputRef = useRef<{
+      tick: number;
+      state: WorkStatusSnapshot['state'];
+      sourceName: string | null;
+      task: string | null;
+    }>({ tick: 0, state: null, sourceName: null, task: null });
     // 调试日志：上一档位（null=空闲；undefined=启动后首次触发，显示为 null）
     const prevWorkStateRef = useRef<string | null | undefined>(undefined);
+    const prevWorkSourceRef = useRef<string | null | undefined>(undefined);
     useEffect(() => {
       if (!cfg.workStatusEnabled) return; // 未启用工作状态联动 -> 该宠物完全免疫
-      if (workStatusTick === 0 || workStatusTick === prevWorkTickRef.current) return;
-      prevWorkTickRef.current = workStatusTick;
+      const nextWorkInput = {
+        tick: workStatusTick,
+        state: workStatus?.state ?? null,
+        sourceName: workStatus?.sourceName ?? null,
+        task: workStatus?.task ?? null,
+      };
+      const previousWorkInput = prevWorkInputRef.current;
+      if (
+        previousWorkInput.tick === nextWorkInput.tick &&
+        previousWorkInput.state === nextWorkInput.state &&
+        previousWorkInput.sourceName === nextWorkInput.sourceName &&
+        previousWorkInput.task === nextWorkInput.task
+      ) {
+        return;
+      }
+      prevWorkInputRef.current = nextWorkInput;
+      if (workStatusTick === 0 && nextWorkInput.state === null) return;
+      console.info(
+        '[dsh-pet-workdiag] ' +
+          JSON.stringify({
+            at: new Date().toISOString(),
+            surface: 'web',
+            event: 'pet-input',
+            petId: cfg.id,
+            tick: workStatusTick,
+            state: nextWorkInput.state,
+            sourceName: nextWorkInput.sourceName,
+            previousState: prevWorkStateRef.current ?? null,
+            anim: animRef.current,
+          }),
+      );
       if (!workStatus || workStatus.state === null) {
-        // 调试：状态回空闲（仅打印切换日志；动画改成"播完即停"，见下）
+        const hadWorkStatus = prevWorkStateRef.current !== null && prevWorkStateRef.current !== undefined;
+        // 调试：状态回空闲。
         console.log(
           '[dsh-pet] ' +
             new Date().toTimeString().slice(0, 8) +
@@ -521,21 +557,27 @@ export function makePetUI(rt: {
             cfg.id +
             ' ' +
             (prevWorkStateRef.current ?? 'null') +
-            '->null    播完即停（回待机，收起气泡）',
+            '->null    立即回待机并收起气泡',
         );
         prevWorkStateRef.current = null;
-        // 回空闲：把正在**循环播**的进行中档位动画改成"播完即停"。
-        // 进行中档位走 setOnce(false)（el.loop=true、el.onended=null），ended 永不触发；而这里不切
-        // 动画（原设计"由常规动画链回待机"），链因此拿不到推进信号 —— 宠物会一直卡在那段工作动画上，
-        // 不交互就回不去（issue #61 报告的症状）。这里只把当前段改成播完即停：它结束后自然走
-        // handleEnded → resumeWorkStatusAnim() 返回 false → 回 idle；工作期间的原生 loop 不受影响。
-        // 与桌面端 runtime/electron-helper/events.js 的空闲分支同一处修复，两端语义保持一致。
-        if (poolIncludes(petAnims.events?.workStatus ?? [], animRef.current)) {
-          const front = frontRef.current === 0 ? videoARef.current : videoBRef.current;
-          if (front) {
-            front.loop = false;
-            front.onended = handleEnded;
-          }
+        prevWorkSourceRef.current = null;
+        // 回空闲时立即退出工作状态动画，不能继续等当前 WebM 播完：循环素材可能很长，视觉上会像
+        // 中断后状态还残留。切换到普通待机动画后，双缓冲会停掉原工作片段。
+        if (hadWorkStatus || poolIncludes(petAnims.events?.workStatus ?? [], animRef.current)) {
+          console.info(
+            '[dsh-pet-workdiag] ' +
+              JSON.stringify({
+                at: new Date().toISOString(),
+                surface: 'web',
+                event: 'idle-reset',
+                petId: cfg.id,
+                hadWorkStatus,
+                currentAnim: animRef.current,
+                idleCandidates: petAnims.idle.length,
+              }),
+          );
+          setOnce(true);
+          if (petAnims.idle.length) setAnim(pick(petAnims.idle, animRef.current));
         }
         // 空闲：收起常驻气泡
         if (workBubbleTimerRef.current !== null) window.clearTimeout(workBubbleTimerRef.current);
@@ -568,8 +610,11 @@ export function makePetUI(rt: {
           '    ' +
           name,
       );
-      const stateChanged = prevWorkStateRef.current !== workStatus.state;
+      const sourceName = workStatus.sourceName ?? null;
+      const stateChanged =
+        prevWorkStateRef.current !== workStatus.state || prevWorkSourceRef.current !== sourceName;
       prevWorkStateRef.current = workStatus.state;
+      prevWorkSourceRef.current = sourceName;
       stopMove();
       // 气泡文本：任务详情（todo/write 提供，如"正在做 X"）优先，否则从条目级配置
       // workStatusTexts[档位]（数组）随机抽一句；整字段/整档缺失 = 不弹文本，只播动画。
@@ -578,10 +623,23 @@ export function makePetUI(rt: {
         Array.isArray(textGroup) && textGroup.length > 0
           ? textGroup[Math.floor(Math.random() * textGroup.length)]
           : undefined;
-      // 文本总是更新（任务详情可能在同一状态下变化）
-      setWorkText(workStatus.task ?? configuredText ?? null);
       const terminal = workStatus.state === 'success' || workStatus.state === 'error';
-      // 气泡点亮/收起只在状态变化时动作：同状态后续 tick（todo 文案更新、其它会话事件搅动 ts）
+      const completionText =
+        workStatus.state === 'success'
+          ? configuredText?.includes('{{agent}}')
+            ? configuredText.split('{{agent}}').join(workStatus.sourceName ?? 'Agent')
+            : workStatus.sourceName
+              ? `${workStatus.sourceName} 的任务完成啦，真棒！`
+              : configuredText
+          : configuredText;
+      // 完成提示明确标出来源；其它状态仍优先显示任务详情。
+      setWorkText(
+        workStatus.state === 'success'
+          ? (completionText ?? workStatus.task ?? null)
+          : (workStatus.task ?? configuredText ?? null),
+      );
+      // 气泡点亮/收起只在状态或客户端来源变化时动作：同状态后续 tick（todo 文案更新、同客户端
+      // 其它会话事件）不重复弹；客户端切换但档位相同（如 DSH working → Codex working）仍需显示新来源。
       // 不重新点亮**已自动收起的终态气泡**——否则"任务完成"的气泡会被后续 ts 变化反复弹回（Bug 2）；
       // 非终态同状态 tick 气泡本就常驻，无需重复点亮。
       if (stateChanged) {
@@ -594,10 +652,23 @@ export function makePetUI(rt: {
       // 循环语义：终态播一遍回 idle（once=true）；非终态单候选档位 once=false 无限循环；
       // 非终态多候选档位 once=true 播一遍 → ended 由 handleEnded 护栏轮换到下一候选（长时间状态不单段重复）
       const rotating = !terminal && Array.isArray(slot) && slot.length > 1;
+      console.info(
+        '[dsh-pet-workdiag] ' +
+          JSON.stringify({
+            at: new Date().toISOString(),
+            surface: 'web',
+            event: 'animation-select',
+            petId: cfg.id,
+            state: workStatus.state,
+            sourceName,
+            anim: name,
+            once: terminal || rotating,
+          }),
+      );
       setOnce(terminal || rotating);
       setAnim(name);
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [workStatusTick]);
+    }, [workStatusTick, workStatus?.state, workStatus?.sourceName, workStatus?.task]);
 
     // 说话（碎碎念周期 / 命令气泡 / 对话回复**三合一**）：容器统一轮询 /state 后，把属于本宠物的
     // pets.<id>.say 分发下来；seq 变化即播说话动画 + 弹气泡（10s）。
@@ -825,10 +896,12 @@ export function makePetUI(rt: {
       startRatio: number;
       startYRatio: number;
       targetRatio: number;
+      targetYRatio: number;
       dir: number;
       totalRatio: number;
       leadSec: number;
       tailSec: number;
+      isVertical?: boolean;
     }>(null);
     const customPosRef = useRef(customPos);
     customPosRef.current = customPos;
@@ -852,8 +925,11 @@ export function makePetUI(rt: {
       const pm = pendingMoveRef.current;
       if (!pm || moveRef.current !== null) return;
       pendingMoveRef.current = null;
-      const { startRatio, startYRatio, targetRatio, dir, totalRatio, leadSec, tailSec } = pm;
       const duration = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 10.09;
+      const usesDragAnimation = petAnims.drag.includes(animRef.current);
+      const leadSec = usesDragAnimation ? Math.min(pm.leadSec, duration * 0.15) : pm.leadSec;
+      const tailSec = usesDragAnimation ? Math.min(pm.tailSec, duration * 0.15) : pm.tailSec;
+      const { startRatio, startYRatio, targetRatio, targetYRatio } = pm;
       const travelWindow = Math.max(0.1, duration - leadSec - tailSec);
       const token = ++moveTokenRef.current;
       const step = () => {
@@ -863,12 +939,11 @@ export function makePetUI(rt: {
         if (rootEl) {
           const W = window.innerWidth;
           const H = window.innerHeight;
-          let ratioX;
-          if (t <= leadSec) ratioX = startRatio;
-          else if (t >= duration - tailSec) ratioX = targetRatio;
-          else ratioX = startRatio + dir * totalRatio * ((t - leadSec) / travelWindow);
+          const progress = t <= leadSec ? 0 : t >= duration - tailSec ? 1 : (t - leadSec) / travelWindow;
+          const ratioX = startRatio + (targetRatio - startRatio) * progress;
+          const ratioY = startYRatio + (targetYRatio - startYRatio) * progress;
           const px = ratioX * W;
-          const py = startYRatio * H;
+          const py = ratioY * H;
           rootEl.style.left = px - halfW + 'px';
           rootEl.style.top = py - halfH + 'px';
           rootEl.style.right = 'auto';
@@ -877,7 +952,7 @@ export function makePetUI(rt: {
         if (t < duration - tailSec) moveRef.current = requestAnimationFrame(step);
         else {
           moveRef.current = null;
-          setCustomPos({ rx: targetRatio, ry: startYRatio });
+          setCustomPos({ rx: targetRatio, ry: targetYRatio });
         }
       };
       moveRef.current = requestAnimationFrame(step);
@@ -889,39 +964,88 @@ export function makePetUI(rt: {
       if (moveRef.current !== null || pendingMoveRef.current || throwRef.current !== null) return true;
       const moves = petAnims.moves;
       const actions = moves.actions;
-      if (!actions.length) return false;
-      const chosen = preferredName
-        ? (actions.find((a) => a.name === preferredName) ?? null)
-        : actions[Math.floor(Math.random() * actions.length)];
+      const preferredDrag = !!preferredName && petAnims.drag.includes(preferredName);
+      if (!actions.length && !preferredDrag) return false;
+      const chosen = preferredDrag
+        ? { name: preferredName, params: {} }
+        : preferredName
+          ? (actions.find((a) => a.name === preferredName) ?? null)
+          : actions[Math.floor(Math.random() * actions.length)];
       if (!chosen) return false;
       const mp = Object.assign({}, moves.default, chosen.params || {});
-      const dir = (facingRef.current === 'right') !== petAnims.turn.includes(animRef.current) ? 1 : -1;
+      const facingDir: 1 | -1 = facingRef.current === 'right' ? 1 : -1;
       const W = window.innerWidth;
       // 移动距离随宠物缩放：config 的 minDist/maxDist 是基准尺寸（462px 宽）下的 px，
       // 按 实际size/基准 等比缩放 —— 小宠物挪小步、大宠物挪大步，与人物自身大小匹配
       const distScale = size / PET_REF_WIDTH;
-      const plan = planMove({
-        cx: currentCenterX(),
-        cy: currentCenterY(),
-        W,
-        H: window.innerHeight,
-        dir,
-        minDist: mp.minDist * distScale,
-        maxDist: mp.maxDist * distScale,
-        margin: mp.margin,
-        halfW,
-        sideAllow,
-      });
+      let dir = facingDir;
+      let plan: ReturnType<typeof planMove> = null;
+      let planIsVertical = false;
+      const directions: Array<1 | -1> = [facingDir, facingDir === 1 ? -1 : 1];
+      const modes = preferredDrag
+        ? ['vertical']
+        : Math.random() < 0.5
+          ? ['vertical', 'horizontal']
+          : ['horizontal', 'vertical'];
+      for (const mode of modes) {
+        for (let attempt = 0; attempt < 12 && !plan; attempt++) {
+          for (const candidateDir of directions) {
+            plan = planMove({
+              cx: currentCenterX(),
+              cy: currentCenterY(),
+              W,
+              H: window.innerHeight,
+              dir: candidateDir,
+              angleDegrees: mode === 'vertical' ? 75 + Math.random() * 15 : Math.random() * 45,
+              verticalDir: Math.random() < 0.5 ? -1 : 1,
+              minDist: mp.minDist * distScale,
+              maxDist: mp.maxDist * distScale,
+              margin: mp.margin,
+              halfW,
+              halfH,
+              sideAllow,
+            });
+            if (!plan) continue;
+            const isVertical =
+              Math.abs(plan.targetYRatio - plan.startYRatio) >= Math.abs(plan.targetRatio - plan.startRatio);
+            // A near-vertical plan can fall back to horizontal at a screen edge; reject it here so
+            // its visual animation always matches its actual travel direction.
+            if (mode === 'vertical' && !isVertical) {
+              plan = null;
+              continue;
+            }
+            if (mode === 'horizontal' && isVertical) {
+              plan = null;
+              continue;
+            }
+            dir = candidateDir;
+            planIsVertical = isVertical;
+            break;
+          }
+        }
+        if (plan) break;
+      }
       if (!plan) return false;
+      if (!planIsVertical && dir !== facingDir) {
+        const nextFacing = dir > 0 ? 'right' : 'left';
+        setFacing(nextFacing);
+        facingRef.current = nextFacing;
+      }
+      const animationName = preferredDrag
+        ? preferredName
+        : planIsVertical && petAnims.drag.length
+          ? pick(petAnims.drag)
+          : chosen.name;
       pendingMoveRef.current = {
         ...plan,
         dir,
         leadSec: mp.leadSec,
         tailSec: mp.tailSec,
+        isVertical: planIsVertical,
       };
       setOnce(true);
-      setAnim(chosen.name);
-      return chosen.name;
+      setAnim(animationName);
+      return animationName;
     };
     const stopMove = () => {
       pendingMoveRef.current = null;
@@ -1469,7 +1593,10 @@ export function makePetUI(rt: {
       }
       // 点播移动动画：走真实移动（与随机移动同一套：边界检查 / 随机距离 / leadSec·tailSec 时段 / dir 计算），
       // 仅"选哪个动画"由菜单决定；边界内挪不动（false）退化为纯播放，仍能看到该动画
-      if (petAnims.moves.actions.some((a) => a.name === leaf.anim)) {
+      if (
+        petAnims.moves.actions.some((a) => a.name === leaf.anim) ||
+        petAnims.drag.includes(leaf.anim)
+      ) {
         if (tryMove(leaf.anim) === false) {
           stopMove();
           setOnce(true);
@@ -1634,6 +1761,8 @@ export function makePetUI(rt: {
   /** 多开容器：一次拉取成品配置 → 拍平 → 渲染多个 PetCard */
   function PetMulti() {
     const [pets, setPets] = useState<Pet[]>([]);
+    const petsRef = useRef<Pet[]>([]);
+    petsRef.current = pets;
     const [ready, setReady] = useState(false);
     // 共享碰撞站场（宠物间碰撞）：每只 PetCard 注册自己的槽位；飞行中的宠物在 startThrow
     // 每帧读数碰撞。纯 ref 同步，不触发 React 重渲染。
@@ -1668,9 +1797,93 @@ export function makePetUI(rt: {
         console.error('[dsh-pet] 余额查询失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''));
       }
     };
-    // 工作状态：容器统一轮询 /state 的 sections.workStatus，快照 + tick 递增驱动各宠物播档位动画
-    const [workStatus, setWorkStatus] = useState<WorkStatusSnapshot | null>(null);
-    const [workStatusTick, setWorkStatusTick] = useState(0);
+    // 工作状态按客户端动态分配：同一来源只占一只可用桌宠，分配在该来源工作期间保持稳定，
+    // 结束后释放；这与 Electron 多窗口分配器保持相同语义。
+    const [workStatusByPet, setWorkStatusByPet] = useState<Record<string, WorkStatusSnapshot | null>>({});
+    const [workStatusTickByPet, setWorkStatusTickByPet] = useState<Record<string, number>>({});
+    const workStatusOwnersRef = useRef(new Map<string, string>());
+    const workStatusAssignmentsRef = useRef<Record<string, { snapshot: WorkStatusSnapshot; revision: number }>>({});
+    const workStatusTickRef = useRef<Record<string, number>>({});
+    const applyWorkStatusSnapshot = (snapshot: WorkStatusSnapshot): void => {
+      const eligiblePets = petsRef.current.filter((pet) => isWebVisible(pet.display) && pet.workStatusEnabled);
+      const eligibleIds = new Set(eligiblePets.map((pet) => pet.id));
+      const incoming = Array.isArray(snapshot.agents)
+        ? snapshot.agents
+        : snapshot.state
+          ? [
+              {
+                key: 'legacy:client',
+                state: snapshot.state,
+                sourceName: snapshot.sourceName,
+                revision: 1,
+                startedAt: Date.now(),
+              },
+            ]
+          : [];
+      const currentByKey = new Map(incoming.map((agent) => [agent.key, agent]));
+
+      for (const [key, petId] of workStatusOwnersRef.current) {
+        if (currentByKey.has(key) && eligibleIds.has(petId)) continue;
+        workStatusOwnersRef.current.delete(key);
+      }
+      const occupied = new Set(workStatusOwnersRef.current.values());
+      const pending = [...currentByKey.values()].sort(
+        (a, b) => a.startedAt - b.startedAt || a.key.localeCompare(b.key),
+      );
+      for (const agent of pending) {
+        if (workStatusOwnersRef.current.has(agent.key)) continue;
+        const available = eligiblePets.filter((pet) => !occupied.has(pet.id));
+        if (available.length === 0) break;
+        const pet = available[Math.floor(Math.random() * available.length)];
+        workStatusOwnersRef.current.set(agent.key, pet.id);
+        occupied.add(pet.id);
+      }
+
+      const next: Record<string, { snapshot: WorkStatusSnapshot; revision: number }> = {};
+      for (const agent of pending) {
+        const petId = workStatusOwnersRef.current.get(agent.key);
+        if (!petId) continue; // 没有空闲桌宠时暂不抢占；释放后下一次快照再补分配
+        next[petId] = {
+          snapshot: {
+            state: agent.state,
+            task: agent.key === 'legacy:client' ? snapshot.task : null,
+            ...(agent.sourceName || snapshot.sourceName
+              ? { sourceName: agent.sourceName ?? snapshot.sourceName }
+              : {}),
+          },
+          revision: agent.revision,
+        };
+      }
+
+      console.info(
+        '[dsh-pet-workdiag] ' +
+          JSON.stringify({
+            at: new Date().toISOString(),
+            surface: 'web',
+            event: 'assignment-snapshot',
+            agents: pending.map((agent) => ({ key: agent.key, state: agent.state, sourceName: agent.sourceName, revision: agent.revision })),
+            owners: Object.fromEntries(workStatusOwnersRef.current),
+            assignedPetIds: Object.keys(next),
+          }),
+      );
+
+      const previous = workStatusAssignmentsRef.current;
+      const ids = new Set([...Object.keys(previous), ...Object.keys(next)]);
+      const nextTicks = { ...workStatusTickRef.current };
+      let changed = false;
+      for (const id of ids) {
+        const before = previous[id];
+        const after = next[id];
+        if (JSON.stringify(before ?? null) === JSON.stringify(after ?? null)) continue;
+        nextTicks[id] = (nextTicks[id] ?? 0) + 1;
+        changed = true;
+      }
+      if (!changed) return;
+      workStatusAssignmentsRef.current = next;
+      workStatusTickRef.current = nextTicks;
+      setWorkStatusByPet(Object.fromEntries(Object.entries(next).map(([id, value]) => [id, value.snapshot])));
+      setWorkStatusTickByPet(nextTicks);
+    };
     // 说话（碎碎念 / 命令气泡 / 对话回复三合一）：容器统一轮询 /state 的 pets.<id>.say，
     // 按宠物分发到对应 PetCard（sayRef + sayTick；见下方统一轮询与 PetCard 的 say 分支）。
 
@@ -1779,10 +1992,7 @@ export function makePetUI(rt: {
               if (hit) applyBalanceRef.current(hit.state, hit.manual);
             } else if (path === 'sections.workStatus') {
               const snap = readWorkStatus(leaf);
-              if (snap) {
-                setWorkStatus(snap);
-                setWorkStatusTick((t) => t + 1); // 任何变化都触发（含回到空闲：用于收起常驻气泡）
-              }
+              if (snap) applyWorkStatusSnapshot(snap);
             } else if (path === 'sections.notify') {
               // 系统通知（单槽：同一秒多条只留最后一条，由 host 决定）→ 弹 toast（内部有开关/聚焦/权限门）
               notifyFromFrame(leaf.data);
@@ -1830,8 +2040,8 @@ export function makePetUI(rt: {
             balanceTick,
             balanceNoticeTick,
             balanceManual,
-            workStatus,
-            workStatusTick,
+            workStatus: workStatusByPet[p.id] ?? null,
+            workStatusTick: workStatusTickByPet[p.id] ?? 0,
             say: sayRef.current[p.id],
             sayTick,
             animCue: animCueRef.current[p.id],

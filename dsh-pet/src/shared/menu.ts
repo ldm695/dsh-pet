@@ -35,7 +35,16 @@ export interface MenuLeaf {
    * set-display=改这只宠物的显示位置（目标值见 display 字段；**两端都注入**——桌面端拿它把
    * 宠物送走、浏览器端拿它把宠物送到桌面，菜单项统一由 displayMenuBranch() 提供）。
    * 手动触发均不受 whisperEnabled 影响（该字段只关自动周期轮询） */
-  action?: 'open-site' | 'show-balance' | 'whisper' | 'chat' | 'home' | 'reload' | 'set-display';
+  action?:
+    | 'open-site'
+    | 'open-settings'
+    | 'quit-app'
+    | 'show-balance'
+    | 'whisper'
+    | 'chat'
+    | 'home'
+    | 'reload'
+    | 'set-display';
   /** set-display 的目标显示位置（与设置页「显示位置」下拉框同一套取值） */
   display?: PetDisplay;
 }
@@ -49,7 +58,7 @@ export interface MenuBranch {
 export type MenuNode = MenuLeaf | MenuBranch;
 
 /**
- * 「显示位置」子菜单 —— 桌面端与浏览器端注入**同一份**（文案与设置页「显示位置」下拉框一致）。
+ * 「显示位置」子菜单 —— 桌面端与浏览器端共用生成逻辑；独立版只显示其支持的桌面/隐藏选项。
  *
  * 为什么必须放 shared：两端各写一份必然漂移（改了一端的文案或取值，另一端没跟上），而这一项在
  * 两端语义完全对称——桌面端用它把宠物"送走"（仅网页），浏览器端用它把宠物"送到桌面"（仅桌面）。
@@ -58,14 +67,19 @@ export type MenuNode = MenuLeaf | MenuBranch;
  * （仅网页→浏览器里还在，仅桌面→桌面上还在，两者→两端都在）。设置页那条路在本菜单出现之前就是
  * 唯一入口，本菜单只是多加了一条更近的路，没有削弱任何既有能力。
  */
-export const displayMenuBranch = (): MenuBranch => ({
+export const displayMenuBranch = (options: { standalone?: boolean } = {}): MenuBranch => ({
   label: '显示位置',
-  children: [
-    { label: '仅网页', action: 'set-display', display: 'web' },
-    { label: '仅桌面', action: 'set-display', display: 'desktop' },
-    { label: '两者', action: 'set-display', display: 'both' },
-    { label: '都不', action: 'set-display', display: 'none' },
-  ],
+  children: options.standalone
+    ? [
+        { label: '仅桌面', action: 'set-display', display: 'desktop' },
+        { label: '不显示', action: 'set-display', display: 'none' },
+      ]
+    : [
+        { label: '仅网页', action: 'set-display', display: 'web' },
+        { label: '仅桌面', action: 'set-display', display: 'desktop' },
+        { label: '两者', action: 'set-display', display: 'both' },
+        { label: '都不', action: 'set-display', display: 'none' },
+      ],
 });
 
 /** 事件名 → 分类标签（无映射时用事件名本身） */
@@ -84,15 +98,22 @@ const leaf = (anim: string): MenuLeaf => ({ label: anim, anim });
  */
 export function buildMenuTree(animations: Animations): MenuNode[] {
   const groups: MenuNode[] = [];
-  const pools: Array<[string, string[]]> = [
-    ['待机', animations.idle],
-    ['转向', animations.turn],
-    ['拖拽', animations.drag],
-    ['点击回应', animations.clicks],
-    ['移动', animations.moves.actions.map((m) => m.name)],
+  const pools: Array<[string, MenuLeaf[]]> = [
+    ['待机', animations.idle.map(leaf)],
+    ['转向', animations.turn.map(leaf)],
+    ['拖拽', animations.drag.map(leaf)],
+    ['点击回应', animations.clicks.map(leaf)],
+    // Drag feedback clips are also useful as explicit near-vertical movement animations.
+    [
+      '移动',
+      [
+        ...animations.moves.actions.map((move) => leaf(move.name)),
+        ...animations.drag.map((anim) => ({ label: '上下漂浮', anim })),
+      ],
+    ],
   ];
   for (const [label, pool] of pools) {
-    if (pool.length) groups.push({ label, children: pool.map(leaf) });
+    if (pool.length) groups.push({ label, children: pool });
   }
   // config 随机动作分类（noMirror 分类照样可点播，播放端朝右时强制朝左见 isNoMirrorAnimation）
   const cats = (animations.categories ?? []).filter((c) => c.actions.length > 0);
@@ -125,7 +146,7 @@ export function isNoMirrorAnimation(categories: Category[], anim: string): boole
  *  面板与面板之间互不嵌套，各自独立滚动。 */
 export const MENU_CSS = [
   '.dsh-pet-menu{position:fixed;left:0;top:0;z-index:2147483000;color:#2b2b2b;font-size:13px;line-height:1.5;',
-  "font-family:'Microsoft YaHei UI','Segoe UI','PingFang SC',sans-serif;user-select:none;pointer-events:auto}",
+  "font-family:'ShangshouSoftCandy','Yuanti SC','YouYuan','幼圆','Comic Sans MS','PingFang SC','Microsoft YaHei',sans-serif;user-select:none;pointer-events:auto}",
   '.dsh-pet-menu,.dsh-pet-menu *{box-sizing:border-box}',
   '.dsh-pet-menu-column{position:absolute;min-width:150px;max-width:240px;padding:4px;',
   'background:rgba(255,255,255,.98);border:1px solid rgba(0,0,0,.12);border-radius:8px;',
@@ -262,6 +283,15 @@ export function mountContextMenu(opts: {
         const label = document.createElement('span');
         label.textContent = node.label;
         item.appendChild(label);
+        // Hovering a leaf means the pointer has left any sibling branch trigger in this
+        // panel. Close its submenu chain immediately instead of leaving it stranded open.
+        item.addEventListener('mouseenter', () => {
+          const prev = openChild.get(panel);
+          if (prev) {
+            openChild.delete(panel);
+            hideChain(prev);
+          }
+        });
         item.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();

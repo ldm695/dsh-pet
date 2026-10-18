@@ -14,6 +14,8 @@
 > A floating desktop pet for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web UI: idle breathing, random actions (the 97 hand-drawn transparent animations — dozing off, playing with a Rubik's cube, writing code, hotpot…), turns, screen wandering, squash-and-stretch click reactions, throw-and-bounce drag physics, a right-click menu to play any action on demand, balance animations with a thinking bubble, **occasional self-talk and a chat dialog** (both can attach a meme image) — spawn as many pets as you want, live on your **desktop** (transparent always-on-top window), or add **brand-new pet species** (pet pack).
 > 一只住在 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 里的桌面宠物：待机呼吸、随机动作（打瞌睡、玩魔方、写代码、吃火锅……97 个手绘风透明动画随时无缝衔接）、左右转向、屏幕漫游、点击 Q 弹、拖拽甩抛反弹、右键菜单点播动作、余额动画 + 头顶联想气泡、**时不时的碎碎念与对话**（都能配一张表情包）——可多开同屏，能脱离浏览器住上**桌面**（透明置顶小窗），也能自己添加**全新宠物种类**（pet pack）。
 
+> 本仓库包含 Windows x64 独立应用及 DSH、Codex、Claude Code 工作状态桥接等 Fork 定制。详细安装步骤见仓库根目录的 [`INSTALL.md`](../INSTALL.md)，Fork 改动见 [`FORK_CUSTOMIZATIONS.md`](../FORK_CUSTOMIZATIONS.md)。
+
 ---
 
 ## 🚀 快速开始（安装插件）
@@ -48,7 +50,7 @@ macOS 的 Safari/WKWebView 下透明动画需用 `.mov` 素材，三步：
 
 ## ✨ 功能特性
 
-- **纯粹的桌宠**：不掺业务功能——没有天气查询、系统监控、Agent 状态感知，就一件事：陪你（外加可选的余额展示、系统通知、碎碎念与对话，见配置节）。零核心改动；**默认零模型成本**——只有主动开启碎碎念（`pets[].whisperEnabled`）或主动发起对话时才会调用当前会话所用的模型，其余功能运行时零 LLM/API 调用
+- **桌宠功能**：包含动画、移动、拖拽和抛掷交互、余额展示、系统通知、碎碎念与对话。工作状态联动由独立桥接插件提供；模型调用取决于是否启用碎碎念、发起对话或使用相关 AI 功能。
 - **手绘风透明动画**：待机呼吸、打瞌睡、玩魔方、哼歌、炸毛、吐泡泡、玩水枪、小提琴演奏、蓝鲸现世、吃白饭、照镜子、三支舞、写代码、四季动作（放风筝、堆雪人、吃冰淇淋、放烟花……）全部无缝衔接
 - **永不停止的动画链**：每段动画播完立即按权重选下一个（默认 idle 10 / turn 5 / move 5，剩余 80% 归随机动作分类）
 - **屏幕漫游**：朝 facing 方向行走，自动检查空间、不走出屏幕
@@ -59,7 +61,7 @@ macOS 的 Safari/WKWebView 下透明动画需用 `.mov` 素材，三步：
 - **碎碎念**：宠物时不时自己冒一句——按 `eventsRefreshSec.whisper` 周期（默认 300 秒）调用当前会话所用的模型生成（人设 = **所属条目**的 `whisperPrompt`，每个种类一份，另追加一句名字声明），气泡展示 10 秒；右键菜单「碎碎念」可立即催一句（绕过节流，同一实例的多端一起看到）。**默认开启**，按宠物可关（`pets[].whisperEnabled`）
 - **对话**：右键「对话」弹窗跟宠物聊天，也能用 `/chat <消息>` 命令（留空 = 催一句碎碎念）——记忆持久化在 `$DSH_HOME/dsh-pet/memory.json`（**全存不删**，每次请求只带最近 `chatMemoryRounds` 轮），浏览器与桌面共享同一份记忆；对话目标为 `/pet` 选中的那只，未选则取列表第一只
 - **表情包配图（0.2.9）**：气泡可以带一张表情包——碎碎念**随机抽 1 张**（`whisperImageEnabled`：只是把这张图的描述加进同一次请求，约 +100 字符 / ≈60 token，增量可忽略）；对话把**整张清单**交给模型按语境选（`chatImageEnabled`：每条消息约 +1.1k 字符 / ≈650 token，约碎碎念配图的 11 倍，随图片数量线性增长）。图片与描述的映射在 `memes`（键 = 表情包目录里的 `<键>.png`；素材归属与动画同一套，见「高级自定义」），两个开关默认都开
-- **右键级联菜单**：右键宠物弹出（桌面与浏览器共用同一份组件，`src/shared/menu.ts`）——桌面端根项「**打开网站** / **查看余额** / **回到初始位置** / **重载配置** + **动作**」、浏览器端「**回到初始位置** + **动作**」；「打开网站」用**系统默认浏览器**打开 DSH 网站（等效网页里 Ctrl+点击链接）；「查看余额」立即拉余额弹气泡播档位动画（与周期触发同一展示路径）；「回到初始位置」停漫游回配置角落；「重载配置」（桌面专属）请宿主重启桌面 Helper——**全部桌面宠物窗口按最新配置重建**，改完配置文件不必回设置页点保存（与保存同一条重启路径：等旧进程退出再起新的；代价是会话内拖拽落点清空、回配置角落）；**动作 → 分类 → 具体动画**（分类 = 待机/转向/拖拽/点击回应/移动/随机动作分类/余额档位；**点播「移动」分类动画会真实行走一段**——边界检查/随机距离/起停时段与随机移动完全一致；noMirror 文字类朝右时自动强制朝左）——浏览器端只在宠物命中区拦截右键（`preventDefault`），完全不进入/改动 DSH 页面自己的菜单。**「打开网站」按宿主自动分派**：宿主是 DSH 桌面应用时该项自动变「**打开 DeepSeek Harness**」，用应用自注册的 `dsh://open` 协议把桌面应用主窗口唤到前台（已运行前置 / 未运行拉起）；`dsh web` 与独立模式仍是系统默认浏览器打开站点
+- **右键菜单**：浏览器和 DSH 桌面模式提供余额查询、碎碎念、对话、回到初始位置、显示位置和动作播放等选项。DSH 桌面模式还可打开宿主或重载配置；独立应用提供桌宠设置入口和退出选项。各运行模式的菜单项根据可用功能显示。
 - **左右朝向**：所有动画 CSS 镜像，人物可朝左 / 朝右
 - **落地对齐**：动画统一脚底线，宠物始终站在"地面"上
 - **流畅切换**：双缓冲 video 交叉淡入，切换零空白帧
@@ -88,25 +90,45 @@ macOS 的 Safari/WKWebView 下透明动画需用 `.mov` 素材，三步：
   - 在 DSH 设置页「桌宠配置」编辑，保存即时生效；`display` 缺失/非法即配置错误，**代码不做兜底**
 - 桌面与浏览器是**同一套动画素材**（`/dsh-pet-7340/thumb/<前缀>/<name>.webm`：main 用用户 `main-animation/` 目录优先 + 包内素材；额外宠物只查自己的 `pet/<前缀>-animation/`，同种类多实例共享）；**配图（表情包）共用同一套素材归属**（`/dsh-pet-7340/pic/memes/<前缀>/<名>.png`：`pet/<前缀>-memes/` 独占 → 用户 `memes/` → 包内 `assets/memes/`）；配置加载失败会**大声报错**（红色错误条 + 每 5 秒自动重试），绝不静默兜底
 
-## 🧍 独立运行（完全不打开 DSH）
+## 🧍 独立运行（无需启动 DSH）
 
 上面的桌面形态由 DSH 宿主拉起。独立模式让它**不需要 DSH 在跑**：把插件自己的宿主半边
 （`src/host/index.ts` 的 `apply`）跑在一个最小的伪 ctx 上，再起一个本机 HTTP 服务接管路由 ——
 **路由表仍然只有插件那一份**（同一个 handler 同时服务 HTTP 与桌面助手的 bridge 管道）。
+工作状态联动使用独立桥接插件，不依赖桌宠核心：
+
+- DSH 插件 [`dsh-pet-work-status-bridge`](./dsh-pet-work-status-bridge/README.md) 会分别同步 DSH 活跃主会话与并行 Agent 的工作状态；系统通知仍只来自当前选中的主对话，并在 DSH 页面失焦时转发。通知受「系统通知」总开关控制，标题和正文最多保留 15 秒，不保存会话历史。
+- Codex 插件 [`codex-pet-work-status-bridge`](./codex-pet-work-status-bridge/README.md) 与 Claude Code 插件 [`claude-code-pet-work-status-bridge`](./claude-code-pet-work-status-bridge/README.md) 分别同步各自来源。桌宠端将同一客户端的多个会话/Agent 合并为一个工作状态，因此每个客户端同一时间最多占用一只桌宠；不同客户端可分别使用空闲桌宠，桌宠不足时尚未分配的客户端等待空位。每个来源使用独立桥接文件。
+
+上述插件仅同步工作状态动画，不把 Agent 对话正文或工具参数写入 Codex/Claude Code 桥接文件。Codex 与 Claude Code 插件更新后，需在各自客户端审核并信任 hooks。桌宠窗口未运行、未启用「工作状态联动」或桥接文件过期时，不显示对应工作状态。
 
 ```sh
 npm install -g dsh-pet        # 必须 npm 装；dsh plugin add 装进 profile，bin 不在 PATH 上
-dsh-pet-standalone            # http://127.0.0.1:3080/dsh-pet-7340/（占用则顺延）
+dsh-pet-standalone            # http://127.0.0.1:6952/dsh-pet-7340/（占用则顺延）
 dsh-pet-standalone --check    # 只体检
 dsh-pet-standalone --port 3100
 
-npm run build && npm run standalone   # 仓库里（先构建）
+pnpm run build && pnpm run standalone       # 仓库源码构建后运行
+pnpm run build:exe:public                   # 构建 DSH Pet Windows x64 Portable EXE
 ```
 
+Windows EXE 输出到 `portable-dist/`。构建脚本使用 `assets/dsh-pet-icon-16.png` 生成多尺寸 ICO，并采用最近邻缩放以保留像素边缘。桌宠配置和用户数据保存在 `$DSH_HOME/dsh-pet/`。托盘菜单提供日志查看和退出操作。DeepSeek API Key 可在设置页「AI 模型与对话上下文」中配置；Windows 使用当前用户 DPAPI 加密保存。也可设置 `DSH_PET_STANDALONE_DEEPSEEK_API_KEY` 或 `DEEPSEEK_API_KEY`，环境变量优先。
+
 - **能用**：动画链、点击/拖拽/甩抛、右键菜单、多开、自定义动画与表情包、pet pack。
-- **不可用**：余额、碎碎念、对话、系统通知——返回带 `reason` 的结构化失败，不假装成功。
+- **DeepSeek API**：在设置页配置 API Key，或设置 `DSH_PET_STANDALONE_DEEPSEEK_API_KEY` 后，独立模式可用 DeepSeek 官方 API 进行对话与碎碎念，并查询 API 账户余额。默认模型为 `deepseek-flash`；可用 `DSH_PET_STANDALONE_DEEPSEEK_MODEL` 覆盖。也兼容通用环境变量 `DEEPSEEK_API_KEY`。
+- PowerShell 示例（密钥只进入当前进程环境，不会写入仓库或配置文件）：
+
+  ```powershell
+  $env:DSH_PET_STANDALONE_DEEPSEEK_API_KEY = 'sk-你的密钥'
+  $env:DSH_PET_STANDALONE_DEEPSEEK_MODEL = 'deepseek-flash'
+  dsh-pet-standalone
+  ```
+
+- **系统通知**：窗口失焦时，对话回复会通过桌面系统通知提示；受 `notificationsEnabled` 配置控制。安装 `dsh-pet-work-status-bridge` 后，独立版还能接收 DSH 当前选中对话的完成、失败、权限申请和待回答问题通知。
+- **安全**：API Key 只由本机 Node 宿主读取并发送给 `https://api.deepseek.com`，不会返回给桌面渲染进程；不要把密钥写进已提交的配置、脚本或命令行参数。
+- `dsh-pet-standalone --check` 会显示 API Key 是否已配置及当前模型，不会打印密钥或联网验证。
 - **配置**：与 DSH 同一份（`$DSH_HOME/dsh-pet/main-config.jsonc` → 包内默认）。
-- **只显示 `display` 含 `desktop`/`both` 的实例**；端口默认 3080；`Ctrl+C` 或 `POST /shutdown` 退出。
+- **只显示 `display` 含 `desktop`/`both` 的实例**；端口默认 6952；`Ctrl+C` 或 `POST /shutdown` 退出。
 - **与 DSH 内运行可同时开**，但共用 `%APPDATA%\dsh-pet-electron-helper`，可能互相踩缓存（仅告警）。
 
 ## ⌨️ 斜杠命令
@@ -135,6 +157,7 @@ npm run build && npm run standalone   # 仓库里（先构建）
 | `chatImageLimit`               | 对话配图**张数上限**（非负整数，默认 10，0 = 不限制；**全局默认**，pet pack 可在种类文件里覆盖）：对话时只把 `memes` 清单的**前 N 张**（= 配置里写在前面的那 N 条，想优先发哪几张就往前写）交给模型选图。原因：整张清单是**每条消息都要附**的，token 随张数线性增长（27 张约 1.1k 字符 ≈ 650 token），限制成前 N 张即可给配图开销封顶。设置页「AI 模型与对话上下文」区可改。只影响对话选图——碎碎念只带抽中的那一张    |
 | `memes`（0.2.9）               | 表情包映射：键 = 表情包目录里的 `<键>.png` 文件名（不含扩展名），值 = 该图内容的简要描述（模型据此选图/配文）。图片按**素材归属**查找（种类独占 `pet/<前缀>-memes/` → 用户目录 `memes/` → 包内 `assets/memes/`，与动画同规矩）；配置里写了但哪个目录都没有该文件的条目**自动失效**（删图不必同步改配置）；删掉某个键即停用该图                                                                                        |
 | `notificationsEnabled`         | 系统通知总开关（布尔，默认开）：对话完成 / 生成失败 / 输出截断 / 权限申请 / 用户选择，在窗口失焦时弹系统级通知（桌面右下角）                                                                                                                                                                                                                                                                                          |
+| `petDisplayPriority`           | 桌宠显示层级（全局设置，默认 `always-on-top`）：`always-on-top` 始终置顶；`hide-on-fullscreen` 在 Windows 全屏应用所在屏幕隐藏桌宠、macOS 跟随全屏空间隐藏；`normal` 使用普通窗口层级。只影响桌面模式；Linux 暂不检测其它应用全屏状态                                                                                                                                                                                 |
 | `physics`（0.2.5）             | 拖拽抛掷物理参数（**全局默认**，所有宠物共用；种类文件顶层可覆盖）：`gravity` 重力 / `restitution` 碰壁恢复系数（0~1）/ `groundFriction` 地面摩擦 / `ceilingBounce` 顶部反弹 / `throwPower` 总力度 / `petCollision` 多宠物碰撞开关；缺省取内置默认（1400 / 0.78 / 2.5 / true / 1.0 / false）；`gravity=0` 为无重力，`petCollision=true` 开启多宠物碰撞                                                                |
 
 > 说明：插件安装即用，配置均为可选；设置页保存的用户覆盖写入 `$DSH_HOME/dsh-pet/main-config.jsonc`（用户层，优先于包内默认）。

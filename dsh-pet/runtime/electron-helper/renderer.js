@@ -11,16 +11,15 @@
  *     绝对正确、字段填满）：一步 fetch → S.flattenConfigPets 拍平，加载失败**大声报错**
  *     并显示红色错误条（每 5s 自动重试），绝无静默兜底池；
  *   - 动画素材经宿主 /dsh-pet-7340/thumb/<素材根>/<name>.<webm|mov>（素材根 = 条目 key；扩展名由共享常量 ANIMATION_EXT 决定）；
- *   - 几何模型：窗口 = 宠物包围盒 + 四周外扩余量（WINDOW_MARGIN_RATIO，为气泡/弹窗预留空间）。
- *     sprite 固定在窗口内 (margin.l, margin.t) 处，宠物的"移动"由本页把目标屏幕位置
- *     逐帧上报（petBridge.setBounds）→ 主进程按 sprite 位置 + 外扩余量移动窗口；
+ *   - 几何模型：所有 sprite 同处一个全桌面透明画布；petBridge.setBounds 上报每只宠物的位置，
+ *     主进程更新碰撞状态；原生窗口的绘制区域覆盖整个虚拟桌面，拖动只更新 DOM，不移动原生窗口。
  *     视口 = 全部显示器工作区外接矩形（workAreaX/Y/W/H 由主进程注入），漫游/抛掷/角落/位置换算
  *     都跨屏（#43，宠物可被甩/拖到其它显示器）；单显示器时即主屏工作区，行为不变。
  *     外扩区透明且点击穿透（只有身体命中区可交互），不挡下层应用。
  *   - 右键级联菜单（与浏览器共用同一份组件：树+渲染+样式来自 shared-core 的 menu 模块）：
  *     右键宠物弹出，桌面端工具根项「打开网站 / 打开 DeepSeek Harness（宿主是 DSH 桌面应用时的同一项）/ 查看余额 / 回到初始位置 / 重载配置」+ 动作点播；
  *     菜单开启期间整窗保持可交互（悬停菜单不触发穿透翻转），关闭/离开窗口即恢复穿透。
- *   - 系统通知不是宠物行为（浏览器半侧 notify.ts 负责），桌面端不重复实现。
+ *   - 独立模式的桌面通知由 events.js 在对话回复到达且窗口失焦时发出；不依赖 DSH 会话事件。
  */
 'use strict';
 
@@ -34,6 +33,83 @@ function showError(message) {
 function hideError() {
   errorEl.classList.remove('visible');
   errorEl.textContent = '';
+}
+let overlayVisualReadySent = false;
+let frameDiagnosticsStarted = false;
+
+function startFrameDiagnostics() {
+  if (!CONFIG.frameDiagnostics || frameDiagnosticsStarted) return;
+  frameDiagnosticsStarted = true;
+  const rafIntervals = [];
+  const videoSamples = new Map();
+  let lastRafAt = 0;
+  let lastReportAt = performance.now();
+
+  const sampleRaf = (now) => {
+    if (lastRafAt > 0) rafIntervals.push(now - lastRafAt);
+    lastRafAt = now;
+    requestAnimationFrame(sampleRaf);
+  };
+  requestAnimationFrame(sampleRaf);
+
+  for (const [index, video] of [...document.querySelectorAll('video')].entries()) {
+    if (typeof video.requestVideoFrameCallback !== 'function') continue;
+    const sample = { lastAt: 0, intervals: [], presented: 0, dropped: 0 };
+    videoSamples.set(`video-${index}`, { video, sample });
+    const onVideoFrame = (now, metadata) => {
+      if (sample.lastAt > 0) sample.intervals.push(now - sample.lastAt);
+      sample.lastAt = now;
+      sample.presented = Number(metadata.presentedFrames) || sample.presented + 1;
+      video.requestVideoFrameCallback(onVideoFrame);
+    };
+    video.requestVideoFrameCallback(onVideoFrame);
+  }
+
+  const percentiles = (values) => {
+    if (!values.length) return null;
+    const sorted = [...values].sort((a, b) => a - b);
+    const at = (p) => sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * p))];
+    return { p50: +at(0.5).toFixed(2), p95: +at(0.95).toFixed(2), max: +sorted.at(-1).toFixed(2) };
+  };
+  window
+    .setInterval(() => {
+      const now = performance.now();
+      const raf = percentiles(rafIntervals);
+      const rafMedian = raf?.p50 || 0;
+      const rafMissed = rafMedian ? rafIntervals.filter((delta) => delta > Math.max(rafMedian * 1.5, 25)).length : 0;
+      const videos = {};
+      for (const [name, { video, sample }] of videoSamples) {
+        const quality = video.getVideoPlaybackQuality?.();
+        sample.dropped = Number(quality?.droppedVideoFrames) || 0;
+        videos[name] = {
+          frameMs: percentiles(sample.intervals),
+          presented: sample.presented,
+          dropped: sample.dropped,
+        };
+        sample.intervals.length = 0;
+      }
+      console.info(
+        '[dsh-pet-frame-diagnostics]',
+        JSON.stringify({
+          windowMs: Math.round(now - lastReportAt),
+          rafMs: raf,
+          rafMissed,
+          videos,
+        }),
+      );
+      rafIntervals.length = 0;
+      lastReportAt = now;
+    }, 5000)
+    .unref?.();
+}
+
+async function signalOverlayVisualReady() {
+  if (!CONFIG.overlay || overlayVisualReadySent || !window.petBridge?.rendererVisualReady) return;
+  // Wait until the transparent page and the first pet/video frame have both reached Chromium's
+  // compositor. Showing the desktop-sized native window before that can expose a white backing.
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  overlayVisualReadySent = true;
+  window.petBridge.rendererVisualReady();
 }
 function scheduleReboot() {
   if (bootTimer) return;
@@ -58,6 +134,7 @@ async function loadConfig() {
     // 字体（全局一份，合并器已填内置默认）：字体族在此取一次、注入全局变量；字号由每只宠物
     // 按自己的尺寸算（见 PetSprite 注入的 --dsh-pet-font-bubble / --dsh-pet-font-tip）
     font: (merged && merged.main && merged.main.font) || S.DEFAULT_FONT,
+    notificationsEnabled: !(merged && merged.main && merged.main.notificationsEnabled === false),
   };
 }
 
@@ -74,24 +151,41 @@ async function boot() {
     const pets = cfg.pets.filter((p) => S.isDesktopVisible(p.display));
     if (pets.length === 0) {
       showError('配置中没有 display 为 desktop/both 的宠物，桌面模式不显示宠物');
+      await signalOverlayVisualReady();
       scheduleReboot();
       return;
     }
-    // 本窗口只承载一只宠物：petIndex 由主进程按 DSH_PET_PETS 顺序注入
-    const pet = pets[CONFIG.petIndex];
-    if (!pet) {
-      showError('petIndex=' + CONFIG.petIndex + ' 超出桌面宠物列表（共 ' + pets.length + ' 只），本窗口不创建宠物');
+    if (!CONFIG.overlay) {
+      const pet = pets[CONFIG.petIndex];
+      if (!pet) {
+        showError('petIndex=' + CONFIG.petIndex + ' 超出桌面宠物列表（共 ' + pets.length + ' 只），本窗口不创建宠物');
+        scheduleReboot();
+        return;
+      }
+    }
+    const visiblePets = CONFIG.overlay ? pets : [pets[CONFIG.petIndex]];
+    if (visiblePets.some((pet) => !pet)) {
       scheduleReboot();
       return;
     }
     for (const s of sprites) s.dispose();
-    sprites = [new PetSprite(pet)];
+    sprites = visiblePets.map((pet, index) => new PetSprite(pet, CONFIG.overlay ? index : CONFIG.petIndex));
     window.__dshPetDebug.configOk = true;
     window.__dshPetDebug.spriteCount = sprites.length;
+    window.__dshPetDebug.overlayMode = CONFIG.overlay;
     for (const s of sprites) s.playIdle();
+    startFrameDiagnostics();
+    if (CONFIG.overlay) {
+      await Promise.race([
+        Promise.all(sprites.map((sprite) => sprite.firstVisualFrame)),
+        new Promise((resolve) => setTimeout(resolve, 3500)),
+      ]);
+      await signalOverlayVisualReady();
+    }
     startLoops();
   } catch (e) {
     showError('配置加载失败：' + (e && e.message ? String(e.message) : String(e)));
+    await signalOverlayVisualReady();
     scheduleReboot();
   }
 }

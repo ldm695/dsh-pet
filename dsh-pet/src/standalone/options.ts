@@ -30,7 +30,9 @@ export const USAGE = `dsh-pet 独立模式（不需要 DSH）
 
 说明：
   桌宠在独立模式下以「透明置顶小窗」运行；浏览器内浮层需要有 DSH 网页，独立模式不提供。
-  余额 / 碎碎念 / 对话 / 系统通知依赖 DSH 的服务，在独立模式下不可用。
+  设置 DSH_PET_STANDALONE_DEEPSEEK_API_KEY 后可用 DeepSeek API 余额、碎碎念与对话。
+  系统通知在宠物窗口失焦时提示对话回复；安装 dsh-pet-work-status-bridge 后，
+  还可接收 DSH 当前选中对话的完成、失败、权限申请和待回答问题通知。
 `;
 
 /**

@@ -794,6 +794,77 @@ paths:
         "405":
           $ref: "#/components/responses/MethodNotAllowed"
 
+  /dsh-pet-7340/settings/open:
+    post:
+      tags: [Action]
+      operationId: openStandaloneSettings
+      summary: 打开独立版设置窗口
+      description: |
+        仅独立版可用。桌宠右键菜单通过此端点通知启动器聚焦已有设置窗口，
+        或创建唯一的设置窗口；DSH 插件模式返回 `404`。
+      responses:
+        "200":
+          description: 已请求打开设置窗口
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "404":
+          description: 当前不是独立版
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /dsh-pet-7340/app/quit:
+    post:
+      tags: [Action]
+      operationId: quitStandaloneApp
+      summary: 退出独立版应用
+      description: |
+        仅独立版可用。桌宠右键菜单通过此端点通知启动器退出整套应用；
+        DSH 插件模式返回 `404`。
+      responses:
+        "200":
+          description: 已请求退出应用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "404":
+          description: 当前不是独立版
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /dsh-pet-7340/app-icon.png:
+    get:
+      tags: [Assets]
+      operationId: getAppIcon
+      summary: 获取独立版应用图标
+      description: 返回独立版应用使用的 16×16 PNG 像素图标。
+      responses:
+        "200":
+          description: 应用图标
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: 应用图标资源不存在
+          content:
+            text/plain:
+              schema:
+                type: string
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
   "/dsh-pet-7340/thumb/{petId}/{file}":
     get:
       tags: [Assets]

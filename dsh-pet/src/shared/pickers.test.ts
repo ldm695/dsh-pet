@@ -117,8 +117,8 @@ describe('nextWorkStatusAnim —— workStatus 播完续播决策（档内轮换
 });
 
 describe('rollKind —— 随机链掷骰（含宠物固定 fixedEnabled）', () => {
-  /** 与内置 config.jsonc 同形的顶层权重（idle 10 / turn 5 / move 5 / 余量 80 = 随机动作） */
-  const w = { idle: 10, turn: 5, move: 5 };
+  /** 与内置 config.jsonc 同形的顶层权重（idle 10 / turn 5 / move 20 / 余量 65 = 随机动作） */
+  const w = { idle: 10, turn: 5, move: 20 };
 
   test('默认：三档边界（idle / turn / move / 余量 action）', () => {
     assert.equal(rollKind(0, w), 'idle');
@@ -126,8 +126,8 @@ describe('rollKind —— 随机链掷骰（含宠物固定 fixedEnabled）', ()
     assert.equal(rollKind(0.1, w), 'turn');
     assert.equal(rollKind(0.1499, w), 'turn');
     assert.equal(rollKind(0.15, w), 'move');
-    assert.equal(rollKind(0.1999, w), 'move');
-    assert.equal(rollKind(0.2, w), 'action');
+    assert.equal(rollKind(0.3499, w), 'move');
+    assert.equal(rollKind(0.35, w), 'action');
     assert.equal(rollKind(0.9999, w), 'action');
   });
 
@@ -138,7 +138,7 @@ describe('rollKind —— 随机链掷骰（含宠物固定 fixedEnabled）', ()
     // 原本落 turn / move 的两个区间，现在全部归 action
     assert.equal(rollKind(0.1, w, { fixed: true }), 'action');
     assert.equal(rollKind(0.15, w, { fixed: true }), 'action');
-    assert.equal(rollKind(0.1999, w, { fixed: true }), 'action');
+    assert.equal(rollKind(0.3499, w, { fixed: true }), 'action');
     assert.equal(rollKind(0.9999, w, { fixed: true }), 'action');
   });
 

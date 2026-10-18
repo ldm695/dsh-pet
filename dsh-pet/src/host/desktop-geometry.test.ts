@@ -21,13 +21,19 @@ test('macOS: movement reaches panel top while menus and Dock exclusions keep the
   assert.equal(primary.workArea.y, 24, 'do not mutate Electron display objects');
 });
 
-test('Windows/Linux keep their existing work-area boundary and anchor semantics', () => {
-  for (const platform of ['win32', 'linux']) {
-    const geo = buildDeskGeometry([primary], 1, platform);
-    assert.deepEqual(geo.areas, [primary.workArea]);
-    assert.deepEqual(geo.hull, primary.workArea);
-    assert.equal(geo.topInsetRatio, 0);
-  }
+test('Windows overlay and pet physics use full panels while UI retains the work area', () => {
+  const geo = buildDeskGeometry([primary], 1, 'win32');
+  assert.deepEqual(geo.areas, [primary.bounds]);
+  assert.deepEqual(geo.hull, primary.bounds);
+  assert.deepEqual(geo.workAreas, [primary.workArea]);
+  assert.equal(geo.topInsetRatio, 0);
+});
+
+test('Linux keeps its work-area movement boundary', () => {
+  const geo = buildDeskGeometry([primary], 1, 'linux');
+  assert.deepEqual(geo.areas, [primary.workArea]);
+  assert.deepEqual(geo.hull, primary.workArea);
+  assert.equal(geo.topInsetRatio, 0);
 });
 
 test('irregular multi-screen layouts retain per-screen boundaries, negative origins and primary index', () => {

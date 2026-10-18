@@ -10,10 +10,29 @@ const S = window.PetShared;
 
 const params = new URLSearchParams(location.search);
 const CONFIG = {
-  configUrl: params.get('configUrl') || 'http://127.0.0.1:3080/dsh-pet-7340/config',
+  configUrl: params.get('configUrl') || 'http://127.0.0.1:6952/dsh-pet-7340/config',
+  notificationIcon: params.get('notificationIcon') || '',
+  notificationIcons: (() => {
+    try {
+      const icons = JSON.parse(params.get('notificationIcons') || '{}');
+      return icons && typeof icons === 'object' ? icons : {};
+    } catch {
+      return {};
+    }
+  })(),
   scale: Number(params.get('scale') || '1'),
+  overlay: params.get('overlay') === '1',
   petIndex: Number(params.get('petIndex') || '0'),
+  petLayouts: (() => {
+    try {
+      const pets = JSON.parse(params.get('petLayouts') || '[]');
+      return Array.isArray(pets) ? pets : [];
+    } catch {
+      return [];
+    }
+  })(),
   topInsetRatio: Number(params.get('topInsetRatio') || '0'),
+  frameDiagnostics: params.get('frameDiagnostics') === '1',
 };
 
 // ---------- 渲染端坐标系统一约定（DESIGN.md §3.5） ----------
@@ -31,6 +50,8 @@ function toLocal(v) {
 // bridge 模式（DSH_PET_BRIDGE=1）：请求走自定义 scheme，经 Electron 主进程转宿主管道——
 // 绕开 DSH Desktop 2.0.3+ 的浏览器访问闸门（只放行带令牌的请求，插件自拉进程的裸 HTTP 全 403）
 const BRIDGE = params.get('bridge') === '1';
+// Renderer runs with nodeIntegration disabled; main.js forwards standalone mode through the URL.
+const STANDALONE = params.get('standalone') === '1';
 // 工具项「打开网站」的去向（主进程按宿主形态经 query 注入，见 main.js 的 OPEN_TARGET）：
 // desktop = 宿主是 DSH 桌面应用，菜单项改叫「打开 DeepSeek Harness」并唤起桌面应用主窗口；site = 打开站点。
 const OPEN_TARGET = params.get('openTarget') === 'desktop' ? 'desktop' : 'site';
@@ -154,7 +175,8 @@ const WINDOW_MARGIN_RATIO = 0.5;
 const rootEl = document.getElementById('root');
 const errorEl = document.getElementById('pet-error');
 let config = null; // { pets: 拍平后的成品实例列表, physics, confineToScreen }（loadConfig 填充）
-let sprites = []; // PetSprite[]（本窗口只装一只宠物）
+let sprites = []; // PetSprite[]（共享桌面 overlay 内的所有可见宠物）
+let overlayInteractiveUpdatePending = false;
 let balance = null; // BalanceState（本窗口单宠共用）
 let balanceTick = 0;
 let balanceNoticeKey = null; // 上次已提示的不可用原因（reason:provider）：自动轮询只在原因变化时再弹（判定在 shared，与浏览器同一份）

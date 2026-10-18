@@ -147,14 +147,30 @@ try {
   console.log(`[prepack-check] note: 跳过 memes 键对齐核对（config.jsonc 解析失败：${e.message}）`);
 }
 
-// ---- 7. 包总大小估算（排除 node_modules/.git/脚本/素材源目录/README预览GIF） ----
+// ---- 7. 包总大小估算（排除 node_modules/.git/脚本/素材源/本地构建目录） ----
+// portable-dist 是 Electron Builder 的本地交付物，不在 package.json 的 files 白名单内；
+// 若把它算进 npm 插件包体积，会因本地保留的 EXE 误报数 GB 的发布包。
 let total = 0;
 const walk = (dir) => {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, entry.name);
     if (entry.isDirectory()) {
       // 跳过不会进 npm 包的目录
-      if (!['node_modules', '.git', 'scripts', 'step01', 'step02', 'step03', 'preview'].includes(entry.name)) walk(p);
+      const ignored =
+        [
+          'node_modules',
+          '.git',
+          'scripts',
+          'step01',
+          'step02',
+          'step03',
+          'preview',
+          'portable-dist',
+          'release',
+        ].includes(entry.name) ||
+        entry.name.startsWith('portable-dist-') ||
+        entry.name.startsWith('.build-temp-icon-');
+      if (!ignored) walk(p);
     } else if (!entry.name.endsWith('.map')) {
       // 打包产物 tarball（npm pack 遗留）不计入自查口径
       if (!entry.name.endsWith('.tgz')) total += statSync(p).size; // sourcemap 不计

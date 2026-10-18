@@ -9,8 +9,12 @@
 
 // ---------- 单只宠物（行为与浏览器 PetCard 一致；纯逻辑来自 src/shared） ----------
 class PetSprite {
-  constructor(pet) {
+  constructor(pet, index = CONFIG.petIndex) {
     this.pet = pet; // 这只宠物的配置段（拍平后的成品实例，条目级字段已吹入：动画池/权重/周期）
+    if (!window.__dshPetLiveStates) window.__dshPetLiveStates = new Map();
+    this.index = index;
+    this.layout = CONFIG.petLayouts.find((layout) => layout.id === pet.id) || CONFIG.petLayouts[index] || {};
+    this.pointerOnBody = false;
     // 页面级缩放（main 对窗口 setZoomFactor(CONFIG.scale)，见 DESIGN.md §3.5）统一放大整窗：
     // pet.size 即 CSS 像素基准，**不再手工乘 CONFIG.scale**——固定 px UI（菜单/积分/聊天）
     // 随同一缩放自动恢复 DIP 观感；跨进程交换（bounds/几何/碰撞）由 constants.js 的
@@ -69,6 +73,10 @@ class PetSprite {
     this.pending = null;
     this.gen = 0;
     this.anim = this.animations.idle[0] ?? '';
+    this.firstVisualFrame = new Promise((resolve) => {
+      this.resolveFirstVisualFrame = resolve;
+    });
+    this.firstVisualFrameResolved = false;
     this.once = true;
     this.facing = 'left';
     // 交互/移动
@@ -94,7 +102,21 @@ class PetSprite {
     this.moveRef = null;
     this.moveToken = 0;
     this.pendingMove = null;
-    this.customPos = null; // 拖拽后的会话内位置（{rx, ry} 比例）；restart 回角落
+    this.moveReservationId = null;
+    this.moveWaiting = false;
+    this.moveWaitState = null;
+    // 首次启动按配置角落定位；已有历史屏幕坐标时还原到视口比例，避免分辨率变化后落在屏幕外。
+    const lastPosition = this.layout.lastPosition;
+    if (lastPosition && Number.isFinite(Number(lastPosition.x)) && Number.isFinite(Number(lastPosition.y))) {
+      const center = S.clampPointToRegion(
+        AREAS,
+        toLocal(Number(lastPosition.x)) - VIEW.x + this.halfW,
+        toLocal(Number(lastPosition.y)) - VIEW.y + this.halfH,
+      );
+      this.customPos = { rx: center.x / VIEW.w, ry: center.y / VIEW.h };
+    } else {
+      this.customPos = null;
+    }
     // 右键菜单（统一自绘组件，两端共用同一份：树+渲染均来自 shared-core）
     this.menuOpen = false; // 菜单开启期间强制整窗可交互（悬停菜单不触发穿透翻转）
     this.menuClose = null; // 当前菜单的 close()（打开时挂载，关闭后置空）
@@ -133,8 +155,9 @@ class PetSprite {
     // DOM：sprite 钉在窗口内 (margin.l, margin.t)；宠物"位置"= sprite 位置，窗口随余量外扩
     this.el = document.createElement('div');
     this.el.className = 'pet-sprite';
-    this.el.style.left = this.margin.l + 'px';
-    this.el.style.top = this.margin.t + 'px';
+    if (CONFIG.overlay) this.el.style.willChange = 'transform';
+    this.el.style.left = (CONFIG.overlay ? 0 : this.margin.l) + 'px';
+    this.el.style.top = (CONFIG.overlay ? 0 : this.margin.t) + 'px';
     this.el.style.setProperty('--pet-size', this.size + 'px');
     // 字号（配置 font）：按本宠物尺寸算好最终 px 注入 —— 气泡与悬浮提示的 CSS 读这两个变量
     // （与浏览器端同一套变量名、同一份换算 S.resolveFontPx，见 shared/fonts.ts）
@@ -178,6 +201,11 @@ class PetSprite {
     this.el.appendChild(stage);
     rootEl.appendChild(this.el);
     this.position();
+    if (CONFIG.overlay && window.petBridge?.onFullscreenVisibility) {
+      window.petBridge.onFullscreenVisibility((visibility) => {
+        this.el.style.visibility = visibility && visibility[this.pet.id] === true ? 'hidden' : 'visible';
+      });
+    }
 
     // 事件（与浏览器同一套：pointerdown/move、click、window pointerup/cancel）
     const ac = new AbortController();
@@ -233,19 +261,37 @@ class PetSprite {
         for (const pid of Object.keys(states)) {
           if (pid === this.pet.id) continue; // 排除自己
           const s = states[pid];
+          const x = toLocal(Number(s && s.x) || 0);
+          const y = toLocal(Number(s && s.y) || 0);
+          const updatedAt = Number(s && s.updatedAt) || Date.now();
+          const previous = this.others[pid];
+          const sampleSpan = previous ? updatedAt - previous.updatedAt : 0;
+          const observedVx = sampleSpan >= 8 && sampleSpan <= 120 ? ((x - previous.x) / sampleSpan) * 1000 : 0;
+          const observedVy = sampleSpan >= 8 && sampleSpan <= 120 ? ((y - previous.y) / sampleSpan) * 1000 : 0;
+          let vx = toLocal(Number(s && s.vx) || 0);
+          let vy = toLocal(Number(s && s.vy) || 0);
+          // Non-flight movement (walk/drag) reports zero physical velocity. Estimate it from
+          // timestamped broker samples so a flying pet predicts the peer's current position
+          // instead of colliding with where that peer was one broadcast interval ago.
+          if (Math.abs(vx) < 1 && Math.abs(vy) < 1) {
+            vx = observedVx;
+            vy = observedVy;
+          }
           next[pid] = {
             // 碰撞 broker 协议单位是物理像素（与窗口 bounds 一致）：÷scale 进本窗口 CSS 系（§3.5）
-            x: toLocal(Number(s && s.x) || 0),
-            y: toLocal(Number(s && s.y) || 0),
-            vx: toLocal(Number(s && s.vx) || 0),
-            vy: toLocal(Number(s && s.vy) || 0),
+            x,
+            y,
+            vx,
+            vy,
             size: toLocal(Number(s && s.size) || 0),
             bottomPad: toLocal(Number(s && s.bottomPad) || 0),
+            updatedAt,
           };
         }
         this.others = next;
       });
       window.petBridge.onPetHit((payload) => {
+        if (payload && payload.petId && payload.petId !== this.pet.id) return;
         const vx = Number(payload && payload.vx);
         const vy = Number(payload && payload.vy);
         if (Number.isFinite(vx) && Number.isFinite(vy)) this.onDeskHit(toLocal(vx), toLocal(vy));
@@ -270,23 +316,32 @@ class PetSprite {
     this.stopDragFollow();
     this.stopSquash();
     this.stopMove();
+    window.__dshPetLiveStates?.delete(this.pet.id);
     this.el.remove();
   }
 
-  // 目标包围盒左上角（视口相对坐标）→ 移动窗口：窗口 = sprite + 四周外扩余量
-  // （sprite 钉在窗口 (margin.l, margin.t)，气泡/弹窗显示在余量里）。
-  // setContentBounds 要**屏幕**坐标：pos 是视口（桌面外接矩形）相对坐标，先加 VIEW.x/y
-  // 再统一 ×scale 回物理像素（§3.5 IPC 收口）——主进程收到的数字与线性化旧行为逐位一致，
-  // 主进程侧（bounds/去重/碰撞 broker）完全不用改。
+  // 更新包围盒左上角（视口相对坐标）并同步原生窗口形状/碰撞站场。
+  // 单窗口模式下只改 sprite 的 DOM 位置；上报外扩矩形供原生 setShape 保留提示、气泡空间。
+  // 跨进程坐标统一 ×scale 回到屏幕物理像素（§3.5 IPC 收口）。
   sendBounds(px, py) {
     this.pos = { x: Math.round(px), y: Math.round(py) };
     window.__dshPetDebug.dragPos = { x: this.pos.x, y: this.pos.y };
+    window.__dshPetLiveStates?.set(this.pet.id, {
+      x: this.pos.x,
+      y: this.pos.y,
+      vx: this.throwState?.vx || 0,
+      vy: this.throwState?.vy || 0,
+      size: this.size,
+      bottomPad: this.bottomPad,
+      updatedAt: performance.now(),
+    });
     if (window.petBridge) {
       // 完整状态一次捎带：size/bottomPad 让静止宠物从首帧起就登记进碰撞站场
       // （此前只有 report-flight 带尺寸，从没飞过的宠物 size=0 被碰撞检测直接跳过）；
       // vx/vy 带当前速度——飞行中实时值、静止/拖拽 = 0，避免落地后残留上次飞行速度干扰碰撞动量。
       const fly = this.throwState;
       window.petBridge.setBounds(
+        this.pet.id,
         toScreen(this.pos.x - this.margin.l + VIEW.x),
         toScreen(this.pos.y - this.margin.t + VIEW.y),
         toScreen(this.size + this.margin.l + this.margin.r),
@@ -297,11 +352,23 @@ class PetSprite {
         toScreen(this.bottomPad),
         fly ? toScreen(fly.vx) : 0,
         fly ? toScreen(fly.vy) : 0,
-        // 窗口余量（DIP）：主进程据此算宠物身体命中区——余量不再四边相等（上边距按气泡加高），
-        // 不能再按「窗口宽/4」反推（见 pointer-target.js 的 spriteHitRect）。
+        // Window margins define the body hit target and remain asymmetric when the tooltip expands upward.
         toScreen(this.margin.l),
         toScreen(this.margin.t),
+        // The shared transparent overlay's native mouse-passthrough poll runs in screen pixels.
+        // Keep its per-pet hit rectangle current even before any menu/drag input-region update;
+        // otherwise the poll sees no body and can immediately undo setInteractive(true).
+        toScreen(this.pos.x + this.hitRect.x),
+        toScreen(this.pos.y + this.hitRect.y),
+        toScreen(this.hitRect.w),
+        toScreen(this.hitRect.h),
       );
+    }
+    if (CONFIG.overlay) {
+      // Queue the native shape/bounds update before committing this frame's DOM position, so the
+      // shape is more likely to contain the sprite when Chromium submits the next compositor frame.
+      // translate3d also avoids forcing layout/paint for every rAF tick during drag/throw.
+      this.el.style.transform = `translate3d(${this.pos.x}px, ${this.pos.y}px, 0)`;
     }
     // 位置变了（宠物漫游/拖拽/飞行，窗口跟着动）：提示若正显示必须重摆一次——它跟的是光标，
     // 而光标存的是视口坐标，窗口一移，光标相对窗口的位置就变了，不重摆提示会跟着窗口漂走。
@@ -338,6 +405,35 @@ class PetSprite {
       });
       x = anchor.x;
       y = anchor.y;
+      // 多只桌宠若配置在同一角落，启动时先沿角落向内错开，避免它们从重叠位置一起起跑。
+      // 只有同一 corner/margin 的实例参与错位；用户分开配置的位置保持原样。
+      const layout = this.layout;
+      const position = this.pet.position || {};
+      const margin = (value) => (Number.isFinite(Number(value)) ? Number(value) : 0);
+      const sameAnchor = (candidate) => {
+        const p = candidate && candidate.position;
+        return (
+          p &&
+          p.corner === position.corner &&
+          margin(p.marginX) === margin(position.marginX) &&
+          margin(p.marginY) === margin(position.marginY)
+        );
+      };
+      if (sameAnchor(layout)) {
+        const layoutIndex = CONFIG.petLayouts.findIndex((candidate) => candidate.id === this.pet.id);
+        const preceding = CONFIG.petLayouts.slice(0, layoutIndex < 0 ? this.index : layoutIndex).filter(sameAnchor);
+        const gap = 24;
+        const inward = position.corner.endsWith('-right') ? -1 : 1;
+        const offset = preceding.reduce(
+          (sum, sibling) => sum + Math.max(0, Number(sibling.size) || this.size) + gap,
+          0,
+        );
+        x += inward * offset;
+        const area = PRIMARY_AREA || { x: 0, y: 0, width: VIEW.w, height: VIEW.h };
+        const minX = area.x + margin(position.marginX) - this.sideAllow;
+        const maxX = area.x + area.width - margin(position.marginX) - this.size + this.sideAllow;
+        x = Math.max(minX, Math.min(maxX, x));
+      }
     }
     this.sendBounds(x, y);
   }
@@ -408,6 +504,9 @@ class PetSprite {
     const loadGuard = (why) => {
       if (!this.pending || this.pending.gen !== gen) return;
       this.pending = null;
+      if (this.pendingMove) {
+        this.pendingMove = null;
+      }
       console.warn('[dsh-pet] 素材加载失败 pet=' + this.pet.id + ' anim=' + next + '：' + why + '（已释放本次切换）');
     };
     const loadTimer = window.setTimeout(() => loadGuard('10s 超时'), 10000);
@@ -431,13 +530,14 @@ class PetSprite {
       this.front = this.front === 0 ? 1 : 0;
       this.pending = null;
       el.style.transform = this.facing === 'right' ? 'scaleX(-1)' : '';
-      el.play().catch(() => {});
+      if (this.pendingMove) this.startMoveDrive(el);
+      else el.play().catch(() => {});
+      this.resolveVisualFrameAfterPaint(el);
       // 点击 Q 弹：等新动画就位后才压（压的是新点击动画的首帧，与浏览器一致）
       if (this.pendingSquash) {
         this.pendingSquash = false;
         this.startSquash(el);
       }
-      if (this.pendingMove) this.startMoveDrive(el);
     };
     el.addEventListener('loadeddata', onReady);
     if (el.readyState >= 2) onReady();
@@ -447,6 +547,27 @@ class PetSprite {
     this.anim = name;
     this.once = true;
     this.switchTo(name, true);
+  }
+
+  resolveVisualFrameAfterPaint(el) {
+    if (this.firstVisualFrameResolved) return;
+    let settled = false;
+    let fallbackTimer;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+      this.firstVisualFrameResolved = true;
+      this.resolveFirstVisualFrame?.();
+      this.resolveFirstVisualFrame = null;
+    };
+    fallbackTimer = window.setTimeout(finish, 2500);
+    const afterFrame = () => requestAnimationFrame(() => requestAnimationFrame(finish));
+    if (typeof el.requestVideoFrameCallback === 'function') {
+      el.requestVideoFrameCallback(afterFrame);
+    } else {
+      afterFrame();
+    }
   }
 
   // 动画链（与浏览器 pickNext 语义一致，纯逻辑在 shared）
@@ -486,6 +607,24 @@ class PetSprite {
     const { animations } = { animations: this.animations };
     // 事件动画播完：回 idle（与 drag/clicks 同分支，不进随机链）；气泡由定时器自动消失，与动画解耦
     const isEvent = S.isEventAnim(animations.events, this.anim);
+    const workPool = animations.events?.workStatus ?? [];
+    if (S.poolIncludes(workPool, this.anim) || this.workState) {
+      const record = {
+        at: new Date().toISOString(),
+        surface: 'desktop',
+        event: 'animation-ended',
+        petId: this.pet.id,
+        anim: this.anim,
+        workState: this.workState,
+        isEvent,
+        front: this.front,
+      };
+      if (typeof window.petBridge?.workStatusDiagnostic === 'function') {
+        window.petBridge.workStatusDiagnostic(record);
+      } else {
+        console.info('[dsh-pet-workdiag] ' + JSON.stringify(record));
+      }
+    }
     if (isEvent) {
       // 工作状态多候选档位：播完一段自动轮换到下一候选（排除当前段，避免连抽），继续循环——
       // 长时间状态不单段重复（与浏览器 ended 护栏共用同一决策 nextWorkStatusAnim）。
@@ -543,7 +682,13 @@ class PetSprite {
     const rotating = Array.isArray(slot) && slot.length > 1;
     if (rotating)
       this.playOnce(name); // 多候选：播完由 handleEnded 轮换
-    else this.switchTo(name, false); // 单候选：无限循环
+    else {
+      // switchTo 只负责视频双缓冲，不会更新 sprite 的逻辑状态；保持 this.anim 与实际动画一致，
+      // 否则收到 idle 时会误判当前不是 workStatus 动画，导致正在循环的工作动画残留。
+      this.anim = name;
+      this.once = false;
+      this.switchTo(name, false); // 单候选：无限循环
+    }
     return true;
   }
 
@@ -553,70 +698,330 @@ class PetSprite {
     if (this.moveRef !== null || this.pendingMove || this.throwRef !== null) return true;
     const moves = this.animations.moves;
     const actions = moves.actions;
-    if (!actions.length) return false;
-    const chosen = preferredName
-      ? actions.find((a) => a.name === preferredName) || null
-      : actions[Math.floor(Math.random() * actions.length)];
+    const preferredDrag = !!preferredName && this.animations.drag.includes(preferredName);
+    if (!actions.length && !preferredDrag) return false;
+    const chosen = preferredDrag
+      ? { name: preferredName, params: {} }
+      : preferredName
+        ? actions.find((a) => a.name === preferredName) || null
+        : actions[Math.floor(Math.random() * actions.length)];
     if (!chosen) return false;
     const mp = Object.assign({}, moves.default, chosen.params || {});
-    const dir = (this.facing === 'right') !== this.animations.turn.includes(this.anim) ? 1 : -1;
+    const facingDir = this.facing === 'right' ? 1 : -1;
+    const candidate = this.planMoveCandidate(mp, facingDir, preferredDrag ? 'vertical' : 'any');
+    if (!candidate) return false;
+    const moveAnimation = preferredDrag
+      ? preferredName
+      : candidate.isVertical && this.animations.drag.length
+        ? S.pick(this.animations.drag)
+        : chosen.name;
+    const previousAnimation = this.anim;
+    this.pendingMove = {
+      ...candidate,
+      moveParams: mp,
+      moveActionName: chosen.name,
+      lockAnimation: preferredDrag,
+      animationName: moveAnimation,
+      previousAnimation,
+    };
+    this.anim = moveAnimation;
+    this.once = true;
+    this.switchTo(moveAnimation, true);
+    return moveAnimation;
+  }
+
+  planMoveCandidate(mp, preferredDir = this.facing === 'right' ? 1 : -1, mode = 'any') {
     const W = VIEW.w;
     const H = VIEW.h;
     const distScale = this.size / S.PET_REF_WIDTH;
-    const plan = S.planMove({
-      cx: this.currentCenterX(),
-      cy: this.currentCenterY(),
-      W,
-      H,
-      dir,
-      minDist: mp.minDist * distScale,
-      maxDist: mp.maxDist * distScale,
-      margin: mp.margin, // 同 position() 的 marginX/marginY：页面级缩放统一放大，配置值不再乘 scale（§3.5）
-      halfW: this.halfW,
-      sideAllow: this.sideAllow,
-      // 落点按显示器并集判定：能骑缝跨屏走，但走不进外接矩形里的空洞
-      areas: AREAS,
-    });
-    if (!plan) return false;
-    this.pendingMove = { ...plan, dir, leadSec: mp.leadSec, tailSec: mp.tailSec };
-    this.anim = chosen.name;
-    this.once = true;
-    this.switchTo(chosen.name, true);
-    return chosen.name;
+    const cx = this.currentCenterX();
+    const cy = this.currentCenterY();
+    let plan = null;
+    let dir = preferredDir;
+    const modes =
+      mode === 'any'
+        ? Math.random() < 0.5
+          ? ['vertical', 'horizontal']
+          : ['horizontal', 'vertical']
+        : [mode];
+    const directions = [preferredDir, -preferredDir];
+    // Vertical motion is a deliberate near-vertical route (75°–90°); horizontal routes retain
+    // the original 0°–45° range. Try both horizontal facings and both vertical signs before giving up.
+    for (const selectedMode of modes) {
+      for (let attempt = 0; attempt < 12 && !plan; attempt++) {
+        for (const candidateDir of directions) {
+          const angleDegrees = selectedMode === 'vertical' ? 75 + Math.random() * 15 : Math.random() * 45;
+          const candidate = S.planMove({
+            cx,
+            cy,
+            W,
+            H,
+            dir: candidateDir,
+            angleDegrees,
+            verticalDir: Math.random() < 0.5 ? -1 : 1,
+            minDist: mp.minDist * distScale,
+            maxDist: mp.maxDist * distScale,
+            margin: mp.margin, // 同 position() 的 marginX/marginY：页面级缩放统一放大，配置值不再乘 scale（§3.5）
+            halfW: this.halfW,
+            halfH: this.halfH,
+            sideAllow: this.sideAllow,
+            // 落点按显示器并集判定：能骑缝跨屏走，但走不进外接矩形里的空洞
+            areas: AREAS,
+          });
+          if (!candidate) continue;
+          const isVertical =
+            Math.abs(candidate.targetYRatio - candidate.startYRatio) >=
+            Math.abs(candidate.targetRatio - candidate.startRatio);
+          // planMove may fall back to a horizontal route when both vertical targets are out of bounds.
+          // Keep route type and animation paired; the next retry will try the other route family.
+          if (selectedMode === 'vertical' && !isVertical) continue;
+          if (selectedMode === 'horizontal' && isVertical) continue;
+          plan = candidate;
+          dir = candidateDir;
+          plan.isVertical = isVertical;
+          break;
+        }
+      }
+      if (plan) break;
+    }
+    if (!plan) return null;
+    return { ...plan, dir, leadSec: mp.leadSec, tailSec: mp.tailSec };
   }
 
   startMoveDrive(el) {
     const pm = this.pendingMove;
     if (!pm || this.moveRef !== null) return;
     this.pendingMove = null;
-    const { startRatio, startYRatio, targetRatio, dir, totalRatio, leadSec, tailSec } = pm;
     const duration = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 10.09;
-    const travelWindow = Math.max(0.1, duration - leadSec - tailSec);
+    const usesDragAnimation = this.animations.drag.includes(pm.animationName || this.anim);
+    const leadSec = usesDragAnimation ? Math.min(pm.leadSec, duration * 0.15) : pm.leadSec;
+    const tailSec = usesDragAnimation ? Math.min(pm.tailSec, duration * 0.15) : pm.tailSec;
+    const movePlan = { ...pm, leadSec, tailSec };
     const token = ++this.moveToken;
     const W = VIEW.w;
     const H = VIEW.h;
-    const step = () => {
-      if (this.moveToken !== token) return;
-      const t = el.currentTime || 0;
-      let ratioX;
-      if (t <= leadSec) ratioX = startRatio;
-      else if (t >= duration - tailSec) ratioX = targetRatio;
-      else ratioX = startRatio + dir * totalRatio * ((t - leadSec) / travelWindow);
-      // 移动的是窗口（宠物包围盒跟随），sprite 在本窗口内不动
-      this.sendBounds(ratioX * W - this.halfW, startYRatio * H - this.halfH);
-      if (t < duration - tailSec) {
-        this.moveRef = requestAnimationFrame(step);
-      } else {
-        this.moveRef = null;
-        this.customPos = { rx: targetRatio, ry: startYRatio };
-      }
+    const waitEl = el === this.videoA ? this.videoB : this.videoA;
+    const waitFront = waitEl === this.videoA ? 0 : 1;
+    const moveFront = el === this.videoA ? 0 : 1;
+    const moveName = pm.animationName || this.anim;
+    const previousWasMove = this.animations.moves.actions.some((action) => action.name === pm.previousAnimation);
+    const idleFallback = S.pick(this.animations.idle, moveName) || this.animations.idle[0];
+    const waitName = previousWasMove ? idleFallback || moveName : pm.previousAnimation || idleFallback || moveName;
+
+    // Keep the previous non-movement clip visible while arbitration runs. Only show the
+    // selected move clip once a route is granted.
+    el.pause();
+    el.loop = false;
+    el.onended = null;
+    waitEl.classList.add('is-front');
+    el.classList.remove('is-front');
+    this.front = waitFront;
+    this.anim = waitName;
+    this.once = false;
+    waitEl.loop = true;
+    waitEl.onended = null;
+    waitEl.style.transform = this.facing === 'right' ? 'scaleX(-1)' : '';
+    const moveWaitState = { moveEl: el, waitEl, moveName, waitName, waitReadyHandler: null };
+    this.moveWaitState = moveWaitState;
+    const startWaitAnimation = () => {
+      if (this.moveToken !== token || this.moveWaitState !== moveWaitState) return;
+      waitEl.loop = true;
+      try {
+        waitEl.currentTime = 0;
+      } catch {}
+      waitEl.play().catch(() => {});
     };
-    this.moveRef = requestAnimationFrame(step);
+    if (previousWasMove && idleFallback) {
+      // Consecutive move rolls (especially the 100% test build) must not reuse the
+      // previous run clip as the waiting visual. Load a real idle clip into that buffer.
+      const waitSource = this.assetBase + encodeURIComponent(waitName) + (S.ANIMATION_EXT || '.webm');
+      moveWaitState.waitReadyHandler = () => {
+        waitEl.removeEventListener('loadeddata', moveWaitState.waitReadyHandler);
+        moveWaitState.waitReadyHandler = null;
+        startWaitAnimation();
+      };
+      waitEl.addEventListener('loadeddata', moveWaitState.waitReadyHandler, { once: true });
+      waitEl.onerror = () => {
+        waitEl.onerror = null;
+        console.warn('[dsh-pet] 待机动画加载失败 pet=' + this.pet.id + ' anim=' + waitName);
+      };
+      waitEl.src = waitSource;
+      waitEl.load();
+    } else {
+      startWaitAnimation();
+    }
+
+    const reserve = async (candidate) => {
+      if (!window.petBridge?.reserveMove) return { ok: true, reservationId: null };
+      return window.petBridge.reserveMove(this.pet.id, {
+        // pet:set-bounds reports the package-wide hull-relative position (no VIEW origin),
+        // so routes must use that same coordinate frame for multi-monitor layouts.
+        startX: toScreen(candidate.startRatio * W),
+        startY: toScreen(candidate.startYRatio * H),
+        targetX: toScreen(candidate.targetRatio * W),
+        targetY: toScreen(candidate.targetYRatio * H),
+        size: toScreen(this.size),
+        duration,
+        leadSec: candidate.leadSec,
+        tailSec: candidate.tailSec,
+      });
+    };
+    const beginDrive = (candidate, reservationId) => {
+      if (this.moveToken !== token) {
+        if (reservationId) window.petBridge?.releaseMove?.(this.pet.id, reservationId);
+        return;
+      }
+      if (moveWaitState.waitReadyHandler) {
+        waitEl.removeEventListener('loadeddata', moveWaitState.waitReadyHandler);
+        moveWaitState.waitReadyHandler = null;
+      }
+      waitEl.onerror = null;
+      waitEl.loop = false;
+      waitEl.onended = null;
+      waitEl.pause();
+      waitEl.classList.remove('is-front');
+      el.classList.add('is-front');
+      this.front = moveFront;
+      this.anim = moveName;
+      this.once = true;
+      this.moveWaitState = null;
+      this.moveReservationId = reservationId;
+      this.moveWaiting = false;
+      // The route reservation begins now, so start the movement clip at its first frame.
+      el.loop = false;
+      el.onended = () => this.handleEnded();
+      try {
+        el.currentTime = 0;
+      } catch {}
+      if (!candidate.isVertical) this.facing = candidate.dir > 0 ? 'right' : 'left';
+      el.style.transform = this.facing === 'right' ? 'scaleX(-1)' : '';
+      const { startRatio, startYRatio, targetRatio, targetYRatio, leadSec, tailSec } = candidate;
+      const travelWindow = Math.max(0.1, duration - leadSec - tailSec);
+      el.play().catch(() => {});
+      const step = () => {
+        if (this.moveToken !== token) return;
+        const t = el.currentTime || 0;
+        const progress = t <= leadSec ? 0 : t >= duration - tailSec ? 1 : (t - leadSec) / travelWindow;
+        const ratioX = startRatio + (targetRatio - startRatio) * progress;
+        const ratioY = startYRatio + (targetYRatio - startYRatio) * progress;
+        this.sendBounds(ratioX * W - this.halfW, ratioY * H - this.halfH);
+        if (t < duration - tailSec) {
+          this.moveRef = requestAnimationFrame(step);
+        } else {
+          this.moveRef = null;
+          this.customPos = { rx: targetRatio, ry: targetYRatio };
+        }
+      };
+      this.moveRef = requestAnimationFrame(step);
+    };
+    const tryReserve = async (candidate) => {
+      if (this.moveToken !== token) return;
+      if (!candidate) {
+        abandonMove('没有可用路线');
+        return;
+      }
+      let result = null;
+      try {
+        result = await reserve(candidate);
+        if (this.moveToken !== token) {
+          if (result?.reservationId) window.petBridge?.releaseMove?.(result.reservationId);
+          return;
+        }
+        if (result?.ok) {
+          beginDrive(candidate, result.reservationId || null);
+          return;
+        }
+      } catch (error) {
+        console.warn('[dsh-pet] 移动路线仲裁失败，稍后重试:', String(error?.message || error));
+      }
+      const elapsed = performance.now() - waitStartedAt;
+      if (elapsed >= 3000) {
+        abandonMove('等待路线超过 3 秒');
+        return;
+      }
+      const serverDelay = Number(result?.retryAfterMs) || 240;
+      const backoff = Math.min(700, serverDelay + retries * 90);
+      const delay = Math.round(backoff + Math.random() * 220);
+      retries += 1;
+      window.setTimeout(() => {
+        if (this.moveToken !== token) return;
+        const nextMode = pm.lockAnimation || retries % 2 === 1 ? 'vertical' : 'horizontal';
+        const nextDir = candidate.dir > 0 ? -1 : 1;
+        let next = this.planMoveCandidate(pm.moveParams, nextDir, nextMode);
+        if (!next && !pm.lockAnimation)
+          next = this.planMoveCandidate(pm.moveParams, nextDir, nextMode === 'vertical' ? 'horizontal' : 'vertical');
+        if (!next && !pm.lockAnimation) next = this.planMoveCandidate(pm.moveParams, -nextDir, 'any');
+        if (!next) next = candidate;
+        next.animationName = pm.lockAnimation
+          ? pm.animationName
+          : next.isVertical && this.animations.drag.length
+            ? S.pick(this.animations.drag)
+            : pm.moveActionName;
+        const nextUsesDragAnimation = this.animations.drag.includes(next.animationName);
+        next.leadSec = nextUsesDragAnimation ? Math.min(pm.leadSec, duration * 0.15) : pm.leadSec;
+        next.tailSec = nextUsesDragAnimation ? Math.min(pm.tailSec, duration * 0.15) : pm.tailSec;
+        if (next.animationName !== moveName) {
+          // The route family changed (vertical <-> horizontal): load its matching animation, then
+          // continue arbitration with the original 3-second deadline and retry count.
+          this.stopMove();
+          this.pendingMove = {
+            ...next,
+            leadSec: pm.leadSec,
+            tailSec: pm.tailSec,
+            moveParams: pm.moveParams,
+            moveActionName: pm.moveActionName,
+            lockAnimation: pm.lockAnimation,
+            animationName: next.animationName,
+            previousAnimation: pm.previousAnimation,
+            arbitrationStartedAt: waitStartedAt,
+            retries,
+          };
+          this.anim = next.animationName;
+          this.once = true;
+          this.switchTo(next.animationName, true);
+          return;
+        }
+        tryReserve(next);
+      }, delay);
+    };
+    const abandonMove = (reason) => {
+      if (this.moveToken !== token) return;
+      console.info('[dsh-pet] ' + reason + '，放弃本次移动并恢复动作循环');
+      this.stopMove();
+      const fallback = S.pick(this.animations.idle, moveName) || this.animations.idle[0];
+      if (fallback) this.playOnce(fallback);
+      else this.playIdle();
+    };
+    const waitStartedAt = pm.arbitrationStartedAt || performance.now();
+    let retries = Number(pm.retries) || 0;
+    // Keep a non-movement animation visible while routes are arbitrated.
+    this.moveWaiting = true;
+    tryReserve(movePlan);
   }
 
   stopMove() {
     this.pendingMove = null;
     this.moveToken++;
+    if (this.moveWaitState) {
+      this.moveWaitState.moveEl.loop = false;
+      this.moveWaitState.moveEl.onended = null;
+      if (this.moveWaitState.waitReadyHandler) {
+        this.moveWaitState.waitEl.removeEventListener('loadeddata', this.moveWaitState.waitReadyHandler);
+      }
+      this.moveWaitState.waitEl.onerror = null;
+      this.moveWaitState.waitEl.loop = false;
+      this.moveWaitState.waitEl.onended = null;
+      this.moveWaitState = null;
+    } else if (this.moveWaiting) {
+      const el = this.front === 0 ? this.videoA : this.videoB;
+      if (el) el.loop = false;
+      this.moveWaiting = false;
+    }
+    this.moveWaiting = false;
+    if (this.moveReservationId) {
+      window.petBridge?.releaseMove?.(this.moveReservationId);
+      this.moveReservationId = null;
+    }
     if (this.moveRef !== null) {
       cancelAnimationFrame(this.moveRef);
       this.moveRef = null;
@@ -634,7 +1039,7 @@ class PetSprite {
     this.dragVel = { vx: 0, vy: 0 };
   }
 
-  /** rAF 弹簧跟随：窗口朝拖拽目标过阻尼追赶（不再硬贴指针），抹平高频抖动 */
+  /** rAF 跟随拖拽目标：避免弹簧追赶在原生小窗口移动之外再叠加一层可见滞后。 */
   startDragFollow() {
     if (this.dragFollow !== null) return;
     const token = ++this.dragFollowToken;
@@ -650,12 +1055,10 @@ class PetSprite {
       const dt = Math.min((now - last) / 1000, 1 / 30);
       last = now;
       const vel = this.dragVel;
-      let x = this.pos.x;
-      let y = this.pos.y;
-      vel.vx = S.springStep(vel.vx, x, target.x, dt, this.physics.throwPower);
-      vel.vy = S.springStep(vel.vy, y, target.y, dt, this.physics.throwPower);
-      x += vel.vx * dt;
-      y += vel.vy * dt;
+      const x = target.x;
+      const y = target.y;
+      vel.vx = dt > 0 ? (x - this.pos.x) / dt : 0;
+      vel.vy = dt > 0 ? (y - this.pos.y) / dt : 0;
       this.sendBounds(x, y); // 移动的是窗口（this.pos 实时更新）；sprite 在本窗口内不动
       this.dragFollow = requestAnimationFrame(step);
     };
@@ -683,14 +1086,50 @@ class PetSprite {
     // 锁定屏在抛掷开始时定下、飞行途中不重取；relayout 改了屏数时由 throwStepRegion 退回不锁定。
     const lockScreen = this.confineToScreen ? S.screenOfBox(this.throwSpaceOf(), px, py) : -1;
     const token = ++this.throwToken;
+    console.info(
+      '[dsh-pet] throw start pet=' +
+        this.pet.id +
+        ' at (' +
+        Math.round(px) +
+        ',' +
+        Math.round(py) +
+        ') velocity=(' +
+        Math.round(vx) +
+        ',' +
+        Math.round(vy) +
+        ')',
+    );
     let state = { x: px, y: py, vx, vy };
     let last = performance.now();
+    let lastVideoProgressAt = last;
+    let lastVideoTime = (this.front === 0 ? this.videoA : this.videoB)?.currentTime || 0;
+    let lastVideoEl = this.front === 0 ? this.videoA : this.videoB;
     let prevGrounded = false; // 落地 Q 弹：只在空中→地面转换帧触发一次
     const step = () => {
       if (this.throwToken !== token) return;
       const now = performance.now();
       const dt = (now - last) / 1000;
       last = now;
+      const frontVideo = this.front === 0 ? this.videoA : this.videoB;
+      if (frontVideo !== lastVideoEl) {
+        lastVideoEl = frontVideo;
+        lastVideoTime = frontVideo?.currentTime || 0;
+        lastVideoProgressAt = now;
+      } else if (frontVideo && !frontVideo.paused && !frontVideo.ended) {
+        const videoTime = frontVideo.currentTime || 0;
+        if (videoTime > lastVideoTime + 0.015 || (frontVideo.loop && videoTime < lastVideoTime - 0.1)) {
+          lastVideoTime = videoTime;
+          lastVideoProgressAt = now;
+        } else if (now - lastVideoProgressAt > 900) {
+          console.warn('[dsh-pet] animation stalled during throw; restarting current clip pet=' + this.pet.id);
+          try {
+            frontVideo.currentTime = 0;
+          } catch {}
+          frontVideo.play().catch(() => {});
+          lastVideoTime = 0;
+          lastVideoProgressAt = now;
+        }
+      }
       const fallingVy = state.vy; // 本帧积分前的竖直速度（正=下落）：即落地冲击速度
       // 每帧重取：显示器变化时 relayout() 会让缓存失效，res.screen 必须与这一份对应
       const sp = this.throwSpaceOf();
@@ -700,7 +1139,7 @@ class PetSprite {
       // 上报飞行状态（节流 ~30ms）：主进程 broker 汇聚后广播，其它窗口用它做跨窗碰撞检测；
       // broker 协议单位 = 物理像素，这里 ×scale（§3.5 收口）
       if (window.petBridge && window.petBridge.reportFlight && now - this.lastFlightReport > 30) {
-        window.petBridge.reportFlight({
+        window.petBridge.reportFlight(this.pet.id, {
           x: toScreen(state.x),
           y: toScreen(state.y),
           vx: toScreen(state.vx),
@@ -713,20 +1152,46 @@ class PetSprite {
       // 宠物间碰撞（仅 petCollision 开启）：飞行中的自己撞到其它宠物 → 动量弹开
       if (this.physics && this.physics.petCollision) {
         const myBody = S.bodyPixelBox({ x: state.x, y: state.y, size: this.size, bottomPad: this.bottomPad });
-        for (const pid of Object.keys(this.others)) {
-          const o = this.others[pid];
+        // The main-process broker broadcasts at most once per 16 ms. In single-overlay mode all
+        // sprites share this renderer, so use their same-frame positions before consulting that
+        // delayed fallback; this avoids colliding with where another pet was a frame ago.
+        const peerStates =
+          CONFIG.overlay && window.__dshPetLiveStates instanceof Map
+            ? [...window.__dshPetLiveStates.entries()]
+            : Object.entries(this.others);
+        for (const [pid, o] of peerStates) {
+          if (pid === this.pet.id) continue;
           if (!o || !o.size) continue;
-          const otherBody = S.bodyPixelBox({ x: o.x, y: o.y, size: o.size, bottomPad: o.bottomPad });
+          const age = Number.isFinite(o.updatedAt) ? Math.min(0.05, Math.max(0, (Date.now() - o.updatedAt) / 1000)) : 0;
+          const peer = {
+            ...o,
+            x: o.x + (o.vx || 0) * age,
+            y: o.y + (o.vy || 0) * age,
+          };
+          const otherBody = S.bodyPixelBox({ x: peer.x, y: peer.y, size: peer.size, bottomPad: peer.bottomPad });
           if (!S.rectsOverlap(myBody, otherBody)) continue;
           const hit = S.collidePet(
             { x: state.x, y: state.y, vx: state.vx, vy: state.vy, size: this.size },
-            { x: o.x, y: o.y, vx: o.vx, vy: o.vy, size: o.size },
+            { x: peer.x, y: peer.y, vx: peer.vx || 0, vy: peer.vy || 0, size: peer.size },
           );
           if (hit) {
             // 飞行方：按动量结果继续弹开；被撞方：主进程转发给目标窗口 → 目标窗 startThrow
             state.vx = hit.fvx;
             state.vy = hit.fvy;
             this.throwState = state;
+            console.info(
+              '[dsh-pet] pet collision ' +
+                this.pet.id +
+                ' -> ' +
+                pid +
+                ' at (' +
+                Math.round(state.x) +
+                ',' +
+                Math.round(state.y) +
+                ') peerAge=' +
+                Math.round(age * 1000) +
+                'ms',
+            );
             if (window.petBridge && window.petBridge.reportCollide) {
               // 被撞方初速同为 broker 物理像素协议：×scale（§3.5 收口）
               window.petBridge.reportCollide(pid, toScreen(hit.hvx), toScreen(hit.hvy));
@@ -750,11 +1215,32 @@ class PetSprite {
         this.throwState = null;
         this.customPos = { rx: (this.pos.x + this.halfW) / VIEW.w, ry: (this.pos.y + this.halfH) / VIEW.h };
         window.__dshPetDebug.lastDragRelease = { x: this.pos.x, y: this.pos.y };
+        console.info(
+          '[dsh-pet] throw end pet=' +
+            this.pet.id +
+            ' at (' +
+            Math.round(this.pos.x) +
+            ',' +
+            Math.round(this.pos.y) +
+            ')',
+        );
+        this.recoverAnimationAfterThrow();
         return;
       }
       this.throwRef = requestAnimationFrame(step);
     };
     this.throwRef = requestAnimationFrame(step);
+  }
+
+  recoverAnimationAfterThrow() {
+    if (this.dragState.active) return;
+    const frontVideo = this.front === 0 ? this.videoA : this.videoB;
+    const needsResume =
+      !frontVideo || frontVideo.paused || frontVideo.ended || (!frontVideo.loop && !frontVideo.onended);
+    if (!needsResume) return;
+    if (this.resumeWorkStatusAnim()) return;
+    console.warn('[dsh-pet] resuming animation after throw pet=' + this.pet.id);
+    this.playIdle();
   }
 
   /** 被撞回调（跨窗碰撞 broker 转发）：停当前动作，从落点以新初速抛出去（全复用现有物理） */
@@ -922,12 +1408,16 @@ class PetSprite {
     // 来找上报调用，插到它前面会把上报挤出窗口（该断言守的是"松手必上报，否则窗口粘在可交互"）。
     if (e && Number.isFinite(e.clientX)) {
       const r = this.hitRect;
-      const px = e.clientX - this.margin.l;
-      const py = e.clientY - this.margin.t;
+      const windowX = CONFIG.overlay ? this.pos.x : 0;
+      const windowY = CONFIG.overlay ? this.pos.y : 0;
+      const wx = e.clientX - windowX;
+      const wy = e.clientY - windowY;
+      const px = CONFIG.overlay ? wx : wx - this.margin.l;
+      const py = CONFIG.overlay ? wy : wy - this.margin.t;
       // 先按松手位置更新光标再摆位/显示，否则会重现拖拽前的位置（与浏览器 placeTip 同一处理）
       this.tipCursor = {
-        x: this.pos.x - this.margin.l + e.clientX,
-        y: this.pos.y - this.margin.t + e.clientY,
+        x: CONFIG.overlay ? e.clientX : this.pos.x - this.margin.l + e.clientX,
+        y: CONFIG.overlay ? e.clientY : this.pos.y - this.margin.t + e.clientY,
       };
       this.setTip(px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h);
     }
@@ -1011,13 +1501,13 @@ class PetSprite {
     if (busy === this._inputBusy) return;
     this._inputBusy = busy;
     window.__dshPetDebug.inputBusy = busy;
-    if (window.petBridge) window.petBridge.setInputBusy(busy);
+    if (window.petBridge) window.petBridge.setInputBusy(this.pet.id, busy);
   }
 
   syncInputRegions() {
     if (!window.petBridge || !window.petBridge.setInputRegions) return;
     const rects = [];
-    const controls = [...document.querySelectorAll('.dsh-pet-menu-column, .dsh-pet-chat')];
+    const controls = [...document.querySelectorAll('.dsh-pet-menu-column, .dsh-pet-chat, .pet-error.visible')];
     for (const el of this.inputRegionElements) {
       if (!controls.includes(el)) {
         this.inputRegionResize.unobserve(el);
@@ -1034,19 +1524,38 @@ class PetSprite {
         rects.push({ x: toScreen(r.x), y: toScreen(r.y), width: toScreen(r.width), height: toScreen(r.height) });
       }
     }
-    const input = { dragging: this.dragState.active, rects };
+    const body = this.hit.getBoundingClientRect();
+    const bodyRects =
+      body.width > 0 && body.height > 0
+        ? [{ x: toScreen(body.x), y: toScreen(body.y), width: toScreen(body.width), height: toScreen(body.height) }]
+        : [];
+    const input = { dragging: this.dragState.active, bodyRects, rects };
     const key = JSON.stringify(input);
     if (key === this._inputRegions) return;
     this._inputRegions = key;
-    window.petBridge.setInputRegions(input);
+    window.petBridge.setInputRegions(this.pet.id, input);
   }
 
   setInteractive(flag) {
     const next = !!flag;
     if (next === this._interactive) return; // 只在状态变化时发 IPC，避免逐帧刷屏
     this._interactive = next;
+    this.pointerOnBody = next;
     window.__dshPetDebug.interactive = next;
-    if (window.petBridge) window.petBridge.setInteractive(next);
+    if (!window.petBridge) return;
+    if (!CONFIG.overlay) {
+      window.petBridge.setInteractive(next);
+      return;
+    }
+    if (overlayInteractiveUpdatePending) return;
+    overlayInteractiveUpdatePending = true;
+    queueMicrotask(() => {
+      overlayInteractiveUpdatePending = false;
+      const aggregate = sprites.some(
+        (sprite) => sprite.pointerOnBody || sprite.dragState.active || sprite.menuOpen || sprite.chatOpen,
+      );
+      window.petBridge?.setInteractive(aggregate);
+    });
   }
 
   /**
@@ -1076,10 +1585,10 @@ class PetSprite {
     if (this.tip.textContent !== this.pet.name) this.tip.textContent = this.pet.name;
     const cursor = this.tipCursor;
     if (cursor) {
-      const winX = this.pos.x - this.margin.l;
-      const winY = this.pos.y - this.margin.t;
-      const winW = this.size + this.margin.l + this.margin.r;
-      const winH = this.winH + this.margin.t + this.margin.b;
+      const winX = CONFIG.overlay ? this.pos.x : this.pos.x - this.margin.l;
+      const winY = CONFIG.overlay ? this.pos.y : this.pos.y - this.margin.t;
+      const winW = CONFIG.overlay ? this.size : this.size + this.margin.l + this.margin.r;
+      const winH = CONFIG.overlay ? this.winH : this.winH + this.margin.t + this.margin.b;
       // 允许显示范围 = 窗口 ∩ 光标所在屏的工作区，两者必须取交集：
       // 只按窗口夹，窗口能贴到屏幕外，提示会被画到看不见的地方；只按工作区夹，提示会落到窗口外
       // （index.html 的 html,body 是 overflow:hidden，一样看不见）。
@@ -1124,14 +1633,25 @@ class PetSprite {
     // forwarded 事件坐标以窗口为原点（与页坐标一致）；转换到 sprite 坐标需扣减窗口余量；
     // 异常时退回屏幕坐标 − 窗口屏幕位置推导（hitRect/pos 均为 CSS 系）：屏幕坐标 ÷scale 后
     // 减去窗口屏幕原点（CSS 系）即窗口内坐标
-    const wx = Number.isFinite(e.clientX) ? e.clientX : toLocal(e.screenX) - (this.pos.x + VIEW.x - this.margin.l);
-    const wy = Number.isFinite(e.clientY) ? e.clientY : toLocal(e.screenY) - (this.pos.y + VIEW.y - this.margin.t);
-    const px = wx - this.margin.l;
-    const py = wy - this.margin.t;
+    const wx = CONFIG.overlay
+      ? e.clientX - this.pos.x
+      : Number.isFinite(e.clientX)
+        ? e.clientX
+        : toLocal(e.screenX) - (this.pos.x + VIEW.x - this.margin.l);
+    const wy = CONFIG.overlay
+      ? e.clientY - this.pos.y
+      : Number.isFinite(e.clientY)
+        ? e.clientY
+        : toLocal(e.screenY) - (this.pos.y + VIEW.y - this.margin.t);
+    const px = CONFIG.overlay ? wx : wx - this.margin.l;
+    const py = CONFIG.overlay ? wy : wy - this.margin.t;
     const inBody = px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
     // 光标位置存**视口坐标**（窗口原点 + 窗口内坐标）：窗口随宠物移动时贴光标不会漂，见 renderTip。
     // 必须在 setTip 之前更新：setTip 变显隐时会立刻渲染一次，晚一步就会用上一次的光标摆位。
-    if (inBody) this.tipCursor = { x: this.pos.x - this.margin.l + wx, y: this.pos.y - this.margin.t + wy };
+    if (inBody)
+      this.tipCursor = CONFIG.overlay
+        ? { x: e.clientX, y: e.clientY }
+        : { x: this.pos.x - this.margin.l + wx, y: this.pos.y - this.margin.t + wy };
     this.setInteractive(inBody);
     // 悬浮提示与可交互判定同源（同一个 inBody）：光标进身体 → 提示出现，离开 → 收起
     this.setTip(inBody);
@@ -1169,6 +1689,7 @@ class PetSprite {
     // 不属于任何显示器的区域（看不见）；菜单本来也不该跨屏显示。
     const area = S.resolveRect(WORK_AREAS, this.pos.x + this.halfW, this.pos.y + this.halfH);
     if (!area) return null;
+    if (CONFIG.overlay) return { x: area.x, y: area.y, w: area.width, h: area.height };
     const winX = this.pos.x + VIEW.x - this.margin.l;
     const winY = this.pos.y + VIEW.y - this.margin.t;
     const winW = this.size + this.margin.l + this.margin.r;
@@ -1191,12 +1712,12 @@ class PetSprite {
     e.preventDefault();
     this.stopThrow(); // 菜单弹出前停住飞行中的宠物
     this.stopMove(); // 菜单悬停期间宠物不漫游
-    // 桌面专属工具根项（打开网站 / 查看余额 / 碎碎念 / 对话 / 回到初始位置 / 重载配置）+ 共享菜单树（动作→分类→具体动画）
+    // 桌面专属工具根项（打开网站 / 查看余额 / 碎碎念 / 对话 / 回到初始位置）+ 共享菜单树（动作→分类→具体动画）
     // 碎碎念/对话项无条件显示：手动触发不受 whisperEnabled 限制（该字段只影响自动周期轮询）
     // 首项文案随宿主形态变（OPEN_TARGET）：宿主是 DSH 桌面应用时点是"唤起桌面应用窗口"，仍叫「打开网站」会误导
-    const tools = [{ label: OPEN_TARGET === 'desktop' ? '打开 DeepSeek Harness' : '打开网站', action: 'open-site' }];
-    // 「查看余额」无条件显示（与浏览器端一致）：关了 balanceEnabled 的宠物也能点——手动请求不受开关限制
-    //（该开关只关自动轮询与档位动画），点了一定给答复。
+    const tools = STANDALONE
+      ? []
+      : [{ label: OPEN_TARGET === 'desktop' ? '打开 DeepSeek Harness' : '打开网站', action: 'open-site' }];
     tools.push({ label: '查看余额', action: 'show-balance' });
     tools.push(
       { label: '碎碎念', action: 'whisper' },
@@ -1206,12 +1727,15 @@ class PetSprite {
       // 与浏览器端注入的是**同一份**子菜单（shared 的 displayMenuBranch），两端文案/取值不会漂移。
       // 为什么不就地关窗/开窗：桌面宠物共用一个 Electron 进程，窗口是进程启动时按 DSH_PET_PETS
       // 一次性建的——就地增删窗口既改不了磁盘配置（下次启动又回来）也改不了窗口数量。
-      S.displayMenuBranch(),
-      // 改配置文件后免去回设置页点保存：请宿主重启桌面 Helper（全部桌面宠物窗口按最新配置重建）。
-      // 放在最后：它是"重新加载"这类维护动作，与上面几个宠物互动项语义不同。
-      { label: '重载配置', action: 'reload' },
+      S.displayMenuBranch({ standalone: STANDALONE }),
     );
     const tree = tools.concat(S.buildMenuTree(this.animations));
+    // 维护操作固定放在「动作」分支之后，退出项只存在于独立版。
+    tree.push({ label: '重载配置', action: 'reload' });
+    if (STANDALONE) {
+      tree.push({ label: '打开桌宠设置', action: 'open-settings' });
+      tree.push({ label: '退出桌宠', action: 'quit-app' });
+    }
     if (!tree.length) return;
     this.menuOpen = true;
     this.setInteractive(true); // 菜单是窗口内 DOM：悬停期间整窗保持可交互，关闭后恢复命中区穿透
@@ -1239,6 +1763,14 @@ class PetSprite {
   onMenuAction(leaf) {
     this.closeMenu();
     if (!leaf || typeof leaf !== 'object') return;
+    if (leaf.action === 'open-settings') {
+      if (window.petBridge) window.petBridge.openSettings();
+      return;
+    }
+    if (leaf.action === 'quit-app') {
+      if (window.petBridge) window.petBridge.quitApp();
+      return;
+    }
     if (leaf.action === 'open-site') {
       if (window.petBridge) window.petBridge.openDshSite(ORIGIN); // 系统默认浏览器打开（等效 Ctrl+点击链接）
       return;
@@ -1274,7 +1806,10 @@ class PetSprite {
     }
     // 点播移动动画：走真实移动（与随机游走同一套：边界检查 / 随机距离 / leadSec·tailSec / dir），
     // 仅"选哪个动画"由菜单决定；挪不动（false）退化纯播放
-    if (this.animations.moves.actions.some((a) => a.name === leaf.anim)) {
+    if (
+      this.animations.moves.actions.some((a) => a.name === leaf.anim) ||
+      this.animations.drag.includes(leaf.anim)
+    ) {
       if (this.tryMove(leaf.anim) === false) this.playOnce(leaf.anim);
       return;
     }
@@ -1298,7 +1833,7 @@ class PetSprite {
   // **不做 balanceEnabled 门控**（菜单项也无条件显示）：手动请求不受开关限制——开关只关自动轮询与档位动画，
   // 关掉余额的宠物被点一次菜单也该看到数据（与浏览器端一致）。
   showBalanceFromMenu() {
-    S.postAction(BALANCE_URL)
+    S.postAction(BALANCE_URL + '?pet=' + encodeURIComponent(this.pet.id))
       .then((ok) => {
         if (!ok) console.warn('[dsh-pet] 菜单查看余额：刷新动作未成功');
         pollStateNow(); // 立即拉一拍：结果 0 延迟可见（失败也会由 /state 里的 ok:false 弹文字说明）
@@ -1371,8 +1906,8 @@ class PetSprite {
 
   // 「重载配置」菜单：请宿主重启桌面 Helper —— 与设置页「保存」**同一条**重启路径
   // （宿主 POST /reload → syncDesktop：串行队列 + 等旧进程真正退出再起新的）。
-  // 为什么不在渲染端就地重拉配置：① 每只宠物一个窗口是宿主按 DSH_PET_PETS 建的，
-  // 就地重拉改不了宠物数量/display/size；② 本页的余额/工作状态等全局轮询是一次性启动的
+  // 为什么不在渲染端就地重拉配置：① 宠物列表由宿主按 DSH_PET_PETS 创建，
+  // 就地重拉改不了进程启动参数和宠物集合；② 本页的余额/工作状态等全局轮询是一次性启动的
   // （events.js 的 loopsStarted 门控），就地重建 sprite 会漏启新循环或留下旧定时器。
   // 本请求由**即将被重启的这个进程**发出：响应可能永远不回（宿主杀进程时回调地址已失效），
   // 故不 await、不重试，失败只记日志——重载本身就是把本进程换掉。
@@ -1415,18 +1950,20 @@ class PetSprite {
     const slot =
       workTerminal && workOn ? 'work' : whisperOn ? 'whisper' : balanceOn ? 'balance' : workOn ? 'work' : 'none';
     const whisperImg = slot === 'whisper' ? S.createMemeImage(this.whisperImage, BASE, this.assetRoot) : null;
+    if (slot === 'none') {
+      // 三者都没有可显示的内容：隐藏（不占位，也就不会挡住任何一层）。保留当前尺寸/配图样式，
+      // 直到 opacity 淡出结束；否则工作/碎碎念气泡会在淡出瞬间移除 is-whisper，字号立刻放大。
+      this.bubble.classList.remove('is-on');
+      window.__dshPetDebug.lastBubbleTitle = '';
+      return;
+    }
+    // 仅在有新气泡要显示时切换样式；隐藏期间保留旧样式，避免淡出时字号或配图布局跳变。
     this.bubble.classList.toggle(
       'is-whisper',
       // 余额「文字说明」（不可用状态）同样套用紧凑变体：字号更小、宽度下限更窄，多行说明更紧凑
       slot === 'whisper' || slot === 'work' || (slot === 'balance' && this.balanceWrap),
     );
     this.bubble.classList.toggle(S.MEME_BUBBLE_CLASS, !!whisperImg);
-    if (slot === 'none') {
-      // 三者都没有可显示的内容：隐藏（不占位，也就不会挡住任何一层）
-      this.bubble.classList.remove('is-on');
-      window.__dshPetDebug.lastBubbleTitle = '';
-      return;
-    }
     this.bubble.innerHTML = '';
     if (slot === 'work') {
       const line = document.createElement('div');

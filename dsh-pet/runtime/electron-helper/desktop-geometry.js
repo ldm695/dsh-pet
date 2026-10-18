@@ -1,4 +1,4 @@
-/** Desktop motion may enter the macOS menu-bar strip; menus must stay in the work area. */
+/** Pet motion uses platform-specific screen bounds; menus must stay inside the work area. */
 'use strict';
 
 const { HIT_BOX, STAGE_W, CANVAS_H, FEET_Y } = require('./pointer-target.js');
@@ -6,10 +6,16 @@ const { HIT_BOX, STAGE_W, CANVAS_H, FEET_Y } = require('./pointer-target.js');
 function buildDeskGeometry(displays, primaryId, platform) {
   const workAreas = displays.map((d) => ({ ...d.workArea }));
   const panels = displays.map((d) => ({ ...d.bounds }));
-  const areas = workAreas.map((a, i) => {
-    if (platform !== 'darwin') return { ...a };
+  const areas = displays.map((d, i) => {
+    if (platform === 'win32') {
+      // The shared transparent window and pet physics must use the complete physical panel.
+      // Using workArea here offsets/shrinks the overlay when the taskbar is docked at the top
+      // or bottom. Menus and other UI still use workAreas, which are passed separately.
+      return { ...panels[i] };
+    }
+    if (platform !== 'darwin') return { ...workAreas[i] };
     // Keep the Dock exclusion at the bottom/sides, but let the visible head reach the panel top.
-    return { ...a, y: panels[i].y, height: a.y + a.height - panels[i].y };
+    return { ...workAreas[i], y: panels[i].y, height: workAreas[i].y + workAreas[i].height - panels[i].y };
   });
   const x = Math.min(...areas.map((a) => a.x));
   const y = Math.min(...areas.map((a) => a.y));

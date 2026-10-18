@@ -1,10 +1,8 @@
 /**
  * `@deepseek-ai/dsh-llm` 的独立模式替身（消息工厂 / 文本块拼装 / reasoning 标识）。
  *
- * 独立模式没有模型后端。`ctx.llm` 的替身（见 ../context.ts）让**没有显式配置模型**的调用在
- * 候选链阶段就失败：`agentDefaultModel.currentSelection()` 返回的 model 为空 →
- * `model-selection.ts` 的 `currentModel()` 判定为「未配置」→ `generateWhisper` / `generateChat`
- * 直接回 `{ ok: false, reason: 'provider-missing' }`。
+ * 独立模式不加载 DSH 的 LLM 包，但会在 context.ts 里将最终请求转给 DeepSeek API。
+ * 这里提供调用方依赖的消息工厂和文本块拼装器，避免独立构建加载 DSH 运行时。
  *
  * **但这不是结构性保证。** 用户在配置里显式写了 `whisperModel` / `chatModel`（设置页选过模型
  * 就会写进配置）时，候选链非空，生成侧会真的走到本文件的消息构造与 `ctx.llm.stream`。
@@ -12,9 +10,7 @@
  * `stream` 被当成"永远不走的那条路"，实现成返回 Promise 而契约要求 AsyncIterable
  * （细节见 ../context.ts 里 stream / resolveModelInfo 的注释）。
  *
- * 那为什么还要实现它们：`whisper.ts` / `chat.ts` 是**静态 import** 这四个名字的，
- * 模块图能加载是独立模式起得来的前提；同时保持它们是纯本地、零网络的实现，
- * 将来若有人给独立模式接上模型通道（例如自带 API key），这条路径可以照常工作。
+ * `whisper.ts` / `chat.ts` 静态导入这些名字；模块图能加载是独立模式起得来的前提。
  *
  * 只在独立模式构建里生效：`tsdown.config.mjs` 用 alias 把该包名指向本文件。
  */
@@ -44,7 +40,6 @@ export interface StandaloneTextBlock {
 
 /**
  * 流式文本拼装：只收集文本块（与调用方 `blocks().filter(b => b.type === 'text')` 的用法一致）。
- * 独立模式只会拿到空流（没有模型后端），这里保持最小可用实现。
  */
 export class BlockAssembler {
   private readonly chunks: string[] = [];

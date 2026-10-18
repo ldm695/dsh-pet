@@ -403,6 +403,8 @@ function topFieldValid(key: string, value: unknown): boolean {
       return typeof value === 'boolean';
     case 'confineToScreen':
       return typeof value === 'boolean';
+    case 'petDisplayPriority':
+      return value === 'always-on-top' || value === 'hide-on-fullscreen' || value === 'normal';
     case 'animations':
       return animationsValid(value);
     case 'animationWeights':
@@ -654,7 +656,7 @@ export function findPetInstance(
 
 /**
  * 保存用户层（PUT /config）：更新 main-config.jsonc，接受可编辑字段（pets + 全局开关：
- * notificationsEnabled / whisperImageEnabled / chatImageEnabled / confineToScreen + physics
+ * notificationsEnabled / whisperImageEnabled / chatImageEnabled / confineToScreen / petDisplayPriority + physics
  * + whisperModel / chatModel + chatMemoryRounds + chatImageLimit）。
  * 编辑语义：**非白名单顶层字段（whisperPrompt / eventsRefreshSec / memes 等）从
  * `existing`（当前磁盘上的用户文件原对象）原样透传保留**——
@@ -722,6 +724,8 @@ export function saveUserConfig(
   if (cie !== undefined && typeof cie !== 'boolean') return null;
   const cts = o.confineToScreen;
   if (cts !== undefined && typeof cts !== 'boolean') return null;
+  const pdp = o.petDisplayPriority;
+  if (pdp !== undefined && !topFieldValid('petDisplayPriority', pdp)) return null;
   // physics（拖拽抛掷手感，设置页「物理」区可图形化编辑）：整段校验——physicsValid 与读取侧
   // 是同一份规则（gravity/groundFriction ≥ 0、restitution ∈ [0,1]、throwPower > 0、两个布尔）。
   // 传了就按白名单写入；没传则走下面的透传保留（用户手改的值原样不动）。
@@ -759,6 +763,7 @@ export function saveUserConfig(
   if (wie !== undefined) outConfig.whisperImageEnabled = wie;
   if (cie !== undefined) outConfig.chatImageEnabled = cie;
   if (cts !== undefined) outConfig.confineToScreen = cts;
+  if (pdp !== undefined) outConfig.petDisplayPriority = pdp;
   if (ph !== undefined) outConfig.physics = ph;
   if (fo !== undefined) outConfig.font = fo;
   if (wm !== undefined) outConfig.whisperModel = cleanModel(wm as Record<string, unknown>);
@@ -775,6 +780,7 @@ export function saveUserConfig(
   if (wie !== undefined) bodyOwned.add('whisperImageEnabled');
   if (cie !== undefined) bodyOwned.add('chatImageEnabled');
   if (cts !== undefined) bodyOwned.add('confineToScreen');
+  if (pdp !== undefined) bodyOwned.add('petDisplayPriority');
   if (ph !== undefined) bodyOwned.add('physics');
   if (fo !== undefined) bodyOwned.add('font');
   if (wm !== undefined) bodyOwned.add('whisperModel');

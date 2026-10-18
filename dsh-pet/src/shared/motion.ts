@@ -10,6 +10,7 @@ export interface MovePlan {
   startRatio: number;
   startYRatio: number;
   targetRatio: number;
+  targetYRatio: number;
   totalRatio: number;
 }
 
@@ -30,31 +31,78 @@ export const planMove = (o: {
   maxDist: number;
   margin: number;
   halfW: number;
+  halfH?: number;
+  /** 随机游走方向相对水平线的角度（度）；缺省 0 保留旧的纯水平几何行为 */
+  angleDegrees?: number;
+  /** 垂直方向：-1 向上，1 向下 */
+  verticalDir?: 1 | -1;
   /** 可选：身体相对视频盒左/右各留多少像素（默认 0 = 旧行为，按视频盒贴边） */
   sideAllow?: number;
   /** 可选：显示器工作区列表（与 cx/cy 同坐标系）。给了就按并集判定落点可达性 */
   areas?: Rect[];
 }): MovePlan | null => {
   const side = o.sideAllow ?? 0;
+  const halfH = o.halfH ?? (o.halfW * 9) / 16;
   const distance = randomBetween(o.minDist, o.maxDist);
-  const target = o.cx + o.dir * distance;
-  if (o.areas && o.areas.length > 0) {
-    // 身体左右缘各外扩 margin 后都得落在某块屏上（可以分属不同屏 = 允许骑缝行走）
-    const bodyHalf = o.halfW - side;
-    if (!rectAtPoint(o.areas, target - bodyHalf - o.margin, o.cy)) return null;
-    if (!rectAtPoint(o.areas, target + bodyHalf + o.margin, o.cy)) return null;
-  } else {
-    // margin 语义 =「身体到屏幕边缘的安全距」：盒中心可到 margin + halfW - side（身体左缘 = margin）
+  const angle = (Math.max(0, Math.min(90, o.angleDegrees ?? 0)) * Math.PI) / 180;
+  const primaryVerticalDir = o.verticalDir ?? 1;
+  const bodyHalf = o.halfW - side;
+
+  const isReachable = (targetX: number, targetY: number): boolean => {
+    if (o.areas && o.areas.length > 0) {
+      // 身体四边外扩 margin 后都得落在某块屏上；两侧可分属不同屏 = 允许骑缝行走。
+      return (
+        rectAtPoint(o.areas, targetX - bodyHalf - o.margin, targetY) !== null &&
+        rectAtPoint(o.areas, targetX + bodyHalf + o.margin, targetY) !== null &&
+        rectAtPoint(o.areas, targetX, targetY - halfH - o.margin) !== null &&
+        rectAtPoint(o.areas, targetX, targetY + halfH + o.margin) !== null
+      );
+    }
+    // margin 语义 =「身体到视口边缘的安全距」。
     const leftBound = o.margin + o.halfW - side;
     const rightBound = o.W - o.margin - o.halfW + side;
-    if (target < leftBound || target > rightBound) return null;
-  }
-  return {
-    startRatio: o.cx / o.W,
-    startYRatio: o.cy / o.H,
-    targetRatio: target / o.W,
-    totalRatio: Math.abs(target - o.cx) / o.W,
+    const topBound = o.margin + halfH;
+    const bottomBound = o.H - o.margin - halfH;
+    return targetX >= leftBound && targetX <= rightBound && targetY >= topBound && targetY <= bottomBound;
   };
+  const isHorizontallyReachable = (targetX: number): boolean => {
+    if (o.areas && o.areas.length > 0) {
+      return (
+        rectAtPoint(o.areas, targetX - bodyHalf - o.margin, o.cy) !== null &&
+        rectAtPoint(o.areas, targetX + bodyHalf + o.margin, o.cy) !== null
+      );
+    }
+    const leftBound = o.margin + o.halfW - side;
+    const rightBound = o.W - o.margin - o.halfW + side;
+    return targetX >= leftBound && targetX <= rightBound;
+  };
+
+  // 优先尝试随机的上/下方向；若两侧都会越界，则退回水平漫游，避免宠物贴边后完全停住。
+  const verticalDirs: Array<1 | -1> = [primaryVerticalDir, primaryVerticalDir === 1 ? -1 : 1];
+  for (const verticalDir of verticalDirs) {
+    const targetX = o.cx + o.dir * distance * Math.cos(angle);
+    const targetY = o.cy + verticalDir * distance * Math.sin(angle);
+    if (!isReachable(targetX, targetY)) continue;
+    return {
+      startRatio: o.cx / o.W,
+      startYRatio: o.cy / o.H,
+      targetRatio: targetX / o.W,
+      targetYRatio: targetY / o.H,
+      totalRatio: Math.abs(targetX - o.cx) / o.W,
+    };
+  }
+
+  const targetX = o.cx + o.dir * distance;
+  if (isHorizontallyReachable(targetX)) {
+    return {
+      startRatio: o.cx / o.W,
+      startYRatio: o.cy / o.H,
+      targetRatio: targetX / o.W,
+      targetYRatio: o.cy / o.H,
+      totalRatio: Math.abs(targetX - o.cx) / o.W,
+    };
+  }
+  return null;
 };
 
 /**

@@ -80,4 +80,15 @@ export default defineConfig([
       '@deepseek-ai/dsh-llm': shim('dsh-llm'),
     },
   },
+  {
+    ...shared,
+    platform: 'browser',
+    target: 'es2020',
+    entry: {
+      'standalone-settings': 'src/standalone/settings-ui.ts',
+    },
+    // The settings page runs in a regular browser; bundle React instead of relying on DSH globals.
+    noExternal: [/^react(?:-dom)?(?:\/.*)?$/],
+    external: [],
+  },
 ]);

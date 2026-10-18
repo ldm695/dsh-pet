@@ -20,7 +20,7 @@ import { downloadArtifact } from '@electron/get';
 
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
-export const packageRoot = resolve(here, '..');
+export const packageRoot = resolve(process.env.DSH_PET_PACKAGE_ROOT || resolve(here, '..'));
 export const defaultHelperMain = resolve(packageRoot, 'runtime', 'electron-helper', 'main.js');
 
 /** 协议行前缀：stdout/stdin 里以此开头的整行 JSON 属于 bridge 协议，其余为日志 */
@@ -280,6 +280,9 @@ export const HELPER_STOP_GRACE_MS = 1000;
 export function helperSpawnEnv(hostPid: number, extra?: Record<string, string | undefined>): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, DSH_PET_HOST_PID: String(hostPid), ...extra };
   delete env.ELECTRON_RUN_AS_NODE;
+  // API credentials belong to the Node host that calls providers; never pass them to Electron.
+  delete env.DSH_PET_STANDALONE_DEEPSEEK_API_KEY;
+  delete env.DEEPSEEK_API_KEY;
   return env;
 }
 

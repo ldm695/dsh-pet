@@ -9,6 +9,15 @@
 export const WORK_STATUS_STATES = ['thinking', 'working', 'result', 'waiting', 'success', 'error'] as const;
 export type WorkStatusState = (typeof WORK_STATUS_STATES)[number];
 
+/** Agent snapshot emitted by standalone work-status bridges and consumed by the desktop pet allocator. */
+export interface WorkStatusAgentSnapshot {
+  key: string;
+  state: WorkStatusState;
+  sourceName?: string;
+  revision: number;
+  startedAt: number;
+}
+
 /** 档位 → workStatus 数组索引（与 events.workStatus 数组顺序严格一致） */
 export const WORK_STATUS_INDEX: Record<WorkStatusState, number> = {
   thinking: 0, // turn/start → 思考
@@ -25,15 +34,46 @@ export const WORK_STATUS_INDEX: Record<WorkStatusState, number> = {
 export interface WorkStatusSnapshot {
   state: WorkStatusState | null; // null = 空闲
   task: string | null; // 当前任务详情（todo/write 提供，可 null）
+  sourceName?: string; // DeepSeek Harness / Codex / Claude Code；终态气泡用于标明完成来源
+  agents?: WorkStatusAgentSnapshot[]; // DSH/Codex/Claude 并行会话与 Agent；未提供时使用传统单状态模式
 }
 
 /** 快照解析：档位不认识 → 归一成 null（空闲）；形状非法 → null（消费端跳过这一拍，不抛） */
 export function toWorkStatus(raw: unknown): WorkStatusSnapshot | null {
   if (!raw || typeof raw !== 'object') return null;
-  const r = raw as { state?: unknown; task?: unknown };
+  const r = raw as { state?: unknown; task?: unknown; sourceName?: unknown; agents?: unknown };
   const state: WorkStatusState | null =
     r.state === null || (typeof r.state === 'string' && (WORK_STATUS_STATES as readonly string[]).includes(r.state))
       ? (r.state as WorkStatusState | null)
       : null;
-  return { state, task: typeof r.task === 'string' ? r.task : null };
+  const agents = Array.isArray(r.agents)
+    ? r.agents.flatMap((item) => {
+        if (!item || typeof item !== 'object') return [];
+        const agent = item as Record<string, unknown>;
+        if (
+          typeof agent.key !== 'string' ||
+          typeof agent.state !== 'string' ||
+          !(WORK_STATUS_STATES as readonly string[]).includes(agent.state) ||
+          !Number.isSafeInteger(agent.revision) ||
+          !Number.isFinite(agent.startedAt)
+        ) {
+          return [];
+        }
+        return [
+          {
+            key: agent.key,
+            state: agent.state as WorkStatusState,
+            ...(typeof agent.sourceName === 'string' ? { sourceName: agent.sourceName } : {}),
+            revision: agent.revision as number,
+            startedAt: agent.startedAt as number,
+          },
+        ];
+      })
+    : undefined;
+  return {
+    state,
+    task: typeof r.task === 'string' ? r.task : null,
+    ...(typeof r.sourceName === 'string' ? { sourceName: r.sourceName } : {}),
+    ...(agents ? { agents } : {}),
+  };
 }

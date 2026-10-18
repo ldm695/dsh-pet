@@ -323,12 +323,16 @@ function unavailableRows(state: BalanceUnavailable): BalanceBubbleRow[] {
           { role: 'sub', text: '当前服务商：' + state.provider },
         ]
       : state.reason === 'credential-missing'
-        ? [
-            // host 的 message 本身已带「缺少凭证 X」前缀：这里只作次要行原样展示，不再加前缀
-            // （曾经的「缺少凭证：缺少凭证 X」双重前缀）
-            { role: 'error', text: '缺少余额查询凭证' },
-            { role: 'sub', text: state.message ?? '' },
-          ]
+        ? state.provider === 'deepseek-official' && state.message?.includes('DEEPSEEK_API_KEY')
+          ? [
+              { role: 'error', text: '未配置 API Key' },
+              { role: 'sub', text: '请在设置页「AI 模型与对话上下文」中配置 DeepSeek API Key' },
+            ]
+          : [
+              // host 的 message 本身已带「缺少凭证 X」前缀：这里只作次要行原样展示。
+              { role: 'error', text: '缺少余额查询凭证' },
+              { role: 'sub', text: state.message ?? '' },
+            ]
         : [
             { role: 'error', text: '余额查询失败' },
             { role: 'sub', text: state.message ?? '' },

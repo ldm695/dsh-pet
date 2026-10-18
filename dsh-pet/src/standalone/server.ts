@@ -18,7 +18,7 @@ import type { IncomingMessage, Server as HttpServer, ServerResponse } from 'node
 import type { RegisteredRoute, StandaloneLogger } from './context';
 
 /** 独立模式默认端口（与插件 helper 的内置默认一致） */
-export const DEFAULT_STANDALONE_PORT = 3080;
+export const DEFAULT_STANDALONE_PORT = 6952;
 /** 端口被占用时向后顺延的个数上限 */
 export const PORT_SCAN_LIMIT = 25;
 
@@ -108,7 +108,7 @@ export function createRequestListener(
       return;
     }
     if (pathname === '/' || pathname === '/health') {
-      sendJson(res, 200, status?.() ?? { name: 'dsh-pet-standalone' });
+      sendJson(res, 200, status?.() ?? { name: 'DSH Pet' });
       return;
     }
     if (pathname === '/shutdown') {

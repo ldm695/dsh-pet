@@ -12,18 +12,19 @@
  * 用法：
  *   npx dsh-pet-standalone              # 插件装好后直接跑（package.json 的 bin）
  *   npm run standalone                  # 仓库里跑（先 npm install：prepare 会构建 lib/）
- *   node lib/standalone.js --port 3081
+ *   node lib/standalone.js --port 6952
  *   node lib/standalone.js --check      # 只体检，不开窗口
  *
- * 独立模式的边界：动画、物理拖拽、右键菜单、多开、自定义素材与宠物种类全部可用；
- * 余额、碎碎念、对话、系统通知依赖 DSH 的凭证/模型/会话，在独立模式下明确不可用
- * （结构化失败 + 日志，不假装成功）。详见 README 的「独立运行（不打开 DSH）」一节。
+ * 独立模式可通过用户提供的 DeepSeek API Key 启用余额、碎碎念与对话；桌面通知只覆盖
+ * 独立模式自己的对话回复；若 DSH 同时运行且安装了 dsh-pet，可选中对话状态经本地文件桥接同步。
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { flattenPetList, readAllConfig } from '../host/config';
 import { dshHomeDir, packageRoot } from '../host/helper-process';
 import { apply } from '../host/index';
+import { loadDeepSeekApiKey } from './api-key-store';
 import { runCheck, packageVersion } from './check';
 import {
   createStandaloneContext,
@@ -32,12 +33,21 @@ import {
   type StandaloneLogger,
 } from './context';
 import { configPathsFor, describePets, isDesktopVisible, parseArgs, USAGE } from './options';
+import { STANDALONE_SETTINGS_HTML } from './settings-page';
 import { listenStandaloneServer } from './server';
+import { deepseekApiKey, initializeSavedDeepSeekApiKey } from './deepseek';
 
 /** 启动独立模式：先起服务拿到端口，再 `apply`（插件据此拼桌面 Helper 的 configUrl） */
 async function run(logger: StandaloneLogger, options: { port: number }): Promise<void> {
   const home = dshHomeDir();
   const paths = configPathsFor(packageRoot, home);
+  const apiKeyStorePath = join(home, 'dsh-pet', 'deepseek-api-key.dpapi');
+
+  try {
+    initializeSavedDeepSeekApiKey(await loadDeepSeekApiKey(apiKeyStorePath));
+  } catch (error) {
+    logger.warn(`读取已保存的 DeepSeek API Key 失败：${error instanceof Error ? error.message : String(error)}`);
+  }
 
   // 预检：包内默认配置读不到时宿主半边必然每请求失败；早给可操作的诊断，别让用户对着空桌面猜
   if (!existsSync(paths.defaultFile)) {
@@ -50,8 +60,42 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
   }
 
   const routes: RegisteredRoute[] = [];
+  routes.push(
+    {
+      kind: 'exact',
+      path: '/settings',
+      handler: (_req, res) => {
+        const appName = process.env.DSH_PET_DISPLAY_NAME === 'DSH Pet' ? 'DSH Pet' : '哦鲸鲸';
+        const html = STANDALONE_SETTINGS_HTML.replaceAll('__DSH_PET_APP_NAME__', appName);
+        res.writeHead(200, {
+          'content-type': 'text/html; charset=utf-8',
+          'content-length': Buffer.byteLength(html),
+        });
+        res.end(html);
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/standalone-settings.js',
+      handler: (_req, res) => {
+        const bundle = readFileSync(join(packageRoot, 'lib', 'standalone-settings.js'));
+        res.writeHead(200, {
+          'content-type': 'text/javascript; charset=utf-8',
+          'content-length': bundle.length,
+          'cache-control': 'no-store',
+        });
+        res.end(bundle);
+      },
+    },
+  );
   const portRef = { value: options.port };
-  const context = createStandaloneContext({ port: () => portRef.value, logger, routes });
+  const context = createStandaloneContext({
+    port: () => portRef.value,
+    logger,
+    routes,
+    apiKeyStorePath,
+    renderModeStorePath: process.env.DSH_PET_RENDER_MODE_FILE,
+  });
   // /shutdown 的回调要在服务构造时给出去，而停机函数要在服务之后定义：
   // 用一个可替换的转发器解耦（服务构造时只拿到"将来会是谁"）。
   let forwardShutdown: () => void = () => {};
@@ -60,7 +104,7 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
     logger,
     port: options.port,
     status: () => ({
-      name: 'dsh-pet-standalone',
+      name: process.env.DSH_PET_DISPLAY_NAME === 'DSH Pet' ? 'DSH Pet' : '哦鲸鲸',
       plugin: { root: packageRoot, version: packageVersion(packageRoot) },
       port: portRef.value,
       uptimeSec: Math.round(process.uptime()),
@@ -92,6 +136,7 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
   process.on('SIGTERM', () => requestShutdown('SIGTERM'));
 
   // 起插件宿主半边：路由表、状态仓、桌面 Helper（含 bridge 管道）都在这一句里
+  process.env.DSH_PET_STANDALONE = '1';
   apply(context.ctx);
 
   let pets: Record<string, unknown>[] = [];
@@ -107,7 +152,7 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
   const desktopVisible = pets.filter(isDesktopVisible);
   for (const line of [
     '',
-    '===== dsh-pet 独立模式（不需要 DSH）=====',
+    '===== dsh-pet 独立模式（可独立运行；DSH 状态桥接可选）=====',
     `  插件        dsh-pet@${packageVersion(packageRoot)}  ${packageRoot}`,
     `  路由        http://127.0.0.1:${server.port}/dsh-pet-7340/`,
     `  配置        ${configSource}`,
@@ -115,7 +160,7 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
     desktopVisible.length === 0
       ? '  桌面小窗    0 只：display 需要 desktop 或 both 才会出现透明小窗（服务仍在运行）'
       : `  桌面小窗    ${desktopVisible.length} 只`,
-    '  不可用      余额 / 碎碎念 / 对话 / 系统通知（依赖 DSH 的凭证、模型与会话）',
+    apiKeyStatusLine(),
     '  退出        Ctrl+C，或 POST /shutdown',
     '',
   ]) {
@@ -124,6 +169,12 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
   if (context.failures.length > 0) {
     logger.warn(`初始化期间有 ${context.failures.length} 项失败（见上方日志）；路由仍可用，相关端点会显式报错`);
   }
+}
+
+function apiKeyStatusLine(): string {
+  return deepseekApiKey()
+    ? `  DeepSeek API 已配置  模型 ${process.env.DSH_PET_STANDALONE_DEEPSEEK_MODEL?.trim() || 'deepseek-flash'}`
+    : '  DeepSeek API 未配置  可在设置页「AI 模型与对话上下文」中填写 API Key';
 }
 
 /** CLI 入口 */

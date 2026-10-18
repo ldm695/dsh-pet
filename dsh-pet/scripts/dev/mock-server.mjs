@@ -23,6 +23,10 @@ const here = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const PACKAGE_ROOT = resolve(here, '..', '..');
 const WEBM_ROOT = join(PACKAGE_ROOT, 'assets', 'webm');
 const CONFIG_FILE = join(PACKAGE_ROOT, 'assets', 'config.jsonc');
+const USER_CONFIG_ROOT = process.env.DSH_PET_USER_CONFIG_ROOT;
+const readAllConfig = USER_CONFIG_ROOT
+  ? (await import('../../src/host/config.ts')).readAllConfig
+  : null;
 
 /** 剥除 JSONC 注释（与真实宿主 readAllConfig 的 stripJsonc 同规则），返回纯 JSON */
 const stripJsonc = (src) =>
@@ -67,6 +71,21 @@ const server = createServer((req, res) => {
     if (!existsSync(CONFIG_FILE)) {
       res.writeHead(404);
       res.end('no config.jsonc');
+      return;
+    }
+    if (USER_CONFIG_ROOT) {
+      // Optional local development mode: use the actual DSH Pet user layer and the host's
+      // production merge rules, while this mock continues to serve project animation assets.
+      sendJson(
+        res,
+        200,
+        readAllConfig({
+          defaultFile: CONFIG_FILE,
+          userFile: join(USER_CONFIG_ROOT, 'main-config.jsonc'),
+          legacyUserFile: join(USER_CONFIG_ROOT, 'main-config.json'),
+          petDir: join(USER_CONFIG_ROOT, 'pet'),
+        }),
+      );
       return;
     }
     sendJson(res, 200, { main: JSON.parse(stripJsonc(readFileSync(CONFIG_FILE, 'utf8'))) });

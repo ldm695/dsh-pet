@@ -1,0 +1,114 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/hooks/bridge.cjs",
+            "statusMessage": "同步桌宠状态"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/hooks/bridge.cjs",
+            "statusMessage": "同步桌宠状态"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/hooks/bridge.cjs",
+            "statusMessage": "同步桌宠状态"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/hooks/bridge.cjs",
+            "statusMessage": "同步桌宠状态"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/hooks/bridge.cjs",
+            "statusMessage": "同步桌宠状态"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/hooks/bridge.cjs",
+            "statusMessage": "同步桌宠状态"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/hooks/bridge.cjs",
+            "statusMessage": "同步桌宠状态"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/hooks/bridge.cjs",
+            "statusMessage": "同步桌宠状态"
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/hooks/bridge.cjs",
+            "statusMessage": "同步桌宠状态"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/hooks/bridge.cjs",
+            "statusMessage": "同步桌宠状态"
+          }
+        ]
+      }
+    ]
+  }
+}

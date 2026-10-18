@@ -97,6 +97,7 @@ import {
   currentTaskFromTodo,
   goalUpdateAction,
   WorkStatusStore,
+  type HostWorkStatusState,
   type WorkStatusTurnContext,
 } from './work-status';
 import {
@@ -307,6 +308,11 @@ export function apply(ctx: any): void {
   // 会话存**——task 曾是全局单值，写过一次就跟着此后所有会话活动一直显示（issue #59）。
   // 进程内内存态：重启回空闲；每次会话事件有实际状态变化才更新（签名比对防刷屏）。
   const workStatus = new WorkStatusStore();
+  let lastStandaloneBridgeFingerprint = '';
+  let lastStandaloneNotificationRevision = '';
+  const bridgePath = join(userRoot, 'work-status-bridge.json');
+  const codexBridgePath = join(userRoot, 'codex-work-status-bridge.json');
+  const claudeBridgePath = join(userRoot, 'claude-code-work-status-bridge.json');
   // 工作状态快照 → 写进 S（前端 1s 轮询 /state 后按 counter 变化渲染）。
   // **只在内容真的变了时才写**：每次写都会推进 counter，前端据此重播档位动画——
   // 会话事件很密（每个 tool/call 都来），无条件写会把动画刷成幻灯片。
@@ -316,10 +322,10 @@ export function apply(ctx: any): void {
   let publishedWork = '\u0000';
   const publishWorkStatus = (): void => {
     const snap = workStatus.snapshot();
-    const key = String(snap.state) + '\u0000' + String(snap.task);
+    const key = String(snap.state) + '\u0000' + String(snap.task) + '\u0000DSH';
     if (key === publishedWork) return;
     publishedWork = key;
-    state.writeSection('workStatus', { state: snap.state, task: snap.task });
+    state.writeSection('workStatus', { state: snap.state, task: snap.task, sourceName: 'DeepSeek Harness' });
   };
   // 系统通知帧：host 监听 DSH 宿主事件生成通知帧（帧契约与 shared/notify.ts 一致），写进 S 的
   // sections.notify，浏览器 1s 轮询 /state 后弹 toast。
@@ -405,7 +411,7 @@ export function apply(ctx: any): void {
   // 碎碎念周期调度的「上次生成时刻」（按宠物）：调度拍据此判断到没到点。
   // 改造前这份节流靠 whisperCache（缓存 + ts 比较），现在"该不该生成"由调度侧决定、
   // "生成结果"直接写 S——多端共享同一句由 S 天然保证，不再需要第二份缓存。
-  const lastWhisperAt = new Map<string, number>();
+  const nextWhisperAt = new Map<string, number>();
 
   // 对话记忆文件（唯一读写方 = 本进程；浏览器/桌面两端都只是客户端 → 同一实例天然共享同一份记忆）。
   // 结构双层：{ <种类桶 assetRoot ?? petId>: { <实例 id>: { messages: ChatMemoryMessage[] } } }
@@ -506,7 +512,13 @@ export function apply(ctx: any): void {
       );
       return false;
     }
-    state.writePet(petId, 'say', result.image ? { text: result.text, image: result.image } : { text: result.text });
+    state.writePet(
+      petId,
+      'say',
+      result.image
+        ? { text: result.text, image: result.image, kind: 'whisper' }
+        : { text: result.text, kind: 'whisper' },
+    );
     return true;
   };
 
@@ -549,7 +561,9 @@ export function apply(ctx: any): void {
       state.writePet(
         petId,
         'say',
-        generated.image ? { text: generated.text, image: generated.image } : { text: generated.text },
+        generated.image
+          ? { text: generated.text, image: generated.image, kind: 'chat' }
+          : { text: generated.text, kind: 'chat' },
       );
       return { ok: true as const };
     });
@@ -607,8 +621,9 @@ export function apply(ctx: any): void {
     return { version, locale: 'zh-CN', timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60 };
   };
 
-  const refreshBalance = async (manual = false): Promise<void> => {
-    const mark = <T>(v: T): T | (T & { manual: true }) => (manual ? { ...v, manual: true } : v);
+  const refreshBalance = async (manual = false, targetPetId?: string): Promise<void> => {
+    const mark = <T>(v: T): T | (T & { manual: true; targetPetId?: string }) =>
+      manual ? { ...v, manual: true, ...(targetPetId ? { targetPetId } : {}) } : v;
     try {
       const sel = ctx.agentDefaultModel.currentSelection();
       const result = await queryBalance(
@@ -670,13 +685,23 @@ export function apply(ctx: any): void {
   refreshDesktop();
 
   /** 桌面可见宠物列表（[{id,size}]）：透传 Helper 决定创建几个局部窗口（每宠物一个）。 */
-  const desktopPetList = (): Array<{ id: string; size: number }> => {
+  const desktopPetList = (): Array<{ id: string; size: number; position: unknown }> => {
     try {
       return effectivePetList()
         .filter((p) => isDesktopVisible(p.display))
-        .map((p) => ({ id: String(p.id), size: Number(p.size) }));
+        .map((p) => ({ id: String(p.id), size: Number(p.size), position: p.position }));
     } catch {
       return [];
+    }
+  };
+
+  /** 全局桌宠显示层级（仅桌面 Helper 消费）；配置合并器已校验并填默认值。 */
+  const desktopDisplayPriority = (): string => {
+    try {
+      const value = readAllConfig(configPaths).main?.petDisplayPriority;
+      return value === 'hide-on-fullscreen' || value === 'normal' ? value : 'always-on-top';
+    } catch {
+      return 'always-on-top';
     }
   };
 
@@ -728,6 +753,9 @@ export function apply(ctx: any): void {
           DSH_PET_BRIDGE: '1',
           // 每只桌面宠物一个局部小窗口：透传宠物列表（[{id,size}]）
           DSH_PET_PETS: JSON.stringify(desktopPetList()),
+          // 桌面 Helper 按宠物 id 持久化最后位置；放在插件用户目录，避免不同 DSH profile 串位置。
+          DSH_PET_POSITION_FILE: join(userRoot, 'pet-positions.json'),
+          DSH_PET_DISPLAY_PRIORITY: desktopDisplayPriority(),
         },
         // bridge 协议处理器 = HTTP 路由同一份 handlePetRoute（业务逻辑唯一，两端天然一致）；
         // 素材过文件路径（main.js 自行读盘），json/text 过 body
@@ -849,12 +877,72 @@ export function apply(ctx: any): void {
   /** 用户动画根：按扩展名取子目录（main-animation/webm 或 main-animation/mov）。 */
   const userRootFor = (ext: string): string => join(thumbUserRoot, animSubdirFor(ext));
 
+  /** 测试构建可强制随机动画链只抽移动；常规安装没有该环境变量，不改变用户配置语义。 */
+  const standaloneMoveTestConfig = (
+    config: Record<string, Record<string, unknown>>,
+  ): Record<string, Record<string, unknown>> => {
+    if (process.env.DSH_PET_STANDALONE !== '1' || process.env.DSH_PET_FORCE_MOVE_PROBABILITY !== '100') {
+      return config;
+    }
+    return Object.fromEntries(
+      Object.entries(config).map(([id, entry]) => [
+        id,
+        {
+          ...entry,
+          animationWeights: { idle: 0, turn: 0, move: 100 },
+          animations: (() => {
+            const animations = entry.animations;
+            if (!animations || typeof animations !== 'object') return animations;
+            const animationRecord = animations as Record<string, unknown>;
+            const moves = animationRecord.moves;
+            if (!moves || typeof moves !== 'object') return animations;
+            const moveRecord = moves as Record<string, unknown>;
+            const actions = Array.isArray(moveRecord.actions) ? moveRecord.actions : [];
+            const runAction = actions.find(
+              (action) =>
+                action &&
+                typeof action === 'object' &&
+                typeof (action as Record<string, unknown>).name === 'string' &&
+                String((action as Record<string, unknown>).name).includes('跑'),
+            );
+            return runAction ? { ...animationRecord, moves: { ...moveRecord, actions: [runAction] } } : animations;
+          })(),
+          pets: Array.isArray(entry.pets)
+            ? entry.pets.map((pet) => ({ ...(pet as Record<string, unknown>), fixedEnabled: false }))
+            : entry.pets,
+        },
+      ]),
+    );
+  };
+
   /** 单次业务路由(WebServer 注册 → HTTP 落盘 / 桌面 Helper 管道 → scheme 应答,共用同一份实现):
    *  输入只需 rawUrl(/dsh-pet-7340/... + 查询) + method + body 文本;返回 RouteResult(JSON/文本/文件),
    *  消费方各自落盘——业务逻辑只有一份,两端天然一致(硬契约:浏览器/桌面行为严格对齐)。 */
   const handlePetRoute = async (rawUrl: string, method: string, body?: string): Promise<RouteResult> => {
     const url = new URL(rawUrl, 'http://localhost');
     const rest = decodeURIComponent(url.pathname.slice(ROUTE_PREFIX.length + 1));
+
+    // 独立桌宠的右键菜单与托盘共用 desktop-main.cjs 持有的唯一设置窗口。
+    // Helper 经 bridge 发起此请求，主进程从宿主 stdout 收到控制行后聚焦现有窗口或创建它。
+    if (rest === 'settings/open') {
+      if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
+      if (process.env.DSH_PET_STANDALONE !== '1') {
+        return { kind: 'json', status: 404, obj: { error: 'not found' } };
+      }
+      process.stdout.write('DSH_PET_CONTROL:open-settings\n');
+      return { kind: 'json', status: 200, obj: { ok: true } };
+    }
+
+    // 独立桌宠右键菜单的退出操作经 Helper 管道到达这里，再由启动器退出整套应用。
+    // 不调用 HTTP 服务的 /shutdown：桌宠 Helper 的 bridge 只分发 ROUTE_PREFIX 下的业务路由。
+    if (rest === 'app/quit') {
+      if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
+      if (process.env.DSH_PET_STANDALONE !== '1') {
+        return { kind: 'json', status: 404, obj: { error: 'not found' } };
+      }
+      process.stdout.write('DSH_PET_CONTROL:quit-app\n');
+      return { kind: 'json', status: 200, obj: { ok: true } };
+    }
 
     // 成品配置：/dsh-pet-7340/config（GET 读取合并成品 / PUT 保存用户层 / POST 同步内置默认）
     if (rest === 'config') {
@@ -867,7 +955,7 @@ export function apply(ctx: any): void {
           return {
             kind: 'json',
             status: 200,
-            obj: readAllConfig(configPaths),
+            obj: standaloneMoveTestConfig(readAllConfig(configPaths)),
             headers: { 'cache-control': 'no-cache, no-store' },
           };
         } catch (e) {
@@ -910,7 +998,7 @@ export function apply(ctx: any): void {
           // 响应体 = 保存后的**成品聚合**（与 GET /config 同一份，字段已填满）：
           // 设置页把它直接交给容器的 flattenConfigPets 拍平渲染——客户端的条目级字段
           // （动画池/权重/物理参数/工作状态文案）只有这一处填充，不再有第二份补吹实现。
-          return { kind: 'json', status: 200, obj: readAllConfig(configPaths) };
+          return { kind: 'json', status: 200, obj: standaloneMoveTestConfig(readAllConfig(configPaths)) };
         } catch {
           return { kind: 'json', status: 400, obj: { error: 'invalid JSON body' } };
         }
@@ -926,7 +1014,7 @@ export function apply(ctx: any): void {
           return { kind: 'json', status: 500, obj: { error: e instanceof Error ? e.message : String(e) } };
         }
         void syncDesktop(); // 配置变了：重解析桌面宠物并重启 Helper（异步，不阻塞响应）
-        return { kind: 'json', status: 200, obj: readAllConfig(configPaths) };
+        return { kind: 'json', status: 200, obj: standaloneMoveTestConfig(readAllConfig(configPaths)) };
       }
       return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
     }
@@ -1085,6 +1173,160 @@ export function apply(ctx: any): void {
     // 只读、纯内存、**零副作用**：绝不在这里触发外部调用或模型生成——那会把所有人的 1s 轮询拖死。
     if (rest === 'state') {
       if (method !== 'GET') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
+      if (process.env.DSH_PET_STANDALONE === '1') {
+        type StandaloneBridge = {
+          revision?: unknown;
+          state?: unknown;
+          eventAt?: unknown;
+          updatedAt?: unknown;
+          agents?: unknown;
+          notification?: {
+            revision?: unknown;
+            title?: unknown;
+            body?: unknown;
+            icon?: unknown;
+            createdAt?: unknown;
+          } | null;
+        };
+        const readBridge = (path: string): StandaloneBridge | undefined => {
+          try {
+            return JSON.parse(readFileSync(path, 'utf8')) as StandaloneBridge;
+          } catch {
+            return undefined;
+          }
+        };
+        const dshBridge = readBridge(bridgePath);
+        const codexBridge = readBridge(codexBridgePath);
+        const claudeBridge = readBridge(claudeBridgePath);
+        const now = Date.now();
+        const fresh = (bridge: StandaloneBridge | undefined): boolean => {
+          const updatedAt = Number(bridge?.updatedAt);
+          return Number.isFinite(updatedAt) && now - updatedAt < 3500 && now >= updatedAt;
+        };
+        const freshBridges = [
+          { source: 'dsh', bridge: dshBridge },
+          { source: 'codex', bridge: codexBridge },
+          { source: 'claude', bridge: claudeBridge },
+        ]
+          .filter(({ bridge }) => fresh(bridge));
+        const activeStates = new Set(['thinking', 'working', 'result', 'waiting', 'success', 'error']);
+        const allBridgeAgents: Array<{
+          key: string;
+          state: HostWorkStatusState;
+          sourceName: string;
+          revision: number;
+          startedAt: number;
+          eventAt: number;
+          source: string;
+          bridgeRevision: number;
+        }> = freshBridges.flatMap(({ source, bridge }) => {
+          const bridgeAgentList = bridge?.agents;
+          if (Array.isArray(bridgeAgentList)) {
+            return bridgeAgentList.flatMap((rawAgent) => {
+              if (!rawAgent || typeof rawAgent !== 'object') return [];
+              const agent = rawAgent as Record<string, unknown>;
+              if (
+                typeof agent.key !== 'string' ||
+                typeof agent.state !== 'string' ||
+                !activeStates.has(agent.state) ||
+                !Number.isSafeInteger(agent.revision) ||
+                !Number.isFinite(agent.startedAt)
+              ) {
+                return [];
+              }
+              return [
+                {
+                  key: `${source}:${agent.key}`,
+                  state: agent.state as HostWorkStatusState,
+                  sourceName: source === 'codex' ? 'Codex' : source === 'claude' ? 'Claude Code' : 'DeepSeek Harness',
+                  revision: agent.revision as number,
+                  startedAt: agent.startedAt as number,
+                  eventAt: Number(agent.eventAt ?? bridge?.eventAt ?? bridge?.updatedAt) || now,
+                  source,
+                  bridgeRevision: Number(bridge?.revision) || (agent.revision as number),
+                },
+              ];
+            });
+          }
+          const state = bridge?.state;
+          if (typeof state !== 'string' || !activeStates.has(state)) return [];
+          return [
+            {
+              key: `legacy:${source}`,
+              state: state as HostWorkStatusState,
+              sourceName: source === 'codex' ? 'Codex' : source === 'claude' ? 'Claude Code' : 'DeepSeek Harness',
+              revision: Number(bridge?.revision) || 0,
+              startedAt: Number(bridge?.eventAt ?? bridge?.updatedAt) || now,
+              eventAt: Number(bridge?.eventAt ?? bridge?.updatedAt) || now,
+              source,
+              bridgeRevision: Number(bridge?.revision) || 0,
+            },
+          ];
+        });
+        // A client is one work-status owner, regardless of how many sessions or subagents it
+        // reports. Prefer an in-progress agent over a recently completed one, then select the
+        // most recently active state within that client. Thus Codex/Claude Code/DSH can each use
+        // one pet, while side conversations and parallel agents don't consume extra pets.
+        const agentsBySource = new Map<string, typeof allBridgeAgents>();
+        for (const agent of allBridgeAgents) {
+          const list = agentsBySource.get(agent.source) ?? [];
+          list.push(agent);
+          agentsBySource.set(agent.source, list);
+        }
+        const inProgressStates = new Set(['thinking', 'working', 'result', 'waiting']);
+        const bridgeAgents = Array.from(agentsBySource, ([source, agents]) => {
+          const inProgress = agents.filter((agent) => inProgressStates.has(agent.state));
+          const candidates = inProgress.length > 0 ? inProgress : agents;
+          const latest = candidates.reduce(
+            (current, agent) => (!current || agent.eventAt > current.eventAt ? agent : current),
+            null as (typeof allBridgeAgents)[number] | null,
+          );
+          if (!latest) return null;
+          return {
+            ...latest,
+            key: `${source}:client`,
+            revision: latest.bridgeRevision,
+          };
+        }).filter((agent): agent is NonNullable<typeof agent> => agent !== null);
+        bridgeAgents.sort((a, b) => a.startedAt - b.startedAt || a.key.localeCompare(b.key));
+        const latestAgent = bridgeAgents.reduce(
+          (latest, agent) => (!latest || agent.eventAt > latest.eventAt ? agent : latest),
+          null as (typeof bridgeAgents)[number] | null,
+        );
+        const workState = latestAgent?.state ?? null;
+        const sourceName = latestAgent?.sourceName ?? null;
+        const fingerprint = JSON.stringify({ workState, sourceName, bridgeAgents });
+        if (fingerprint !== lastStandaloneBridgeFingerprint) {
+          lastStandaloneBridgeFingerprint = fingerprint;
+          state.writeSection('workStatus', { state: workState, task: null, sourceName, agents: bridgeAgents });
+        }
+        const bridgedNotification = dshBridge?.notification;
+        const notificationRevision = `${String(bridgedNotification?.createdAt ?? '')}:${String(bridgedNotification?.revision ?? '')}`;
+        const notificationCreatedAt = Number(bridgedNotification?.createdAt);
+        const notificationFresh =
+          fresh(dshBridge) &&
+          notificationRevision.length > 0 &&
+          Number.isFinite(notificationCreatedAt) &&
+          Date.now() >= notificationCreatedAt &&
+          Date.now() - notificationCreatedAt <= 15_000 &&
+          typeof bridgedNotification?.title === 'string' &&
+          typeof bridgedNotification?.body === 'string';
+        if (notificationFresh && notificationRevision !== lastStandaloneNotificationRevision) {
+          lastStandaloneNotificationRevision = notificationRevision;
+          state.writeSection('notify', {
+            type: 'standalone',
+            title: bridgedNotification.title,
+            body: bridgedNotification.body,
+            icon:
+              typeof bridgedNotification.icon === 'string' &&
+              ['notify-done', 'notify-error', 'notify-truncated', 'notify-approval', 'notify-question'].includes(
+                bridgedNotification.icon,
+              )
+                ? bridgedNotification.icon
+                : 'notify-done',
+          });
+        }
+      }
       return {
         kind: 'json',
         status: 200,
@@ -1095,13 +1337,21 @@ export function apply(ctx: any): void {
       };
     }
 
+    if (rest === 'app-icon.png') {
+      if (method !== 'GET') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
+      const appIcon = resolveExisting(PACKAGE_ROOT_ASSETS, 'dsh-pet-icon-16.png');
+      if (appIcon === undefined) return { kind: 'text', status: 404, body: 'dsh-pet: app icon not found' };
+      return { kind: 'file', file: appIcon, contentType: 'image/png' };
+    }
+
     // 余额：/dsh-pet-7340/balance（POST = 立即刷新一次并写入 S，返回 {ok}）
     // 动作端点，**不返回余额数据**——数据只有一个出口（/state），这里只负责"让它刷新"。
     // 改造前这里是 GET（直接查余额）+ /balance/trigger（1s 计数轮询）两个端点，都已删除：
     // 前端不再各自定时查余额（host 定时器统一查，两端共享一份），也不再需要计数轮询中转。
     if (rest === 'balance') {
       if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-      await refreshBalance(true); // manual：用户主动要的，余额不可用时前端必弹文字说明
+      const targetPetId = String(url.searchParams.get('pet') ?? '').trim() || undefined;
+      await refreshBalance(true, targetPetId); // 菜单带 pet 时只展示在那只桌宠；命令等无目标请求仍面向全部
       // ok 只表示"这次刷新动作完成了"；余额本身是否可用在 S 的 data 里（ok:false 会弹文字说明气泡）
       return { kind: 'json', status: 200, obj: { ok: true } };
     }
@@ -1546,40 +1796,55 @@ export function apply(ctx: any): void {
   }, 'dsh-pet: balance poll');
 
   // 碎碎念周期：host 侧调度（前端不再有任何碎碎念定时器）。
-  // 一拍 = 读一次配置 + 给"到点"的宠物各生成一句；下一拍按**最短周期**排（多数部署只有一个
-  // 周期值，那它就是那个值）。用"读一次配置 + 逐宠物比对 lastWhisperAt"而不是每宠一个定时器：
-  // 宠物随配置增删、周期随条目改，固定拍天然跟上，不用维护一堆定时器的生命周期。
+  // 每只宠物都有独立的下次触发时刻：首次按自身周期随机错开，之后按周期推进，避免同一条目的
+  // 多只宠物因共用一次调度拍而在启动时/每个周期边界同时触发。
   ctx.effect(() => {
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    function arm(sec: number): void {
+    function arm(delayMs: number): void {
       if (disposed) return;
-      timer = setTimeout(() => void tick(), Math.max(1000, sec * 1000));
+      timer = setTimeout(() => void tick(), Math.max(1000, delayMs));
     }
     function tick(): void {
-      let next = 300;
+      let nextDelayMs = Number.POSITIVE_INFINITY;
       try {
         const cfg = readAllConfig(configPaths);
         const now = Date.now();
-        let min = Infinity;
+        const enabledIds = new Set<string>();
         for (const pet of flattenPetList(cfg)) {
           const petId = String(pet.id ?? '');
           if (!petId || pet.whisperEnabled !== true) continue;
+          enabledIds.add(petId);
           const sec = whisperPeriodSec(cfg, petId);
-          min = Math.min(min, sec);
-          if (now - (lastWhisperAt.get(petId) ?? 0) < sec * 1000) continue;
-          lastWhisperAt.set(petId, now);
-          // 不 await：生成要几秒，别把调度拍拖住（每只宠物独立生成，互不阻塞）
-          void publishWhisper(petId).catch(() => {});
+          const periodMs = sec * 1000;
+          let dueAt = nextWhisperAt.get(petId);
+          if (dueAt === undefined) {
+            // 留出至少 10% 的间隔，既错开启动触发，也避免随机数极小导致近似同刻。
+            dueAt = now + periodMs * (0.1 + Math.random() * 0.8);
+            nextWhisperAt.set(petId, dueAt);
+          }
+          if (dueAt <= now) {
+            dueAt += periodMs;
+            if (dueAt <= now) dueAt = now + periodMs;
+            nextWhisperAt.set(petId, dueAt);
+            // 不 await：生成要几秒，别把调度拍拖住（每只宠物独立生成，互不阻塞）
+            void publishWhisper(petId).catch(() => {});
+          }
+          nextDelayMs = Math.min(nextDelayMs, dueAt - now);
         }
-        if (Number.isFinite(min)) next = min;
+        for (const petId of nextWhisperAt.keys()) {
+          if (!enabledIds.has(petId)) nextWhisperAt.delete(petId);
+        }
+        if (!Number.isFinite(nextDelayMs)) {
+          nextDelayMs = 300_000;
+        }
       } catch {
         // 读配置抛错 = 安装损坏（同余额定时器）：不再重排，别白占常驻句柄
         return;
       }
-      arm(next);
+      arm(nextDelayMs);
     }
-    void tick(); // 启动即生成一次（与改造前客户端首拉就生成一致）
+    void tick(); // 启动时为每只宠物独立分配首个触发时间，随机错开
     return () => {
       disposed = true;
       if (timer !== null) clearTimeout(timer);

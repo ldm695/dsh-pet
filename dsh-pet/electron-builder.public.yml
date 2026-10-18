@@ -1,0 +1,34 @@
+appId: cloud.pc2005.dsh-pet.public
+productName: DSH Pet
+electronVersion: 43.3.0
+asar: false
+directories:
+  output: portable-dist
+extraMetadata:
+  main: desktop-main.cjs
+  dshPetEdition: public
+files:
+  - desktop-main.cjs
+  - package.json
+  - lib/**
+  - runtime/electron-helper/**
+  - assets/config.jsonc
+  - assets/dsh-pet-icon-16.png
+  - assets/dsh-pet-icon.ico
+  - assets/logo.png
+  - assets/webm/**
+  - assets/fonts/**
+  - assets/pic/**
+  - assets/memes/**
+  - node_modules/@electron/get/**
+  - node_modules/@electron-internal/extract-zip/**
+  - '!**/*.map'
+  - '!**/*.test.*'
+win:
+  icon: assets/dsh-pet-icon.ico
+  target:
+    - target: portable
+      arch:
+        - x64
+portable:
+  artifactName: DSH-Pet-${version}-portable.${ext}

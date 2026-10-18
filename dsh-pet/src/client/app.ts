@@ -7,6 +7,7 @@ import { initNotify } from './notify';
 import { installCommandFaces, type CommandFace, type CommandUiLike } from './command-faces';
 import { installSectionNavIcon } from './nav-icon';
 import type * as ReactNS from 'react';
+import type * as ReactDOMNS from 'react-dom';
 import type * as PrimitivesNS from '@deepseek-ai/dsh-client-ui-primitives';
 
 /**
@@ -35,9 +36,12 @@ export function makeFactory(): (require: (mod: string) => any) => any {
     // 这里只用它把图标组件**同步**渲成 SVG 源码，供设置页导航的 CSS mask 用；
     // 取不到就退化成「那一行仍是齿轮」，绝不让整个插件加载失败。
     let renderIconSvg: ((icon: ReactNS.ComponentType<PrimitivesNS.IconProps>) => string) | undefined;
+    let createPortal: typeof ReactDOMNS.createPortal | undefined;
     try {
       const { createRoot } = require('react-dom/client');
-      const { flushSync } = require('react-dom');
+      const reactDom = require('react-dom') as typeof ReactDOMNS;
+      const { flushSync } = reactDom;
+      createPortal = reactDom.createPortal;
       renderIconSvg = (icon) => {
         const holder = document.createElement('div');
         const root = createRoot(holder);
@@ -149,7 +153,7 @@ export function makeFactory(): (require: (mod: string) => any) => any {
 
       // 设置页：「桌宠配置」（大小/位置/模型，保存即时生效）。
       // useRef 用于「AI 模型」单下拉选择器（浮层定位与外部点击判定），与宠物页面同一份注入。
-      const PetConfigSection = makePetConfigSection({ h, useState, useEffect, useRef, useCallback, t });
+      const PetConfigSection = makePetConfigSection({ h, useState, useEffect, useRef, useCallback, createPortal, t });
       ctx.slots.inject('settings.section', function* () {
         yield ctx.slots.register(
           { name: 'settings.section', id: 'pet-config', order: 30, label: () => t('nav'), inject: () => ({ t }) },

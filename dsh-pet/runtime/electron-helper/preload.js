@@ -22,8 +22,27 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('petBridge', {
-  setBounds(x, y, width, height, boxX, boxY, size, bottomPad, vx, vy, marginL, marginT) {
+  setBounds(
+    petId,
+    x,
+    y,
+    width,
+    height,
+    boxX,
+    boxY,
+    size,
+    bottomPad,
+    vx,
+    vy,
+    marginL,
+    marginT,
+    bodyX,
+    bodyY,
+    bodyWidth,
+    bodyHeight,
+  ) {
     ipcRenderer.send('pet:set-bounds', {
+      petId,
       x,
       y,
       width,
@@ -36,25 +55,47 @@ contextBridge.exposeInMainWorld('petBridge', {
       vy,
       marginL,
       marginT,
+      bodyX,
+      bodyY,
+      bodyWidth,
+      bodyHeight,
     });
+  },
+  rendererVisualReady() {
+    ipcRenderer.send('pet:renderer-visual-ready');
+  },
+  workStatusDiagnostic(record) {
+    ipcRenderer.send('pet:work-status-diagnostic', record);
+  },
+  reserveMove(petId, route) {
+    return ipcRenderer.invoke('pet:reserve-move', { ...route, petId });
+  },
+  releaseMove(petId, reservationId) {
+    ipcRenderer.send('pet:release-move', { petId, reservationId });
   },
   setInteractive(interactive) {
     ipcRenderer.send('pet:set-interactive', !!interactive);
   },
   // 忙碌态配合 setInputRegions：拖拽持续捕获，菜单/聊天框外仍可点击其它应用。
-  setInputBusy(busy) {
-    ipcRenderer.send('pet:input-busy', !!busy);
+  setInputBusy(petId, busy) {
+    ipcRenderer.send('pet:input-busy', { petId, busy: !!busy });
   },
-  setInputRegions(input) {
-    ipcRenderer.send('pet:input-regions', input);
+  setInputRegions(petId, input) {
+    ipcRenderer.send('pet:input-regions', { ...input, petId });
   },
   // 右键菜单「打开网站」：主进程按宿主形态打开——桌面应用宿主唤起桌面窗口（dsh://open），否则系统默认浏览器打开 DSH 网站（等效网页 Ctrl+点击链接）
   openDshSite(url) {
     ipcRenderer.send('pet:open-site', { url });
   },
+  openSettings() {
+    ipcRenderer.send('pet:open-settings');
+  },
+  quitApp() {
+    ipcRenderer.send('pet:quit-app');
+  },
   // ---- 宠物间碰撞（跨窗 broker）----
-  reportFlight(state) {
-    ipcRenderer.send('pet:report-flight', state);
+  reportFlight(petId, state) {
+    ipcRenderer.send('pet:report-flight', { ...state, petId });
   },
   onFlightStates(cb) {
     ipcRenderer.on('pet:flight-states', (e, states) => cb(states));
@@ -69,5 +110,8 @@ contextBridge.exposeInMainWorld('petBridge', {
   // （{hull, areas, primaryIndex}，屏幕坐标）——渲染端就地重挂视口与边界。
   onDisplays(cb) {
     ipcRenderer.on('pet:displays', (e, geo) => cb(geo));
+  },
+  onFullscreenVisibility(cb) {
+    ipcRenderer.on('pet:fullscreen-visibility', (e, visibility) => cb(visibility));
   },
 });

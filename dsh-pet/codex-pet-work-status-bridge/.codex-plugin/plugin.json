@@ -1,0 +1,11 @@
+{
+  "name": "dsh-pet-work-status-bridge",
+  "version": "0.2.5",
+  "description": "将 Codex 工作状态同步给 DSH Pet 桌宠独立版。",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "DSH Pet Work Status Bridge",
+    "shortDescription": "同步 Codex 工作状态到 DSH Pet",
+    "developerName": "Leonardus MA"
+  }
+}
