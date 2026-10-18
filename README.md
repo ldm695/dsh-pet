@@ -1,6 +1,8 @@
 # DSH Pet
 
-DSH Pet 基于上游 [dsh-pet](https://github.com/PC2005-cloud/dsh-pet) 项目开发。本仓库维护 Windows 便携桌面应用，以及桌面交互和工作状态联动相关功能。
+> **上游项目：** [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet)
+
+本仓库基于上游项目开发，维护 Windows 便携桌面应用，以及桌面交互和工作状态联动相关功能。
 
 本项目保留上游代码的署名与许可要求。Fork 维护的改动见[改动说明](FORK_CUSTOMIZATIONS.md)。
 
