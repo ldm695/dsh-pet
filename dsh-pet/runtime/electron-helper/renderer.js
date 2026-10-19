@@ -4,7 +4,7 @@
  * 依赖链（index.html 顺序加载）：shared-core.js → constants.js → sprite.js →
  * events.js → renderer.js（本文件）。本文件只做：配置加载 / 错误处理 / 启动装配 / 素材注入。
  *
- * 与浏览器 overlay 严格对齐（宠物行为/文案完全一致）：
+ * 负责桌面宠物的渲染与交互：
  *   - 纯逻辑（常量/选择器/移动几何/余额折算/拍平）来自 shared-core.js
  *     （= src/shared 的构建产物，window.PetShared）——与浏览器 bundle 共用同一份源码；
  *   - 配置唯一来源 = 宿主 /dsh-pet-7340/config 的**成品聚合**（host readAllConfig 合并，
@@ -145,14 +145,21 @@ async function boot() {
     config = cfg;
     hideError();
     // 字体族（全局配置 font.family）→ documentElement：对话窗/得分弹窗挂在 body 下、继承不到
-    // 宠物根容器，只能走全局变量；气泡与提示也一并从这里继承（与浏览器端同一套变量名）。
+    // 宠物根容器，只能走全局变量；气泡与提示也从这里继承样式变量。
     // 放在这里而不是 injectAssets()：字体族来自配置，必须等 /config 拉回来之后才有效。
     document.documentElement.style.setProperty('--dsh-pet-font-family', S.fontStackOf(cfg.font.family));
     const pets = cfg.pets.filter((p) => S.isDesktopVisible(p.display));
     if (pets.length === 0) {
-      showError('配置中没有 display 为 desktop/both 的宠物，桌面模式不显示宠物');
+      // 托盘「全部隐藏」会把桌面宠物列表合法地变成空列表。Helper 仍需保留，
+      // 以便托盘之后能重新显示宠物；这不是配置错误，也不应显示错误条或每 5 秒重试。
+      for (const sprite of sprites) sprite.dispose();
+      sprites = [];
+      window.__dshPetDebug.configOk = true;
+      window.__dshPetDebug.spriteCount = 0;
+      window.__dshPetDebug.overlayMode = CONFIG.overlay;
       await signalOverlayVisualReady();
-      scheduleReboot();
+      // 保留宿主状态轮询，例如桌面宠物隐藏时仍可接收 DSH 系统通知。
+      startLoops();
       return;
     }
     if (!CONFIG.overlay) {
@@ -190,7 +197,7 @@ async function boot() {
   }
 }
 
-// 注入打字资源：气泡字体 + 点击/拖拽光标图标（与浏览器 overlay 同一套素材，host 经 /dsh-pet-7340/ 提供）
+// 注入气泡字体与点击/拖拽光标图标；素材由 host 经 /dsh-pet-7340/ 提供。
 function injectAssets() {
   const style = document.createElement('style');
   style.textContent =
@@ -223,6 +230,16 @@ if (window.petBridge && window.petBridge.onDisplays) {
     if (!applyDeskGeometry(geo)) return;
     for (const s of sprites) s.relayout();
   });
+}
+
+// The broker serializes endpoint claims across all pets, including manual and API moves.
+// Cache snapshots that arrive during boot so newly created sprites inherit their O flags.
+const stopMoveTargetSubscription = window.petBridge?.moveTargets?.subscribe?.((targets) => {
+  window.__dshPetMoveTargets = targets;
+  for (const sprite of sprites) sprite.updateMoveTargets(targets);
+});
+if (typeof stopMoveTargetSubscription === 'function') {
+  window.addEventListener('pagehide', stopMoveTargetSubscription, { once: true });
 }
 
 // 窗口内容区尺寸异常时按当前位置重新规整。

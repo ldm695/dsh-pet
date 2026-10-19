@@ -1,4 +1,4 @@
-// 配置层（src/shared 单一来源，浏览器 bundle 与桌面 shared-core 共用）：
+// 配置层（src/shared 单一来源，Electron renderer 与桌面 shared-core 共用）：
 // 配置的读取/合并/校验收敛在 host（src/host/config.ts 的 readAllConfig，经
 // GET /dsh-pet-7340/config 暴露成品）；本模块只做一件事：把**成品聚合**
 // （{ main: {...}, test1: {...}, ... }，字段已填满、绝对正确）拍平成渲染用宠物列表，
@@ -17,17 +17,17 @@ import type {
   Weights,
 } from './types';
 
-/** 显示位置白名单 */
-export const PET_DISPLAYS: PetDisplay[] = ['web', 'desktop', 'both', 'none'];
+/** Windows EXE 支持的显示位置。旧值 web/both 只在 host 配置读取边界兼容。 */
+export const PET_DISPLAYS: PetDisplay[] = ['desktop', 'none'];
 
 /** 桌面窗口层级白名单 */
 export const PET_DISPLAY_PRIORITIES: PetDisplayPriority[] = ['always-on-top', 'hide-on-fullscreen', 'normal'];
 
-/** 该宠物是否参与浏览器 overlay 渲染 */
+/** 仅保留给未打包的旧客户端源码；Windows EXE 和正式配置不再支持 Web overlay。 */
 export const isWebVisible = (display: PetDisplay): boolean => display === 'web' || display === 'both';
 
 /** 该宠物是否参与桌面模式（Electron 透明窗）渲染 */
-export const isDesktopVisible = (display: PetDisplay): boolean => display === 'desktop' || display === 'both';
+export const isDesktopVisible = (display: PetDisplay): boolean => display === 'desktop';
 
 /** 把 host 的成品聚合拍平成渲染用宠物列表：
  *  条目级字段（animations / animationWeights / eventsRefreshSec / physics / font / confineToScreen /

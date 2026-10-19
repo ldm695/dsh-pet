@@ -1,20 +1,20 @@
 /**
- * dsh-pet 宿主半侧（host half）—— 宠物插件的"后端"部分
+ * DSH Pet 桌面宿主的本机服务实现。
  *
  * 职责：提供 `/dsh-pet-7340/` 前缀的**业务能力**（handlePetRoute 纯函数，路由与桌面管道共用）。
  * 全部配置（内置默认 + 用户主配置 + 文件宠物）由 ./config 的 readAllConfig 统一读取合并，
  * 本文件只消费它的返回值（绝对正确、零校验），不再接触任何配置文件。
  *
  * 两个入口消费同一份 handlePetRoute：
- *   - HTTP 路由：注册在 DSH WebServer 上（浏览器 overlay / 设置页 / 斜杠命令用）
+ *   - HTTP 路由：独立运行时注册到本机 HTTP 服务，供桌面 Helper、内嵌设置页和本机集成使用
  *   - 桌面 Helper 管道：helper-process.ts 的 bridgeHandler（DSH_PET_BRIDGE=1 时经
  *     dsh-pet-bridge:// scheme + stdout JSON 行 + 本地回调，**不走 HTTP**——
  *     DSH Desktop 2.0.3+ 的浏览器访问闸门会拦插件子进程的裸 HTTP 请求）
- * 两端行为严格一致（硬契约：浏览器/桌面功能/文案/配置完全对齐）。
+ * 本机设置页与桌面 Helper 共用同一份配置、状态和动画路由。
  *
  * 路由：
  *   /dsh-pet-7340/config             → 合并后的**成品配置**（{ main:{...}, test1:{...}, ... }，
- *                                每条目字段已填满；浏览器/桌面/设置页的唯一配置入口）
+ *                                每条目字段已填满；桌面/设置页的唯一配置入口）
  *                                GET 读取成品；PUT 保存用户层（白名单重建 main-config.jsonc）、
  *                                POST 同步用户层（把内置默认 config.jsonc **原文**整份写入，
  *                                含注释与全部高级字段；合并结果与「没有用户层」等价）——
@@ -48,20 +48,19 @@
  *                                       `?wait=<状态[,状态]>` + `?timeout=<ms>`（**成对必填**）时挂起等待：
  *                                       状态进入 wait 集合立刻返回（matched:true），到点返回当时状态
  *                                       （matched:false）；两者都不传则立刻返回
- *   /dsh-pet-7340/playback/<id>/report → 渲染端上报播放状态（POST，**内部通道**：浏览器/桌面
+ *   /dsh-pet-7340/playback/<id>/report → 渲染端上报播放状态（POST，**内部通道**）：Electron
  *                                       渲染进程 → host）。这是回执的**地基**——没有它，记录永远停在
  *                                       accepted（host 只知道"受理了"，不知道播没播完）。见 ./playback
  *   /dsh-pet-7340/chat                 → 对话与记忆（GET 最近窗口 / POST 对话并写 memory.json；
  *                                       POST 只回 {ok}，回复同样写 S 的 pets.<id>.say）
  *   /dsh-pet-7340/font|pic             → 字体 / 通知图标素材
  *
- * 系统通知不属于宠物行为、不在这里的旧实现是：浏览器半侧 notify.ts 经 connection 事件流
- * （api.events.mux/host）监听 DSH 事件。但 DSH 0.1.5 已删除该事件流 API——通知改为
+ * 系统通知不属于宠物行为。DSH 0.1.5 已删除旧事件流 API——通知改为
  * host 侧监听宿主事件（session/event + agent/error）生成帧写进 S 的 sections.notify，
  * 浏览器统一轮询 /state 后弹 toast（帧契约与 shared/notify.ts 一致；单槽，见下方 pushNotifyFrame）。
  *
- * 桌面模式（Electron 透明窗）没有独立配置文件：宠物显示在哪全部由宠物条目的 display 决定
- * （web=仅浏览器 / desktop=仅桌面 / both=两者 / none=都不显示；缺失时合并器填内置默认值）。
+ * 桌面模式（Electron 透明窗）没有独立配置文件：宠物显示状态由条目的 display 决定
+ * （desktop=显示 / none=隐藏；缺失时合并器填内置默认值）。
  *
  * 安全性：resolveAsset 做"防穿越"校验，保证路径仍在对应根目录内；
  *         PUT 保存经 saveUserConfig 白名单重建，id 过滤文件名非法字符。
@@ -77,34 +76,28 @@ import { join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
+import { createAssetRoute } from './asset-route';
+import { createReadonlyRoute, type ReadonlyRouteLlm } from './readonly-route';
+import { createConfigRoute, createHostConfigRouteDependencies } from './config-route';
+import { createActionRoute } from './action-route';
+import { createStateRoute } from './state-route';
+import { createPlaybackRoute } from './playback-route';
+import { createChatRoute } from './chat-route';
+import { createStandaloneControlRoute } from './standalone-control-route';
+import type { RouteRequest, RouteResult } from './route-contract';
 import { queryBalance } from './balance/index';
 import { generateWhisper } from './whisper';
 import { generateChat, type ChatMemoryMessage } from './chat';
 import { configuredModel } from './model-selection';
 import { limitPool, pickMeme, readMemePool } from './memes';
-import {
-  decideBroadcast,
-  decideBubbleClear,
-  normalizeBroadcastAnim,
-  normalizeBroadcastDuration,
-  normalizeBroadcastText,
-} from './broadcast';
-import { decideAnim } from './anim';
-import { decidePosition, decideThrow, positionLeafData } from './motion-cue';
-import { parsePlaybackPath, parseWaitQuery, PlaybackStore } from './playback';
+import { PlaybackStore } from './playback';
 import {
   findPetInstance,
   flattenPetList,
   ID_FORBIDDEN,
   migrateUserConfig,
-  PET_DISPLAY_SET,
   readAllConfig,
-  readPetConfigEntry,
-  readUserConfig,
-  saveUserConfig,
   sliceMemoryRounds,
-  syncUserConfigFromDefault,
-  userConfigUnparsable,
   type ConfigPaths,
 } from './config';
 import {
@@ -113,7 +106,6 @@ import {
   currentTaskFromTodo,
   goalUpdateAction,
   WorkStatusStore,
-  type HostWorkStatusState,
   type WorkStatusTurnContext,
 } from './work-status';
 import {
@@ -126,7 +118,8 @@ import {
   type HostNotifyFrame,
 } from './notify-events';
 import { profileNameFrom, storageEntries } from './storage-paths';
-import { parseStateWaitQuery, PollStateStore } from './state';
+import { PollStateStore } from './state';
+import type { WorkStatusSnapshotWire } from '../shared/work-status';
 import { timeContextOf } from './time-context';
 import {
   HelperProcess,
@@ -136,11 +129,6 @@ import {
   hasGraphicalDisplay,
   resolveElectronPath,
 } from './helper-process';
-
-/** 插件行 id（与 cordis.patch.yml 一致） */
-export const name = 'pet';
-/** 需要注入的服务：webServer（路由）+ agentDefaultModel（当前服务商）+ credentials（凭证）+ llm（对话模型调用）+ commands（/balance 斜杠命令）+ connection（桌面 Helper「打开网站」用的已鉴权站点 URL） */
-export const inject = ['webServer', 'agentDefaultModel', 'credentials', 'llm', 'commands', 'connection'];
 
 /** 本包目录：宿主构建产物位于 lib/，其上一级即包根。 */
 const PACKAGE_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -155,26 +143,13 @@ const PACKAGE_MEMES_DIR = join(PACKAGE_ROOT_ASSETS, 'memes');
 const ROUTE_PREFIX = '/dsh-pet-7340';
 
 /**
- * 宿主是不是 **DSH 桌面应用**（Electron 宿主）。
+ * 宿主是不是 **DSH Desktop Electron 应用**。
  *
  * 判据只用 `process.versions.electron`：桌面应用以 `ELECTRON_RUN_AS_NODE=1` 跑宿主（见 dsh.cmd），
- * 该字段照样在；而 `dsh web` / 独立模式都是纯 Node 进程，取不到它。据此把「打开网站」自动分派：
+ * 该字段照样在；本机独立模式是纯 Node 进程，取不到它。据此把「打开网站」自动分派：
  * 桌面宿主 → 唤起桌面应用窗口（helper 走 `dsh://open`），其余 → 浏览器打开站点。
  */
 const isDesktopHost = (): boolean => Boolean(process.versions.electron);
-
-/** 不同扩展名对应的 Content-Type 映射 */
-const MIME: Record<string, string> = {
-  '.webm': 'video/webm',
-  '.mov': 'video/quicktime',
-  '.mp4': 'video/mp4',
-  '.png': 'image/png',
-  '.json': 'application/json; charset=utf-8',
-  '.jsonc': 'application/json; charset=utf-8',
-  '.ttf': 'font/ttf',
-  '.woff': 'font/woff',
-  '.woff2': 'font/woff2',
-};
 
 /**
  * 规范化并校验请求路径，确保它在 assets 根目录内（防路径穿越）。
@@ -232,7 +207,7 @@ function sendFile(res: ServerResponse, file: string, contentType: string): void 
 // 不 import src/shared —— DSH 单文件加载约束）。本文件不再保留任何配置逻辑，只消费成品返回值。
 
 /** 该宠物是否参与桌面模式（Electron 透明窗） */
-const isDesktopVisible = (display: unknown): boolean => display === 'desktop' || display === 'both';
+const isDesktopVisible = (display: unknown): boolean => display === 'desktop';
 
 /** 发送 JSON 响应（headers 可选：如 no-cache 触发计数） */
 function sendJson(res: ServerResponse, status: number, obj: unknown, headers: Record<string, string> = {}): void {
@@ -250,14 +225,6 @@ function sendText(res: ServerResponse, status: number, body: string): void {
   res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' });
   res.end(body);
 }
-
-/** 单次业务路由的应答（WebServer 注册与桌面 Helper 管道共用的同一契约；消费方各自落盘） */
-type RouteResult =
-  | { kind: 'json'; status: number; obj: unknown; headers?: Record<string, string> }
-  | { kind: 'text'; status: number; body: string }
-  | { kind: 'file'; file: string; contentType: string }
-  /** 无需应答：调用方在挂起等待期间已断开（见 /playback 的等待分支）——消费方直接收尾，不写 */
-  | { kind: 'none' };
 
 /** 收集请求体（文本） */
 function readBody(req: IncomingMessage): Promise<string> {
@@ -330,8 +297,6 @@ export function apply(ctx: any): void {
   // 会话存**——task 曾是全局单值，写过一次就跟着此后所有会话活动一直显示（issue #59）。
   // 进程内内存态：重启回空闲；每次会话事件有实际状态变化才更新（签名比对防刷屏）。
   const workStatus = new WorkStatusStore();
-  let lastStandaloneBridgeFingerprint = '';
-  let lastStandaloneNotificationRevision = '';
   const bridgePath = join(userRoot, 'work-status-bridge.json');
   const codexBridgePath = join(userRoot, 'codex-work-status-bridge.json');
   const claudeBridgePath = join(userRoot, 'claude-code-work-status-bridge.json');
@@ -347,7 +312,12 @@ export function apply(ctx: any): void {
     const key = String(snap.state) + '\u0000' + String(snap.task) + '\u0000DSH';
     if (key === publishedWork) return;
     publishedWork = key;
-    state.writeSection('workStatus', { state: snap.state, task: snap.task, sourceName: 'DeepSeek Harness' });
+    const payload: WorkStatusSnapshotWire = {
+      state: snap.state,
+      task: snap.task,
+      sourceName: 'DeepSeek Harness',
+    };
+    state.writeSection('workStatus', payload);
   };
   // 系统通知帧：host 监听 DSH 宿主事件生成通知帧（帧契约与 shared/notify.ts 一致），写进 S 的
   // sections.notify，浏览器 1s 轮询 /state 后弹 toast。
@@ -435,7 +405,7 @@ export function apply(ctx: any): void {
   // "生成结果"直接写 S——多端共享同一句由 S 天然保证，不再需要第二份缓存。
   const nextWhisperAt = new Map<string, number>();
 
-  // 对话记忆文件（唯一读写方 = 本进程；浏览器/桌面两端都只是客户端 → 同一实例天然共享同一份记忆）。
+  // 对话记忆文件（唯一读写方 = 本进程；设置页和桌面 Helper 通过同一实例共享记忆）。
   // 结构双层：{ <种类桶 assetRoot ?? petId>: { <实例 id>: { messages: ChatMemoryMessage[] } } }
   const memoryPath = join(userRoot, 'memory.json');
   // 对话写操作串行队列：read-modify-write 排队执行，防两端同时对话时交错写盘
@@ -776,7 +746,7 @@ export function apply(ctx: any): void {
           DSH_PET_SITE_URL: siteUrl,
           // 宿主形态决定工具项「打开网站」的去向（同名菜单项，两端两种语义）：
           //   desktop = 宿主是 DSH 桌面应用 → 唤起桌面应用主窗口（helper 走 dsh://open，见 main.js）
-          //   site    = dsh web / 独立模式 → 系统默认浏览器打开站点（原行为，别破坏）
+          //   site    = Node 命令行或手动 Helper → 系统默认浏览器打开配置的站点 URL
           DSH_PET_OPEN_TARGET: isDesktopHost() ? 'desktop' : 'site',
           DSH_PET_SCALE: '1',
           // 打开 bridge 协议：main.js 注册 dsh-pet-bridge scheme，把渲染端请求经管道转给宿主
@@ -785,6 +755,8 @@ export function apply(ctx: any): void {
           DSH_PET_PETS: JSON.stringify(desktopPetList()),
           // 桌面 Helper 按宠物 id 持久化最后位置；放在插件用户目录，避免不同 DSH profile 串位置。
           DSH_PET_POSITION_FILE: join(userRoot, 'pet-positions.json'),
+          // TEMPORARY MOVE DIAGNOSTICS: remove this path before a formal release.
+          DSH_PET_MOVE_DIAGNOSTICS_FILE: join(userRoot, 'logs', 'move-diagnostics.jsonl'),
           DSH_PET_DISPLAY_PRIORITY: desktopDisplayPriority(),
         },
         // bridge 协议处理器 = HTTP 路由同一份 handlePetRoute（业务逻辑唯一，两端天然一致）；
@@ -903,15 +875,6 @@ export function apply(ctx: any): void {
     return desktopSyncQueue;
   };
 
-  /** 扩展名 → 素材子目录名（webm → webm/，mov → mov/；其余落在动画目录平级放行） */
-  const animSubdirFor = (ext: string): string => (ext === '.mov' ? 'mov' : 'webm');
-
-  /** 包内动画素材根：按扩展名取子目录（webm/ 随包发布；mov/ 不存在时为 404 兜底，仅 macOS 自维护）。 */
-  const assetRootFor = (ext: string): string => join(PACKAGE_ROOT, 'assets', animSubdirFor(ext));
-
-  /** 用户动画根：按扩展名取子目录（main-animation/webm 或 main-animation/mov）。 */
-  const userRootFor = (ext: string): string => join(thumbUserRoot, animSubdirFor(ext));
-
   /** 测试构建可强制随机动画链只抽移动；常规安装没有该环境变量，不改变用户配置语义。 */
   const standaloneMoveTestConfig = (
     config: Record<string, Record<string, unknown>>,
@@ -950,9 +913,79 @@ export function apply(ctx: any): void {
     );
   };
 
-  /** 单次业务路由(WebServer 注册 → HTTP 落盘 / 桌面 Helper 管道 → scheme 应答,共用同一份实现):
+  const assetRoute = createAssetRoute({
+    packageRoot: PACKAGE_ROOT,
+    petConfigDir,
+    thumbUserRoot,
+    idForbidden: ID_FORBIDDEN,
+    resolveAsset,
+    resolveExisting,
+    memeDirsFor,
+  });
+  const readonlyRoute = createReadonlyRoute({
+    llm: ctx.llm as ReadonlyRouteLlm | undefined,
+    configMeta: () => ({
+      user: userConfigPath,
+      default: join(PACKAGE_ROOT, 'assets', 'config.jsonc'),
+      animations: thumbUserRoot,
+      memes: memesUserRoot,
+      // Keep exists flags fresh while the route module receives only prepared path data.
+      storage: storageEntries({
+        userDataRoot: userRoot,
+        electronDir: electronLandingDir(),
+        home: homedir(),
+        packageRoot: PACKAGE_ROOT,
+      }),
+      profile: profileNameFrom(PACKAGE_ROOT) ?? '',
+    }),
+    resolveAppIcon: () => resolveExisting(PACKAGE_ROOT_ASSETS, 'dsh-pet-icon-16.png'),
+  });
+  const configRoute = createConfigRoute(
+    createHostConfigRouteDependencies(
+      configPaths,
+      userRoot,
+      userConfigPath,
+      petConfigDir,
+      () => state.writeSection('config', {}),
+      () => void syncDesktop(),
+      standaloneMoveTestConfig,
+    ),
+  );
+  const actionRoute = createActionRoute({
+    readConfig: () => readAllConfig(configPaths),
+    activePetId: resolveActivePetId,
+    refreshBalance,
+    publishWhisper,
+    memeDirs: memeDirsFor,
+    writePet: (petId, leaf, data) => state.writePet(petId, leaf, data),
+    createPlayback: (petId, animationName) => playback.create(petId, animationName),
+  });
+  const isStandalone = (): boolean => process.env.DSH_PET_STANDALONE === '1';
+  const stateRoute = createStateRoute({
+    state,
+    isStandalone,
+    bridgePaths: { dsh: bridgePath, codex: codexBridgePath, claude: claudeBridgePath },
+  });
+  const playbackRoute = createPlaybackRoute({ playback });
+  const chatRoute = createChatRoute({
+    readHistory: async (petId) => {
+      const cfg = readAllConfig(configPaths);
+      const mem = await readMemory();
+      const bucket = mem[findPetInstance(cfg, petId)?.entry ?? petId] ?? {};
+      const messages = (bucket[petId]?.messages ?? []).slice();
+      const rounds = memoryRounds(petId, cfg);
+      return { messages: sliceMemoryRounds(messages, rounds), rounds };
+    },
+    chatWithPet,
+  });
+  const standaloneControlRoute = createStandaloneControlRoute({
+    isStandalone,
+    sendControlLine: (action) => process.stdout.write(`DSH_PET_CONTROL:${action}\n`),
+  });
+
+  /** 单次业务路由（本机 HTTP 服务 / 桌面 Helper 管道共用同一份实现）：
    *  输入只需 rawUrl(/dsh-pet-7340/... + 查询) + method + body 文本;返回 RouteResult(JSON/文本/文件),
-   *  消费方各自落盘——业务逻辑只有一份,两端天然一致(硬契约:浏览器/桌面行为严格对齐)。
+   *  消费方各自落盘——业务逻辑只有一份，设置页与桌面 Helper 共用行为。
    *  signal（可选）：调用方断开时**中止挂起等待**（只有 /playback 的 wait 分支会用到）。
    *  管道侧不传——桌面渲染端不查 /playback；HTTP 侧由注册处按 res 的 close 触发。 */
   const handlePetRoute = async (
@@ -963,913 +996,24 @@ export function apply(ctx: any): void {
   ): Promise<RouteResult> => {
     const url = new URL(rawUrl, 'http://localhost');
     const rest = decodeURIComponent(url.pathname.slice(ROUTE_PREFIX.length + 1));
+    const routeRequest: RouteRequest = { rest, method, body, signal, query: url.searchParams };
+    const readonlyResult = await readonlyRoute(routeRequest);
+    if (readonlyResult !== undefined) return readonlyResult;
+    const configResult = await configRoute(routeRequest);
+    if (configResult !== undefined) return configResult;
+    const actionResult = await actionRoute(routeRequest);
+    if (actionResult !== undefined) return actionResult;
 
-    // 独立桌宠的右键菜单与托盘共用 desktop-main.cjs 持有的唯一设置窗口。
-    // Helper 经 bridge 发起此请求，主进程从宿主 stdout 收到控制行后聚焦现有窗口或创建它。
-    if (rest === 'settings/open') {
-      if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-      if (process.env.DSH_PET_STANDALONE !== '1') {
-        return { kind: 'json', status: 404, obj: { error: 'not found' } };
-      }
-      process.stdout.write('DSH_PET_CONTROL:open-settings\n');
-      return { kind: 'json', status: 200, obj: { ok: true } };
-    }
-
-    // 独立桌宠右键菜单的退出操作经 Helper 管道到达这里，再由启动器退出整套应用。
-    // 不调用 HTTP 服务的 /shutdown：桌宠 Helper 的 bridge 只分发 ROUTE_PREFIX 下的业务路由。
-    if (rest === 'app/quit') {
-      if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-      if (process.env.DSH_PET_STANDALONE !== '1') {
-        return { kind: 'json', status: 404, obj: { error: 'not found' } };
-      }
-      process.stdout.write('DSH_PET_CONTROL:quit-app\n');
-      return { kind: 'json', status: 200, obj: { ok: true } };
-    }
-
-    // 成品配置：/dsh-pet-7340/config（GET 读取合并成品 / PUT 保存用户层 / POST 同步内置默认）
-    if (rest === 'config') {
-      if (method === 'GET') {
-        // 唯一配置入口：readAllConfig 返回绝对正确的完成品聚合（{ main:{...}, test1:{...} }），
-        // 浏览器/桌面/设置页直接消费，无需任何校验/兜底
-        try {
-          // 动态配置必须杀缓存（与 /state 同口径）：消费端会「发现配置版本变化 → 重拉 /config」，
-          // 这一次 GET 若命中缓存就会拿回旧配置，那套机制直接失效。
-          return {
-            kind: 'json',
-            status: 200,
-            obj: standaloneMoveTestConfig(readAllConfig(configPaths)),
-            headers: { 'cache-control': 'no-cache, no-store' },
-          };
-        } catch (e) {
-          return { kind: 'json', status: 500, obj: { error: e instanceof Error ? e.message : String(e) } };
-        }
-      }
-      if (method === 'PUT') {
-        try {
-          const parsed = JSON.parse(body ?? '');
-          // 透传保留：读当前磁盘上的用户文件原对象，把非白名单顶层字段（physics/whisperPrompt/
-          // chatMemoryRounds/...）带回给 saveUserConfig——设置页保存不再抹掉用户手改的精调配置。
-          // **必须走 JSONC 容忍解析器**（readUserConfig）：用户层可能是「同步」写入的带 // 注释
-          // 的 config.jsonc 原文，用严格 JSON.parse 会在这里抛错并被吞掉 → existing 变 undefined
-          // → 白名单重建 → 用户的高级字段全丢（老 bug 的复发路径，已由守卫测试钉住）。
-          const existing = readUserConfig(configPaths);
-          const clean = saveUserConfig(parsed, existing);
-          if (!clean) {
-            return {
-              kind: 'json',
-              status: 400,
-              obj: {
-                error:
-                  'invalid pet config: expected { pets:[{name?,id,size,balanceEnabled,display,position:{corner,marginX,marginY}}] }（display 为 web/desktop/both/none 之一；可选顶层 notificationsEnabled / whisperImageEnabled / chatImageEnabled 布尔；可选宠物布尔 whisperEnabled / workStatusEnabled / fixedEnabled）',
-              },
-            };
-          }
-          // 损坏预检：用户层存在但连 JSONC 都解析不了（真损坏）→ **先不写盘**。
-          // 保存是白名单重建，existing 读不出来就等于把文件里剩下的内容整份丢掉，而且静默——
-          // 所以回 409 让设置页弹窗（取消 = 不动文件；确认 = 带 ?force=1 强行重建）。
-          if (url.searchParams.get('force') !== '1' && userConfigUnparsable(configPaths)) {
-            return {
-              kind: 'json',
-              status: 409,
-              obj: { error: 'user config is unparsable', needConfirm: true, userFile: userConfigPath },
-            };
-          }
-          await mkdir(userRoot, { recursive: true });
-          await writeFile(userConfigPath, JSON.stringify(clean, null, 2), 'utf8');
-          void syncDesktop(); // display/size 等可能变化：重解析桌面宠物并重启 Helper（异步，不阻塞保存响应）
-          // 响应体 = 保存后的**成品聚合**（与 GET /config 同一份，字段已填满）：
-          // 设置页把它直接交给容器的 flattenConfigPets 拍平渲染——客户端的条目级字段
-          // （动画池/权重/物理参数/工作状态文案）只有这一处填充，不再有第二份补吹实现。
-          return { kind: 'json', status: 200, obj: standaloneMoveTestConfig(readAllConfig(configPaths)) };
-        } catch {
-          return { kind: 'json', status: 400, obj: { error: 'invalid JSON body' } };
-        }
-      }
-      if (method === 'POST') {
-        // 同步：把内置默认配置（assets/config.jsonc 原文，含注释）整份写入用户配置——
-        // 既是「恢复默认」（合并结果 = 内置默认），又给用户留下一份可直接编辑的完整配置，
-        // 不必再自己从包内复制一份（见 config.ts 的 syncUserConfigFromDefault）。
-        try {
-          syncUserConfigFromDefault(configPaths);
-        } catch (e) {
-          // 默认文件缺失 / 用户目录不可写：显式 500，绝不静默留下半个配置文件
-          return { kind: 'json', status: 500, obj: { error: e instanceof Error ? e.message : String(e) } };
-        }
-        void syncDesktop(); // 配置变了：重解析桌面宠物并重启 Helper（异步，不阻塞响应）
-        return { kind: 'json', status: 200, obj: standaloneMoveTestConfig(readAllConfig(configPaths)) };
-      }
-      return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-    }
-
-    // 单只宠物的显示位置（桌面端右键「关闭桌面显示」→ POST /pet-display）。
-    // 高频操作，故只收 id + display 两个参数，不要求调用方回传整段 pets（那是 PUT /config 的形态：
-    // 客户端做读-改-写既容易误伤同层其它宠物，也拿不准该写哪一层）。
-    // 层归属由服务端反查：id 在合并后被 mergePet 保证**全局唯一**（重复实例会被跳过、不进聚合），
-    // 所以 findPetInstance 的结果没有歧义；反过来让客户端传 entry 只会多出"参数与真实归属不符"的
-    // 新失败面（还平白把 entry 暴露成拼文件路径的输入）。
-    // 写入语义与 PUT /config 完全一致：saveUserConfig 白名单重建 + existing 透传——用户手改的
-    // whisperPrompt / memes 等非白名单字段不许被抹掉（见 ./config 里那段老 bug 的注释）。
-    if (rest === 'pet-display') {
-      if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-      let payload: { id?: unknown; display?: unknown };
-      try {
-        payload = JSON.parse(body ?? '') as { id?: unknown; display?: unknown };
-      } catch {
-        return { kind: 'json', status: 400, obj: { error: 'invalid JSON body' } };
-      }
-      const petId = typeof payload.id === 'string' ? payload.id.trim() : '';
-      const nextDisplay = String(payload.display ?? '');
-      if (!petId) return { kind: 'json', status: 400, obj: { error: 'missing pet id' } };
-      if (!PET_DISPLAY_SET.has(nextDisplay)) {
-        return { kind: 'json', status: 400, obj: { error: `invalid display: ${nextDisplay}` } };
-      }
-      let merged: Record<string, Record<string, unknown>>;
-      try {
-        merged = readAllConfig(configPaths);
-      } catch (e) {
-        return { kind: 'json', status: 500, obj: { error: e instanceof Error ? e.message : String(e) } };
-      }
-      // 命中不到有两种可能：id 根本不存在，或该实例在合并时**因 id 与其它条目重复被跳过**（于是不在
-      // 聚合里）。两种都只能回 404——绝不能凭 id 去猜它"应该"属于哪个文件。
-      const hit = findPetInstance(merged, petId);
-      if (!hit) return { kind: 'json', status: 404, obj: { error: `pet not found: ${petId}` } };
-      // 目标层：main → 用户主配置；其余 → 文件宠物自己的配置（.json 或 .jsonc，定位统一走 ./config）
-      let layerPath: string;
-      let layerDir: string;
-      let existing: Record<string, unknown> | undefined;
-      if (hit.entry === 'main') {
-        layerPath = userConfigPath;
-        layerDir = userRoot;
-        existing = readUserConfig(configPaths);
-      } else {
-        const file = readPetConfigEntry(configPaths, hit.entry);
-        if (!file) {
-          return { kind: 'json', status: 404, obj: { error: `pet config file not found: ${hit.entry}` } };
-        }
-        layerPath = file.path;
-        layerDir = petConfigDir;
-        existing = file.raw;
-      }
-      // 整段替换语义：saveUserConfig 重建的是整个 pets 数组，必须带上**该层全部**宠物，只把目标
-      // 那只的 display 换掉（漏掉别的 = 把它们从配置里删掉）。
-      const layerPets = Array.isArray(hit.conf.pets) ? (hit.conf.pets as Record<string, unknown>[]) : [];
-      const pets = layerPets.map((p) => (String(p.id) === petId ? { ...p, display: nextDisplay } : p));
-      const clean = saveUserConfig({ pets }, existing);
-      if (!clean) return { kind: 'json', status: 400, obj: { error: 'invalid pet config' } };
-      try {
-        await mkdir(layerDir, { recursive: true });
-        await writeFile(layerPath, JSON.stringify(clean, null, 2), 'utf8');
-      } catch (e) {
-        return { kind: 'json', status: 500, obj: { error: e instanceof Error ? e.message : String(e) } };
-      }
-      // 配置变更信号（**只在写盘成功之后**：失败时不该动版本号，否则浏览器白重拉一次 /config）。
-      // 这是全插件**唯一**写 sections.config 的地方：保存 / 同步配置的调用方自己就拿到了成品聚合
-      // （响应体），桌面端由下面的 syncDesktop() 重启，都不需要这个信号；
-      // 而桌面端右键改 display 时浏览器页面**不是发起方**，只能靠它发现「配置被别处改过」。
-      state.writeSection('config', {});
-      // 不 await：发起者很可能就是**即将被这次重载换掉的**桌面 Helper（与 /reload 同一处境）。
-      // 写盘已经落定，重启结果不需要回给调用方。
-      void syncDesktop();
-      // 响应体 = 改动后的**成品聚合**（与 PUT / POST /config 同形）：调用方（浏览器端右键菜单）
-      // 直接把它交给 petBridge.reload，不必再发一次 GET /config —— 与设置页保存走的是同一条路，
-      // 也就不会拿到可能陈旧的配置（现场表现：不返回聚合时浏览器端要刷新才生效）。
-      return { kind: 'json', status: 200, obj: readAllConfig(configPaths) };
-    }
-
-    // 桌面端「重载配置」（右键菜单 → POST /reload）：重启桌面 Helper，全部桌面宠物窗口按最新配置重建。
-    // 与保存走**同一条**重启路径（syncDesktop：串行队列 + 等旧进程真正退出再起新的），
-    // 所以宠物数量 / display / size 的变化同样生效——渲染端就地重拉配置做不到这几项
-    // （每只宠物一个窗口，是宿主启动时按 DSH_PET_PETS 建的）。
-    // 注意：发起者就是**即将被重启的那个 helper**，本响应不保证送达，因此不 await 重启、立刻回 200。
-    if (rest === 'reload') {
-      if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-      void syncDesktop();
-      return { kind: 'json', status: 200, obj: { reloading: true } };
-    }
-
-    // 配置文件路径 + 存储位置清单（设置页「高级配置」与「卸载与存储」展示用）
-    if (rest === 'config/meta') {
-      return {
-        kind: 'json',
-        status: 200,
-        obj: {
-          user: userConfigPath,
-          default: join(PACKAGE_ROOT, 'assets', 'config.jsonc'),
-          animations: thumbUserRoot,
-          memes: memesUserRoot,
-          // 全部落盘位置（本包用户数据 / Electron 运行时 / 桌面端缓存 / 下载缓存 / 插件本体）：
-          // 前两条直接传真实写入方的路径，不在这里重拼目录名
-          storage: storageEntries({
-            userDataRoot: userRoot,
-            electronDir: electronLandingDir(),
-            home: homedir(),
-            packageRoot: PACKAGE_ROOT,
-          }),
-          // profile 名（拼卸载命令 dsh plugin --profile <名> remove dsh-pet；反推不出时为空串）
-          profile: profileNameFrom(PACKAGE_ROOT) ?? '',
-        },
-      };
-    }
-
-    // 可选模型清单（设置页「AI 模型」两个下拉框的数据源）：与 DSH 自己的模型选择器**同源**——
-    // 都来自宿主 llm 服务：listProviders = 已注册的实时服务商路由，listModels(provider) = 该路由下的模型。
-    // 只读、无副作用；某个服务商列模型失败（适配器不支持 / 网络）只让它空着，不拖垮整张清单。
-    // 服务商路由一个都没注册时回落到 listConfigurableProviders（适配器声明可配置的路由），
-    // 免得下拉框空着——那种路由调用失败会由生成侧的回落兜住。
-    if (rest === 'models') {
-      if (method !== 'GET') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-      try {
-        const llm = ctx.llm as
-          | {
-              listProviders?: () => Array<{ id?: unknown; name?: unknown }>;
-              listConfigurableProviders?: () => Array<{ provider?: unknown; displayName?: unknown }>;
-              listModels?: (provider: string) => Promise<Array<{ id?: unknown; name?: unknown }>>;
-            }
-          | undefined;
-        const named = (id: unknown, name: unknown): { id: string; name: string } => {
-          const pid = String(id ?? '');
-          return { id: pid, name: String(name ?? '') || pid };
-        };
-        let providers = (typeof llm?.listProviders === 'function' ? llm.listProviders() : []).map((p) =>
-          named(p?.id, p?.name),
-        );
-        if (providers.length === 0 && typeof llm?.listConfigurableProviders === 'function') {
-          providers = llm.listConfigurableProviders().map((p) => named(p?.provider, p?.displayName));
-        }
-        providers = providers.filter((p) => p.id);
-        const catalog = await Promise.all(
-          providers.map(async (p) => {
-            let models: Array<{ id: string; name: string }> = [];
-            try {
-              const list = await llm?.listModels?.(p.id);
-              models = (Array.isArray(list) ? list : []).map((m) => named(m?.id, m?.name)).filter((m) => m.id);
-            } catch {
-              /* 单个服务商列不出模型：留空即可（下拉框里该服务商只有「跟随当前对话」可选） */
-            }
-            return { ...p, models };
-          }),
-        );
-        return { kind: 'json', status: 200, obj: { providers: catalog } };
-      } catch (e) {
-        return { kind: 'json', status: 500, obj: { error: e instanceof Error ? e.message : String(e) } };
-      }
-    }
-
-    // 轮询统一状态（S）：/dsh-pet-7340/state（GET，no-cache）——前端轮询的**唯一**数据源
-    // （余额 / 工作状态 / 通知 / 配置变更信号 / 宠物说话，形状见 ./state）。
-    // 只读、纯内存、**零副作用**：绝不在这里触发外部调用或模型生成——那会把所有人的轮询拖死；
-    // 也**不在这里碰磁盘**（早先这里现算配置文件的 mtime 指纹，等于每拍读一次盘，
-    // 桌面端一窗一宠各自轮询 → N 倍；配置变更信号已改走 sections.config 叶子）。
-    //
-    // **长轮询**：带 `?since=&timeout=`（成对必填）时，若调用方手里的版本与当前相同就**挂起**，
-    // 直到任意叶子被写过（立刻返回）或超时。不带这两个参数 = 立刻返回全量（改造前的语义）。
-    // 等待语义与 GET /playback/{id} 的 wait 是同一套：上限同值、断线走同一个 signal 收尸、
-    // 卸载走 cancelAll()。区别只有一个——那边的唤醒条件是"某条记录进入某个状态"，
-    // 这边是"任意叶子被写过"，所以等待者是全局集合，一次写入唤醒所有人。
-    if (rest === 'state') {
-      if (method !== 'GET') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-      if (process.env.DSH_PET_STANDALONE === '1') {
-        type StandaloneBridge = {
-          revision?: unknown;
-          state?: unknown;
-          eventAt?: unknown;
-          updatedAt?: unknown;
-          agents?: unknown;
-          notification?: {
-            revision?: unknown;
-            title?: unknown;
-            body?: unknown;
-            icon?: unknown;
-            createdAt?: unknown;
-          } | null;
-        };
-        const readBridge = (path: string): StandaloneBridge | undefined => {
-          try {
-            return JSON.parse(readFileSync(path, 'utf8')) as StandaloneBridge;
-          } catch {
-            return undefined;
-          }
-        };
-        const dshBridge = readBridge(bridgePath);
-        const codexBridge = readBridge(codexBridgePath);
-        const claudeBridge = readBridge(claudeBridgePath);
-        const now = Date.now();
-        const fresh = (bridge: StandaloneBridge | undefined): boolean => {
-          const updatedAt = Number(bridge?.updatedAt);
-          return Number.isFinite(updatedAt) && now - updatedAt < 3500 && now >= updatedAt;
-        };
-        const freshBridges = [
-          { source: 'dsh', bridge: dshBridge },
-          { source: 'codex', bridge: codexBridge },
-          { source: 'claude', bridge: claudeBridge },
-        ]
-          .filter(({ bridge }) => fresh(bridge));
-        const activeStates = new Set(['thinking', 'working', 'result', 'waiting', 'success', 'error']);
-        const allBridgeAgents: Array<{
-          key: string;
-          state: HostWorkStatusState;
-          sourceName: string;
-          revision: number;
-          startedAt: number;
-          eventAt: number;
-          source: string;
-          bridgeRevision: number;
-        }> = freshBridges.flatMap(({ source, bridge }) => {
-          const bridgeAgentList = bridge?.agents;
-          if (Array.isArray(bridgeAgentList)) {
-            return bridgeAgentList.flatMap((rawAgent) => {
-              if (!rawAgent || typeof rawAgent !== 'object') return [];
-              const agent = rawAgent as Record<string, unknown>;
-              if (
-                typeof agent.key !== 'string' ||
-                typeof agent.state !== 'string' ||
-                !activeStates.has(agent.state) ||
-                !Number.isSafeInteger(agent.revision) ||
-                !Number.isFinite(agent.startedAt)
-              ) {
-                return [];
-              }
-              return [
-                {
-                  key: `${source}:${agent.key}`,
-                  state: agent.state as HostWorkStatusState,
-                  sourceName: source === 'codex' ? 'Codex' : source === 'claude' ? 'Claude Code' : 'DeepSeek Harness',
-                  revision: agent.revision as number,
-                  startedAt: agent.startedAt as number,
-                  eventAt: Number(agent.eventAt ?? bridge?.eventAt ?? bridge?.updatedAt) || now,
-                  source,
-                  bridgeRevision: Number(bridge?.revision) || (agent.revision as number),
-                },
-              ];
-            });
-          }
-          const state = bridge?.state;
-          if (typeof state !== 'string' || !activeStates.has(state)) return [];
-          return [
-            {
-              key: `legacy:${source}`,
-              state: state as HostWorkStatusState,
-              sourceName: source === 'codex' ? 'Codex' : source === 'claude' ? 'Claude Code' : 'DeepSeek Harness',
-              revision: Number(bridge?.revision) || 0,
-              startedAt: Number(bridge?.eventAt ?? bridge?.updatedAt) || now,
-              eventAt: Number(bridge?.eventAt ?? bridge?.updatedAt) || now,
-              source,
-              bridgeRevision: Number(bridge?.revision) || 0,
-            },
-          ];
-        });
-        // A client is one work-status owner, regardless of how many sessions or subagents it
-        // reports. Prefer an in-progress agent over a recently completed one, then select the
-        // most recently active state within that client. Thus Codex/Claude Code/DSH can each use
-        // one pet, while side conversations and parallel agents don't consume extra pets.
-        const agentsBySource = new Map<string, typeof allBridgeAgents>();
-        for (const agent of allBridgeAgents) {
-          const list = agentsBySource.get(agent.source) ?? [];
-          list.push(agent);
-          agentsBySource.set(agent.source, list);
-        }
-        const inProgressStates = new Set(['thinking', 'working', 'result', 'waiting']);
-        const bridgeAgents = Array.from(agentsBySource, ([source, agents]) => {
-          const inProgress = agents.filter((agent) => inProgressStates.has(agent.state));
-          const candidates = inProgress.length > 0 ? inProgress : agents;
-          const latest = candidates.reduce(
-            (current, agent) => (!current || agent.eventAt > current.eventAt ? agent : current),
-            null as (typeof allBridgeAgents)[number] | null,
-          );
-          if (!latest) return null;
-          return {
-            ...latest,
-            key: `${source}:client`,
-            revision: latest.bridgeRevision,
-          };
-        }).filter((agent): agent is NonNullable<typeof agent> => agent !== null);
-        bridgeAgents.sort((a, b) => a.startedAt - b.startedAt || a.key.localeCompare(b.key));
-        const latestAgent = bridgeAgents.reduce(
-          (latest, agent) => (!latest || agent.eventAt > latest.eventAt ? agent : latest),
-          null as (typeof bridgeAgents)[number] | null,
-        );
-        const workState = latestAgent?.state ?? null;
-        const sourceName = latestAgent?.sourceName ?? null;
-        const fingerprint = JSON.stringify({ workState, sourceName, bridgeAgents });
-        if (fingerprint !== lastStandaloneBridgeFingerprint) {
-          lastStandaloneBridgeFingerprint = fingerprint;
-          state.writeSection('workStatus', { state: workState, task: null, sourceName, agents: bridgeAgents });
-        }
-        const bridgedNotification = dshBridge?.notification;
-        const notificationRevision = `${String(bridgedNotification?.createdAt ?? '')}:${String(bridgedNotification?.revision ?? '')}`;
-        const notificationCreatedAt = Number(bridgedNotification?.createdAt);
-        const notificationFresh =
-          fresh(dshBridge) &&
-          notificationRevision.length > 0 &&
-          Number.isFinite(notificationCreatedAt) &&
-          Date.now() >= notificationCreatedAt &&
-          Date.now() - notificationCreatedAt <= 15_000 &&
-          typeof bridgedNotification?.title === 'string' &&
-          typeof bridgedNotification?.body === 'string';
-        if (notificationFresh && notificationRevision !== lastStandaloneNotificationRevision) {
-          lastStandaloneNotificationRevision = notificationRevision;
-          state.writeSection('notify', {
-            type: 'standalone',
-            title: bridgedNotification.title,
-            body: bridgedNotification.body,
-            icon:
-              typeof bridgedNotification.icon === 'string' &&
-              ['notify-done', 'notify-error', 'notify-truncated', 'notify-approval', 'notify-question'].includes(
-                bridgedNotification.icon,
-              )
-                ? bridgedNotification.icon
-                : 'notify-done',
-          });
-        }
-      }
-      const headers = { 'cache-control': 'no-cache, no-store' };
-      const parsed = parseStateWaitQuery(url.searchParams.get('since'), url.searchParams.get('timeout'));
-      if (parsed.kind === 'error') return { kind: 'json', status: 400, obj: { error: parsed.error } };
-      const current = state.read();
-      const standaloneBridgeMode = process.env.DSH_PET_STANDALONE === '1';
-      // 两者都没传 → 立刻返回；已经有新东西 → 也立刻返回（别白等一整个 timeout）。
-      // timeout=0 走挂起分支，下一拍就醒，等价"立刻返回"，这里不特判。
-      // 独立版的状态桥来自外部客户端写入的文件，文件变化不会唤醒 state.wait；保持短轮询，
-      // 否则工作状态只能等长轮询超时后才被桌宠发现。省略 counter 会让渲染端自动退回 1s 轮询。
-      if (parsed.kind === 'none' || current.counter !== parsed.since || standaloneBridgeMode) {
-        const responseState = { ...current, configVersion: configVersion(configPaths) };
-        if (standaloneBridgeMode) delete (responseState as { counter?: number }).counter;
-        return { kind: 'json', status: 200, obj: responseState, headers };
-      }
-      const since = parsed.since;
-      return await new Promise<RouteResult>((resolveWait) => {
-        let settled = false;
-        /** 收尾：只认第一次（唤醒 / 超时 / 取消 / 调用方断开 都可能先后到达） */
-        const settle = (result: RouteResult): void => {
-          if (settled) return;
-          settled = true;
-          resolveWait(result);
-        };
-        // 唤醒时**才** read()：store 保证"叶子已写定"之后才叫醒，所以这里拿到的一定是新状态
-        const cancel = state.wait({
-          since,
-          timeoutMs: parsed.timeoutMs,
-          onWake: () => settle({ kind: 'json', status: 200, obj: { ...state.read(), configVersion: configVersion(configPaths) }, headers }),
-        });
-        // 调用方断开：取消等待者（清掉它的超时定时器），以"无需应答"收尾。
-        const onAbort = (): void => {
-          cancel();
-          settle({ kind: 'none' });
-        };
-        if (signal?.aborted) {
-          onAbort();
-          return;
-        }
-        signal?.addEventListener('abort', onAbort, { once: true });
-      });
-    }
-
-    if (rest === 'app-icon.png') {
-      if (method !== 'GET') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-      const appIcon = resolveExisting(PACKAGE_ROOT_ASSETS, 'dsh-pet-icon-16.png');
-      if (appIcon === undefined) return { kind: 'text', status: 404, body: 'dsh-pet: app icon not found' };
-      return { kind: 'file', file: appIcon, contentType: 'image/png' };
-    }
-
-    // 余额：/dsh-pet-7340/balance（POST = 立即刷新一次并写入 S，返回 {ok}）
-    // 动作端点，**不返回余额数据**——数据只有一个出口（/state），这里只负责"让它刷新"。
-    // 改造前这里是 GET（直接查余额）+ /balance/trigger（1s 计数轮询）两个端点，都已删除：
-    // 前端不再各自定时查余额（host 定时器统一查，两端共享一份），也不再需要计数轮询中转。
-    if (rest === 'balance') {
-      if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-      const targetPetId = String(url.searchParams.get('pet') ?? '').trim() || undefined;
-      await refreshBalance(true, targetPetId); // 菜单带 pet 时只展示在那只桌宠；命令等无目标请求仍面向全部
-      // ok 只表示"这次刷新动作完成了"；余额本身是否可用在 S 的 data 里（ok:false 会弹文字说明气泡）
-      return { kind: 'json', status: 200, obj: { ok: true } };
-    }
-
-    // 碎碎念：/dsh-pet-7340/whisper?pet=<id>（POST = 立即让桌宠新说一句，返回 {ok}）
-    // 动作端点，**不返回文本**——文本走 S 的 pets.<id>.say（碎碎念/命令气泡/对话回复同一个叶子）。
-    // 手动语义不受 whisperEnabled 门控：那个字段只关自动周期（与改造前一致）。
-    if (rest === 'whisper') {
-      if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-      const petId = String(url.searchParams.get('pet') ?? '');
-      try {
-        const ok = await publishWhisper(petId);
-        return { kind: 'json', status: 200, obj: ok ? { ok: true } : { ok: false, reason: 'generate-error' } };
-      } catch (e) {
-        return {
-          kind: 'json',
-          status: 200,
-          obj: { ok: false, reason: 'generate-error', message: e instanceof Error ? e.message : String(e) },
-        };
-      }
-    }
-
-    // 第三方投喂：/dsh-pet-7340/broadcast?pet=<id>（POST = 把一段**外部给定的**文本写进桌宠气泡）
-    // 与 /whisper 的区别：这个**不生成**，调用方自己给文本——宿主侧其他插件（女仆巡检等）
-    // 想说自己的话时用它，桌宠就成了那套人格的"实体"（见 issue #76）。
-    // 写入 S 的 pets.<id>.say —— 与碎碎念/对话回复**同一个叶子**，两端 1s 内自动显示，前端零改动。
-    // 动作端点，只回 {ok}；文本本身从 /state 读。
-    // 校验（不通过一律 HTTP 200 + ok:false，与 /chat 的失败口径一致）：
-    //   text 必填、trim 后非空（**不设长度限制，也不限频**：内容与频率由调用方自己负责）；
-    //   pet 缺省 = 当前桌宠（resolveActivePetId），须真实存在；
-    //   image 只认**包内表情包名**（池内命中即用其规范名），杜绝第三方注入外部地址；
-    //   duration 可选，气泡显示时长（ms）；缺省 10s，`0` = 字面意思「不显示」，负数/非有限数拒绝；
-    //   anim 可选，是否联动 events.whisper 动画；只有严格 false 才关闭（宽松口径）。
-    if (rest === 'broadcast') {
-      if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(body ?? 'null');
-      } catch {
-        return { kind: 'json', status: 400, obj: { error: 'invalid JSON body' } };
-      }
-      const o = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
-      // 空文本不需要读配置就能判定：先短路，别为一个必然失败的请求去碰磁盘
-      if (!normalizeBroadcastText(o.text)) {
-        return { kind: 'json', status: 200, obj: { ok: false, reason: 'bad-request', message: 'text 为空' } };
-      }
-      // duration 同理：判定不需要配置，先短路（anim 没有非法值，宽松口径下永远有结论）
-      const duration = normalizeBroadcastDuration(o.duration);
-      if (duration === null) {
-        return {
-          kind: 'json',
-          status: 200,
-          obj: { ok: false, reason: 'bad-request', message: 'duration 必须是 ≥0 的有限数字（毫秒）' },
-        };
-      }
-      const anim = normalizeBroadcastAnim(o.anim);
-      try {
-        const cfg = readAllConfig(configPaths);
-        const d = decideBroadcast({
-          cfg,
-          requested: String(url.searchParams.get('pet') ?? ''),
-          active: resolveActivePetId(),
-          text: o.text,
-          image: o.image,
-          duration,
-          anim,
-          memeDirs: memeDirsFor,
-        });
-        if (!d.ok) return { kind: 'json', status: 200, obj: { ok: false, reason: d.reason, message: d.message } };
-        // duration / anim 写**解析后的生效值**（缺省也已填成显式值）：/state 里因此能看到
-        // 实际生效的时长与联动开关，调用方不用自己猜缺省是多少。
-        state.writePet(
-          d.petId,
-          'say',
-          d.image
-            ? { text: d.text, image: d.image, duration: d.duration, anim: d.anim }
-            : { text: d.text, duration: d.duration, anim: d.anim },
-        );
-        return { kind: 'json', status: 200, obj: { ok: true } };
-      } catch (e) {
-        // 配置读取失败等（安装损坏）→ 显式失败，不静默
-        return {
-          kind: 'json',
-          status: 200,
-          obj: { ok: false, reason: 'generate-error', message: e instanceof Error ? e.message : String(e) },
-        };
-      }
-    }
-
-    // 清空气泡：/dsh-pet-7340/bubble/clear?pet=<id>（POST = 收起该宠物**当前正显示的说话气泡**）
-    // 与 /broadcast 的关系：投喂写气泡，这个收气泡；两者共用同一个叶子（pets.<id>.say）。
-    // 清空靠叶子里的 `{ clear: true }` 标记——**空文本表达不了这个动作**：消费端的 readSay
-    // 会把空文本判成非法、整拍跳过，所以必须有一个独立的形态（见 src/shared/state.ts 的 SayCue）。
-    // 只收说话气泡：余额气泡、工作状态气泡、以及 anim/position/throw 三个叶子**都不动**
-    // （气泡与动作是两把锁，分别释放——issue #122 第 5 条）。
-    // 幂等：当前没有气泡也回 { ok: true }（"让气泡消失"这个意图在空状态下已经成立）。
-    // 无请求体；动作端点，只回 {ok}。
-    if (rest === 'bubble/clear') {
-      if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-      try {
-        const cfg = readAllConfig(configPaths);
-        const d = decideBubbleClear({
-          cfg,
-          requested: String(url.searchParams.get('pet') ?? ''),
-          active: resolveActivePetId(),
-        });
-        if (!d.ok) return { kind: 'json', status: 200, obj: { ok: false, reason: d.reason, message: d.message } };
-        state.writePet(d.petId, 'say', { clear: true });
-        return { kind: 'json', status: 200, obj: { ok: true } };
-      } catch (e) {
-        return {
-          kind: 'json',
-          status: 200,
-          obj: { ok: false, reason: 'generate-error', message: e instanceof Error ? e.message : String(e) },
-        };
-      }
-    }
-
-    // 点播动画：/dsh-pet-7340/anim?pet=<id>（POST = 让桌宠播一段指定动画）
-    // 效果与右键菜单点「动作」树**完全一致**——两端都复用同一个菜单动作处理函数
-    // （浏览器 handleMenuAction / 桌面 sprite.onMenuAction），宿主只负责把名字送到。
-    // 写入 S 的 pets.<id>.anim —— 前端 1s 内发现 counter 变化后换源播放（**名字即文件名**）。
-    // 动作端点，只回 {ok}。
-    // 校验（不通过一律 HTTP 200 + ok:false，与其他动作端点口径一致）：
-    //   name 必填、trim 后非空，且必须在该宠物 animations 配置能点到的集合内
-    //   （播放端对不存在的动画没有兜底：名字即文件名 → 404 → 加载失败 → 表现为"点了没反应"，
-    //    所以必须在这里拦住，而不是写进 S 让前端白跑一趟）；
-    //   pet 缺省 = 当前桌宠（resolveActivePetId），须真实存在。
-    if (rest === 'anim') {
-      if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(body ?? 'null');
-      } catch {
-        return { kind: 'json', status: 400, obj: { error: 'invalid JSON body' } };
-      }
-      const o = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
-      try {
-        const cfg = readAllConfig(configPaths);
-        const d = decideAnim({
-          cfg,
-          requested: String(url.searchParams.get('pet') ?? ''),
-          active: resolveActivePetId(),
-          name: o.name,
-        });
-        if (!d.ok) return { kind: 'json', status: 200, obj: { ok: false, reason: d.reason, message: d.message } };
-        // 播放回执：受理时建记录（accepted），并把编号随叶子一起下发——渲染端据此上报
-        // （叶子多一个字段对老客户端无害：readAnim 只读 name）。见 ./playback 与下方 /playback 路由。
-        const record = playback.create(d.petId, d.name);
-        state.writePet(d.petId, 'anim', { name: d.name, playbackId: record.playbackId });
-        return { kind: 'json', status: 200, obj: { ok: true, playbackId: record.playbackId } };
-      } catch (e) {
-        // 配置读取失败等（安装损坏）→ 显式失败，不静默
-        return {
-          kind: 'json',
-          status: 200,
-          obj: { ok: false, reason: 'generate-error', message: e instanceof Error ? e.message : String(e) },
-        };
-      }
-    }
-
-    // 位置与抛掷：/dsh-pet-7340/position 与 /dsh-pet-7340/throw（POST）——两条**运动指令**。
-    //
-    // 与 /anim 同族：受理后写进 S 的宠物叶子（pets.<id>.position / pets.<id>.throw），由渲染端消费。
-    // 位置**不引入任何新运动学**：`mode` 三选一（instant 一帧到位 / spring 拖拽那套过阻尼弹簧 /
-    // line 按 duration 毫秒直线走到），三条路都是渲染端已经有的；抛掷复用已有的 startThrow
-    // （角度/力度换算成初速度），下游的重力/反弹/摩擦/落地 Q 弹/宠物间碰撞一概照旧。
-    // 所以这里只做校验与夹取（纯逻辑在 ./motion-cue，可离线单测）。
-    //
-    // 位置：x/y 是宠物**中心**的归一化坐标（0~1），越界**夹取**并把实际生效值回给调用方。
-    // 抛掷：angle 单位度（0 = 正右，逆时针为正）；power 是力度倍率（1.0 = 1200 px/s 软钳速前）。
-    //
-    // 与用户拖拽撞车时**静默丢弃**：渲染端发现手指正按在宠物身上就丢掉这一拍，但仍然回 ok:true
-    // （动作端点只表示"受理了"，不表示"生效了"，与 /anim 同一契约）。宿主判不了拖拽状态——
-    // 那只有渲染端知道（见两端的 active 标志），所以这里不做拒绝。
-    if (rest === 'position' || rest === 'throw') {
-      const isPosition = rest === 'position';
-      if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(body ?? 'null');
-      } catch {
-        return { kind: 'json', status: 400, obj: { error: 'invalid JSON body' } };
-      }
-      const o = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
-      try {
-        const cfg = readAllConfig(configPaths);
-        const requested = String(url.searchParams.get('pet') ?? '');
-        const active = resolveActivePetId();
-        if (isPosition) {
-          const d = decidePosition({
-            cfg,
-            requested,
-            active,
-            x: o.x,
-            y: o.y,
-            mode: o.mode,
-            duration: o.duration,
-          });
-          if (!d.ok) return { kind: 'json', status: 200, obj: { ok: false, reason: d.reason, message: d.message } };
-          // 叶子按模式收敛成最小形状：非 line 模式不带 duration（见 positionLeafData）
-          state.writePet(d.petId, 'position', positionLeafData(d));
-          // 回**夹取后**的实际生效值：调用方不必自己算边界，也不会误以为越界值被照单全收
-          return { kind: 'json', status: 200, obj: { ok: true, x: d.x, y: d.y } };
-        }
-        const d = decideThrow({ cfg, requested, active, angle: o.angle, power: o.power });
-        if (!d.ok) return { kind: 'json', status: 200, obj: { ok: false, reason: d.reason, message: d.message } };
-        state.writePet(d.petId, 'throw', { angle: d.angle, power: d.power });
-        return { kind: 'json', status: 200, obj: { ok: true } };
-      } catch (e) {
-        // 配置读取失败等（安装损坏）→ 显式失败，不静默（与 /anim 同一口径）
-        return {
-          kind: 'json',
-          status: 200,
-          obj: { ok: false, reason: 'generate-error', message: e instanceof Error ? e.message : String(e) },
-        };
-      }
-    }
-
-    // 播放回执：/dsh-pet-7340/playback/<id>        （GET 查询，可挂起等待）
-    //           /dsh-pet-7340/playback/<id>/report （POST，**渲染端上报**）
-    //
-    // 记录由**渲染端上报驱动**（见 ./playback）：host 只知道"受理了"，不知道播没播完——
-    // 所以没有 /report 就没有真实回执，查询永远停在 accepted。
-    // 与 S 无关：播放记录是 per-caller 资源（只有发起那次点播的调用方关心、有生命周期、
-    // 数量随第三方调用方增长），放进 1s 全局广播会让每个窗口为每个功能付流量。
-    // 前缀守卫写成**字面量比较**：一是把正则尝试限定在 playback 段（更快、边界更明确），
-    // 二是让 scripts/check-openapi.mjs 的「文档 ↔ 路由实现」对齐检查能认出这条路由
-    //（它靠 rest 与单引号段名的字面量比较从实现里提取路由，纯正则形式的匹配它看不见；
-    //  注意注释里别把那个比较原样写出来，会被同一条正则当成一条真实路由）。
-    const playbackPath = rest === 'playback' || rest.startsWith('playback/') ? parsePlaybackPath(rest) : undefined;
-    if (playbackPath) {
-      const playbackId = playbackPath.playbackId;
-      // ---- 上报（渲染端 → host）：开始播 / 播完 / 失败 / 被打断时各来一次 ----
-      if (playbackPath.isReport) {
-        if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-        let reported: unknown;
-        try {
-          reported = JSON.parse(body ?? 'null');
-        } catch {
-          return { kind: 'json', status: 400, obj: { error: 'invalid JSON body' } };
-        }
-        const o = reported && typeof reported === 'object' ? (reported as Record<string, unknown>) : {};
-        const outcome = playback.report(playbackId, o.status, o.reason);
-        if (outcome === 'unknown') return { kind: 'json', status: 404, obj: { error: 'unknown playback' } };
-        if (outcome === 'invalid') return { kind: 'json', status: 400, obj: { error: 'invalid status' } };
-        // ok / ignored 都回 200：上报是幂等的，"已经这样了"对上报方就是成功
-        // （迟到的 ended 不许覆盖 cancelled——终态保护在 ./playback 里）
-        return { kind: 'json', status: 200, obj: { ok: true } };
-      }
-      // ---- 查询（第三方调用方）----
-      if (method !== 'GET') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-      const record = playback.get(playbackId);
-      if (!record) return { kind: 'json', status: 404, obj: { error: 'unknown playback' } };
-      const parsed = parseWaitQuery(url.searchParams.get('wait'), url.searchParams.get('timeout'));
-      if (parsed.kind === 'error') return { kind: 'json', status: 400, obj: { error: parsed.error } };
-      // 两者都没传 = 立刻返回（兜底 / 调试 / 只想知道当下状态的调用方）
-      if (parsed.kind === 'none') {
-        return { kind: 'json', status: 200, obj: { ...record, matched: false } };
-      }
-      const { wait: waitList, timeoutMs } = parsed;
-      // 已经是等的状态之一 → 立刻返回，别白等一整个 timeout
-      if (waitList.includes(record.status)) {
-        return { kind: 'json', status: 200, obj: { ...record, matched: true } };
-      }
-      // 挂起等待：状态进入 wait 集合立刻唤醒（matched:true）；到点回当时的记录（matched:false）。
-      // timeout=0 时 playback.wait 下一拍就唤醒，等价"立刻返回"，这里不特判。
-      return await new Promise<RouteResult>((resolveWait) => {
-        let settled = false;
-        /** 收尾：只认第一次（唤醒 / 超时 / 取消 / 调用方断开 都可能先后到达） */
-        const settle = (result: RouteResult): void => {
-          if (settled) return;
-          settled = true;
-          resolveWait(result);
-        };
-        const cancel = playback.wait({
-          playbackId,
-          wait: waitList,
-          timeoutMs,
-          // 唤醒时**不需要**再取消：store 在回调前已把等待者摘掉（超时定时器也清了）
-          onWake: (r, matched) => settle({ kind: 'json', status: 200, obj: { ...r, matched } }),
-        });
-        // get 之后记录被清理（极端竞态）→ 立刻 404，不挂
-        if (cancel === undefined) {
-          settle({ kind: 'json', status: 404, obj: { error: 'unknown playback' } });
-          return;
-        }
-        // 调用方断开：取消等待者（清掉它的超时定时器），以"无需应答"收尾。
-        // 监听不摘也无妨：signal 只被这次请求持有，请求结束后整条引用链一起回收。
-        const onAbort = (): void => {
-          cancel();
-          settle({ kind: 'none' });
-        };
-        if (signal?.aborted) {
-          onAbort();
-          return;
-        }
-        signal?.addEventListener('abort', onAbort, { once: true });
-      });
-    }
-
-    // 对话：/dsh-pet-7340/chat?pet=<id>
-    //   GET  —— 最近记忆窗口（截尾 chatMemoryRounds 轮），弹窗打开时展示（一次性读，不是轮询）
-    //   POST —— 携带历史生成回复并写入记忆；**只回 {ok}**，回复走 S 的 pets.<id>.say
-    // 记忆唯一读写方 = host（memory.json；浏览器/桌面两端都只是客户端）→
-    // 同一实例的浏览器与桌面天然共享同一份记忆；文件全存不删，
-    // 请求只截尾部 chatMemoryRounds 轮（1 轮 = 1 问 1 答；合并器已按条目填默认）。
-    if (rest === 'chat') {
-      const petId = String(url.searchParams.get('pet') ?? '');
-      try {
-        if (method === 'GET') {
-          const cfg = readAllConfig(configPaths);
-          const mem = await readMemory();
-          const bucket = mem[findPetInstance(cfg, petId)?.entry ?? petId] ?? {};
-          const list = (bucket[petId]?.messages ?? []).slice();
-          const rounds = memoryRounds(petId, cfg);
-          // 与 chatWithPet 同一语义：rounds = 0 → 空历史（slice(-0) 会返回整个数组，见上）
-          const messages = sliceMemoryRounds(list, rounds);
-          return { kind: 'json', status: 200, obj: { ok: true, messages, rounds } };
-        }
-        if (method === 'POST') {
-          const parsed = (JSON.parse(body ?? 'null') as Record<string, unknown> | null) ?? {};
-          const text = typeof parsed.text === 'string' ? parsed.text.trim() : '';
-          if (!text) {
-            return { kind: 'json', status: 200, obj: { ok: false, reason: 'bad-request', message: '消息为空' } };
-          }
-          if (text.length > 2000) {
-            return {
-              kind: 'json',
-              status: 200,
-              obj: { ok: false, reason: 'bad-request', message: '消息过长（限 2000 字）' },
-            };
-          }
-          const result = await chatWithPet(petId, text);
-          return { kind: 'json', status: 200, obj: result };
-        }
-        return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-      } catch (e) {
-        // 配置已由 readAllConfig 保证正确（不再有 config-error 分支）；其余（IO/LLM）→ generate-error
-        return {
-          kind: 'json',
-          status: 200,
-          obj: { ok: false, reason: 'generate-error', message: e instanceof Error ? e.message : String(e) },
-        };
-      }
-    }
-
-    // 动画文件：/dsh-pet-7340/thumb/<素材根>/<file>，扩展名 webm（默认）/ mov（macOS 定制）。
-    // 素材归属按「是否存在该宠物的独立素材目录 `pet/<petId>-animation/`」判定：
-    //   - 存在（pet pack 宠物）：只查自己的目录，查不到即 404 显式报错——绝不混用
-    //   - 不存在（**所有主配置宠物**，main 与用户添加的任意多只）：主素材链
-    //     main-animation/<webm|mov> 优先 → 包内 assets/<webm|mov>（与宠物数量无关，多只共用）
-    // mov（HEVC-with-Alpha）为 macOS Safari/WKWebView 定制格式：默认不随包发布，
-    // 用户从 GitHub Release（assets-mov）下载后放 main-animation/mov/，并把客户端播放
-    // 扩展名常量（src/shared/constants.ts 的 ANIMATION_EXT / 产物 lib/client.js）改为 .mov。
-    // 注意：font / pic 是扁平的 /<scope>/<file>，只有 thumb 是 /<scope>/<petId>/<file>——
-    // 这里先拆 scope，再按 scope 各自拆剩余段，避免 font/pic 被误当作 petId 吞掉文件段。
-    const [scope, ...restParts] = rest.split('/');
-    if (scope === 'font') {
-      const fontRoot = join(PACKAGE_ROOT, 'assets', 'fonts');
-      const fontFile = resolveExisting(fontRoot, restParts.join('/'));
-      if (fontFile === undefined) return { kind: 'text', status: 404, body: 'dsh-pet: font not found' };
-      const ext = fontFile.slice(fontFile.lastIndexOf('.')).toLowerCase();
-      return { kind: 'file', file: fontFile, contentType: MIME[ext] ?? 'application/octet-stream' };
-    }
-
-    // 通知图标：/dsh-pet-7340/pic/<file> → 包内 assets/pic（方形 png，系统通知 icon 用）
-    // 表情包：/dsh-pet-7340/pic/memes/<素材根>/<名称>.png → 按素材根走 memeDirsFor 的目录链
-    // （种类独占目录 → 用户目录 → 包内），与 /thumb 同一套素材归属语义；名称含中文，URL 段已在上方解码。
-    // 旧的两段形式 /pic/memes/<名称>.png 保留：等价于素材根 main 的目录链（未升级的客户端照常取到包内图）。
-    if (scope === 'pic') {
-      if (restParts[0] === 'memes') {
-        const segs = restParts.slice(1);
-        // 段数 ≥ 2 = <素材根>/<名称…>；恰好 1 段 = 旧扁平形式。表情包名称即文件名（不含子目录），
-        // 所以两种形式不歧义；素材根与 /thumb 的 petId 同规矩：含分隔符 / 保留字符即显式 400。
-        const scoped = segs.length >= 2;
-        const assetRoot = scoped ? segs[0] : 'main';
-        if (scoped && (assetRoot.length > 64 || ID_FORBIDDEN.test(assetRoot))) {
-          return { kind: 'text', status: 400, body: 'dsh-pet: invalid asset root' };
-        }
-        const rel = (scoped ? segs.slice(1) : segs).join('/');
-        let picFile: string | undefined;
-        for (const dir of memeDirsFor(assetRoot)) {
-          picFile = resolveExisting(dir, rel);
-          if (picFile !== undefined) break;
-        }
-        if (picFile === undefined) return { kind: 'text', status: 404, body: 'dsh-pet: pic not found' };
-        const ext = picFile.slice(picFile.lastIndexOf('.')).toLowerCase();
-        return { kind: 'file', file: picFile, contentType: MIME[ext] ?? 'application/octet-stream' };
-      }
-      const picRoot = join(PACKAGE_ROOT, 'assets', 'pic');
-      const picFile = resolveExisting(picRoot, restParts.join('/'));
-      if (picFile === undefined) return { kind: 'text', status: 404, body: 'dsh-pet: pic not found' };
-      const ext = picFile.slice(picFile.lastIndexOf('.')).toLowerCase();
-      return { kind: 'file', file: picFile, contentType: MIME[ext] ?? 'application/octet-stream' };
-    }
-
-    if (scope !== 'thumb') {
-      return { kind: 'text', status: 400, body: 'dsh-pet: expected /dsh-pet-7340/thumb/<petId>/<file>' };
-    }
-    // thumb 是三段式：/<scope>/<petId>/<file>——从这里再拆宠物 id 与文件名
-    const [petId, ...nameParts] = restParts;
-    if (!petId || nameParts.length === 0) {
-      return { kind: 'text', status: 400, body: 'dsh-pet: expected /dsh-pet-7340/thumb/<petId>/<file>' };
-    }
-    // petId 是**标识符**（= pet/<名>-animation/ 的 <名>，来源是 pet/ 下的文件名前缀），不是路径片段：
-    // 含分隔符/保留字符即显式 400，早于任何路径拼接判定。合法名（含中文）照常——
-    // 用非法字符类而不是 ASCII 白名单。非法输入不再静默回落到主素材池（攻击尝试与"没有独立素材"可区分），
-    // 也给下面的 resolveAsset 之外再留一道结构性防线。
-    if (ID_FORBIDDEN.test(petId)) {
-      return { kind: 'text', status: 400, body: 'dsh-pet: invalid pet id' };
-    }
-    const fileName = nameParts.join('/');
-    const ext = fileName.slice(fileName.lastIndexOf('.')).toLowerCase();
-    if (ext !== '.webm' && ext !== '.mov') {
-      return { kind: 'text', status: 400, body: 'dsh-pet: unsupported animation format (expected .webm or .mov)' };
-    }
-    // 素材归属（按是否存在该宠物的独立素材目录判定，绝不静默混用）：
-    //   - 存在 `pet/<petId>-animation/`（pet pack 宠物，URL 段 = 素材根 assetRoot）：
-    //     只查自己的目录，查不到即 404 显式报错——绝不回落别的素材
-    //   - 不存在（**所有主配置宠物**：main 及用户添加的任意多只，共用全局动画池）：
-    //     主素材链——用户 main-animation/<ext 子目录> 优先，其次包内 assets/<ext 子目录>
-    // extraAnimDir 必须先过 resolveAsset：petId 是解码后的 URL 段，Windows 上 %5C 解出的
-    // 反斜杠不会被 rest.split('/') 切开，直接 join 会让 `..\..\x` 逃出用户根读盘。
-    const extraAnimDir = resolveAsset(petConfigDir, petId + '-animation');
-    const file =
-      extraAnimDir !== undefined && existsSync(extraAnimDir)
-        ? resolveExisting(extraAnimDir, fileName)
-        : (resolveExisting(userRootFor(ext), fileName) ?? resolveExisting(assetRootFor(ext), fileName));
-    if (file === undefined) return { kind: 'text', status: 404, body: 'dsh-pet: asset not found' };
-    return { kind: 'file', file, contentType: MIME[ext] ?? 'application/octet-stream' };
+    const controlResult = standaloneControlRoute(routeRequest);
+    if (controlResult !== undefined) return controlResult;
+    const stateResult = await stateRoute(routeRequest);
+    if (stateResult !== undefined) return stateResult;
+    const playbackResult = await playbackRoute(routeRequest);
+    if (playbackResult !== undefined) return playbackResult;
+    const chatResult = await chatRoute(routeRequest);
+    if (chatResult !== undefined) return chatResult;
+    // Final fallback handles font/pic/thumb and preserves the legacy unknown-path response.
+    return assetRoute(routeRequest);
   };
 
   ctx.effect(
@@ -2144,7 +1288,7 @@ export function apply(ctx: any): void {
     };
   }, 'dsh-pet: whisper poll');
 
-  // /pet 斜杠命令：选择「当前桌宠」（/chat 对话的目标）。浏览器端另有 commandUi 装饰的选择框
+  // 宠物选择命令：选择「当前桌宠」（/chat 对话的目标）。
   // （裸输 /pet 回车或菜单点选时弹出，选中后提交 /pet <id> 走同一 handler）；手输参数认 id 或名字
   // （name 可重复：唯一命中才认，重名报错列出候选 id）。
   ctx.effect(
@@ -2243,6 +1387,6 @@ export function apply(ctx: any): void {
     stopHelper('dsh-host-stop');
   });
 
-  // 路由就绪后拉起桌面 Helper（Electron 缺失时仅告警，不影响 DSH 与浏览器 overlay）
+  // 路由就绪后拉起桌面 Helper（Electron 缺失时仅告警，不影响本机 API 与设置页）
   startHelper();
 }

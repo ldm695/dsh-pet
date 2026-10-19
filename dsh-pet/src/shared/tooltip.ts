@@ -3,13 +3,11 @@
 // 为什么不继续用原生 title：它的样式、字体、延迟全由浏览器/系统决定，改不动，也跟宠物观感无关；
 // 它要显示的内容只是宠物显示名（host 已保证 name = rawName || id，见 host/config.ts，不会空）。
 //
-// 为什么放 src/shared：display: both 时同一只宠物在网页与桌面各显一只，两端提示必须同一个样、
-// 同一个摆法（与 MENU_CSS / CHAT_CSS / SCORE_POPUP_CSS 同一条约定）。本模块给常量、class、
-// 样式与**摆位纯函数**；节点构造与宽高实测留在两端各自的壳里（浏览器 React、桌面 DOM）。
+// 为什么放 src/shared：tooltip 的样式、class 与摆位计算属于纯逻辑，可由 Electron renderer
+// 与桌面 shared-core 共用。本模块给常量、class、样式与**摆位纯函数**；节点构造与宽高实测留在 DOM 壳里。
 //
 // 坐标口径：定位用 position:fixed，坐标一律是「各端自己的视口坐标」——
-//   浏览器 = 页面视口（clientX/clientY 直接用）；
-//   桌面   = Electron 窗口（光标坐标由 onMouseMove 换算，另见 sprite.js 的注释）。
+//   Electron = 窗口视口（光标坐标由 onMouseMove 换算，另见 sprite.js 的注释）。
 // 这样宠物自己走动/被抛出时窗口位移不会带着提示漂：坐标里没有容器位移这一项。
 //
 // 尺寸一律取宠物宽度变量：浏览器是 --dsh-pet-size、桌面是 --pet-size（两端既有差异），
@@ -41,7 +39,7 @@ export type TipRect = { x: number; y: number; w: number; h: number };
  *
  * @param cursor 光标位置
  * @param tip 提示框实测尺寸（px）——调用方传 offsetWidth/offsetHeight
- * @param bounds 允许显示的范围：桌面端是「窗口 ∩ 光标所在屏的工作区」，浏览器端是整个视口
+ * @param bounds 允许显示的范围；桌面端传入窗口与光标所在屏工作区的交集。
  * @param gap 光标与提示框的间隙（px）
  */
 export function tooltipPlacement(

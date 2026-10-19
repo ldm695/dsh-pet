@@ -3,6 +3,7 @@
 packages: []
 allowBuilds:
   electron-winstaller: true
+  koffi: set this to true or false
 minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-agent-default-model@0.2.0-rc.1'
   - '@deepseek-ai/dsh-agent@0.2.0-rc.1'

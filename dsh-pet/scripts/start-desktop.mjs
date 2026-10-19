@@ -9,7 +9,7 @@
  *   DSH_PET_CONFIG_URL / DSH_PET_SCALE / DSH_PET_ELECTRON_PATH
  * 其余端点（thumb/balance/trigger/notify/pic/font）由 renderer 从 configUrl 推导。
  *
- * 示例（对着一台已跑 dsh web 的机器）：
+ * 示例（对着一个已运行的本机 DSH Pet API）：
  *   node scripts/start-desktop.mjs http://127.0.0.1:6952/dsh-pet-7340/config
  */
 import { spawn } from 'node:child_process';
@@ -30,14 +30,10 @@ async function desktopPetsFromConfig(configUrl) {
     const response = await fetch(configUrl, { signal: AbortSignal.timeout(5000) });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const config = await response.json();
-    const pets = Array.isArray(config?.main?.pets)
-      ? config.main.pets
-      : Array.isArray(config?.pets)
-        ? config.pets
-        : [];
+    const pets = Array.isArray(config?.main?.pets) ? config.main.pets : Array.isArray(config?.pets) ? config.pets : [];
     return JSON.stringify(
       pets
-        .filter((pet) => pet && (pet.display === 'desktop' || pet.display === 'both'))
+        .filter((pet) => pet && pet.display === 'desktop')
         .map((pet, index) => ({
           id: String(pet.id ?? `pet-${index}`),
           size: Number(pet.size) > 0 ? Number(pet.size) : 462,

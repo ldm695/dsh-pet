@@ -9,19 +9,22 @@
 // 宠物 id 允许含点号，解析出来必然出错。
 import { toBalanceState, type BalanceState } from './balance';
 import { toWorkStatus, type WorkStatusSnapshot } from './work-status';
+import type { StateLeaf } from './state-contract';
 
-/** 一个叶子：计数器 + 载荷（data 为 null = 还没有数据，消费端跳过） */
-export interface StateLeaf {
-  counter: number;
-  data: unknown;
-}
+export type { PetLeafName, StateLeaf, StateSectionName, StateSnapshot, StateStoreSnapshot } from './state-contract';
 
-/** S 的客户端视图（叶子已规范化：counter 必为数字） */
+/**
+ * 兼容旧宿主后的客户端视图（叶子已规范化：counter 必为数字）。
+ * 精确的 HTTP 响应契约见 `StateSnapshot`；这里保留可选版本号与开放键集合，
+ * 以便仍能读取尚未支持长轮询或新增叶子的旧宿主。
+ */
 export interface PollState {
   /** 整份 S 的版本号（= 最后一次写入的编号）。回传成 `?since=` 表达"我手里这份是哪个版本"。
    *  **老宿主不带此字段** → undefined：消费端据此退回定时轮询——老宿主不认识 since/timeout，
    *  会立刻返回，不退避就变成狂打。 */
   counter?: number;
+  /** `false` means the host is a file-bridge standalone runtime and cannot hold long-poll requests. */
+  longPoll?: boolean;
   sections: Record<string, StateLeaf>;
   pets: Record<string, Record<string, StateLeaf>>;
 }
@@ -57,6 +60,7 @@ export async function fetchState(
     if (!res.ok) return null;
     const raw = (await res.json().catch(() => null)) as {
       counter?: unknown;
+      longPoll?: unknown;
       sections?: unknown;
       pets?: unknown;
     } | null;
@@ -81,6 +85,7 @@ export async function fetchState(
     }
     return {
       counter: typeof raw.counter === 'number' && Number.isFinite(raw.counter) ? raw.counter : undefined,
+      ...(raw.longPoll === false ? { longPoll: false } : {}),
       sections,
       pets,
     };

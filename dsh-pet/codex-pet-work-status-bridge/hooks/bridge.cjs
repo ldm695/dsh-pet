@@ -1,13 +1,5 @@
-const { spawn } = require('node:child_process');
-const {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} = require('node:fs');
+const { spawn, spawnSync } = require('node:child_process');
+const { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } = require('node:fs');
 const { createHash } = require('node:crypto');
 const { homedir } = require('node:os');
 const { dirname, join, resolve } = require('node:path');
@@ -158,11 +150,11 @@ function refreshEnvelope(previous, agents, now, eventAt = Number(previous?.event
     state: latest?.state ?? null,
     updatedAt: now,
     eventAt: latest ? Number(latest.eventAt) : eventAt,
-    notification: null,
     source: 'codex',
-    interruptedSessions: previous?.interruptedSessions && typeof previous.interruptedSessions === 'object'
-      ? previous.interruptedSessions
-      : {},
+    interruptedSessions:
+      previous?.interruptedSessions && typeof previous.interruptedSessions === 'object'
+        ? previous.interruptedSessions
+        : {},
     agents: entries.map((agent) => ({
       key: agent.key,
       state: agent.state,

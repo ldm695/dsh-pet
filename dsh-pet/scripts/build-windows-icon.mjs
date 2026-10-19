@@ -3,6 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 
 const pngPath = new URL('../assets/dsh-pet-icon-16.png', import.meta.url);
 const icoPath = new URL('../assets/dsh-pet-icon.ico', import.meta.url);
+const iconPngPath = new URL('../assets/dsh-pet-icon-256.png', import.meta.url);
 const png = await readFile(pngPath);
 const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
@@ -12,25 +13,33 @@ if (!png.subarray(0, 8).equals(signature) || png.toString('ascii', 12, 16) !== '
 
 const width = png.readUInt32BE(16);
 const height = png.readUInt32BE(20);
-if (png[24] !== 8 || png[25] !== 6 || png[28] !== 0) {
-  throw new Error('Expected a non-interlaced 8-bit RGBA PNG');
+const bitDepth = png[24];
+const colorType = png[25];
+if (bitDepth !== 8 || ![3, 6].includes(colorType) || png[28] !== 0) {
+  throw new Error('Expected a non-interlaced 8-bit indexed or RGBA PNG');
 }
 if (width !== 16 || height !== 16) {
-  throw new Error(`Expected a 16×16 icon, got ${width}×${height}`);
+  throw new Error(`Expected a 16×16 app icon, got ${width}×${height}`);
 }
 
 const chunks = [];
+let palette = null;
+let transparency = null;
 for (let offset = 8; offset < png.length;) {
   const length = png.readUInt32BE(offset);
   const type = png.toString('ascii', offset + 4, offset + 8);
   if (type === 'IDAT') chunks.push(png.subarray(offset + 8, offset + 8 + length));
+  else if (type === 'PLTE') palette = png.subarray(offset + 8, offset + 8 + length);
+  else if (type === 'tRNS') transparency = png.subarray(offset + 8, offset + 8 + length);
   offset += 12 + length;
 }
 
 const raw = inflateSync(Buffer.concat(chunks));
 const sourcePixels = Buffer.alloc(width * height * 4);
 const bytesPerPixel = 4;
-const sourceStride = width * bytesPerPixel;
+const encodedBytesPerPixel = colorType === 6 ? 4 : 1;
+const sourceStride = width * encodedBytesPerPixel;
+const decoded = Buffer.alloc(height * sourceStride);
 const paeth = (a, b, c) => {
   const p = a + b - c;
   const pa = Math.abs(p - a);
@@ -45,16 +54,31 @@ for (let y = 0; y < height; y += 1) {
   const rowStart = y * sourceStride;
   for (let x = 0; x < sourceStride; x += 1) {
     const value = raw[inputStart + x];
-    const left = x >= bytesPerPixel ? sourcePixels[rowStart + x - bytesPerPixel] : 0;
-    const above = y > 0 ? sourcePixels[rowStart + x - sourceStride] : 0;
-    const upperLeft = y > 0 && x >= bytesPerPixel ? sourcePixels[rowStart + x - sourceStride - bytesPerPixel] : 0;
+    const left = x >= encodedBytesPerPixel ? decoded[rowStart + x - encodedBytesPerPixel] : 0;
+    const above = y > 0 ? decoded[rowStart + x - sourceStride] : 0;
+    const upperLeft = y > 0 && x >= encodedBytesPerPixel ? decoded[rowStart + x - sourceStride - encodedBytesPerPixel] : 0;
     let predictor = 0;
     if (filter === 1) predictor = left;
     else if (filter === 2) predictor = above;
     else if (filter === 3) predictor = Math.floor((left + above) / 2);
     else if (filter === 4) predictor = paeth(left, above, upperLeft);
     else if (filter !== 0) throw new Error(`Unsupported PNG filter ${filter}`);
-    sourcePixels[rowStart + x] = (value + predictor) & 0xff;
+    decoded[rowStart + x] = (value + predictor) & 0xff;
+  }
+}
+
+if (colorType === 6) {
+  decoded.copy(sourcePixels);
+} else {
+  if (!palette || palette.length % 3 !== 0) throw new Error('Indexed logo PNG is missing a valid palette');
+  for (let index = 0; index < width * height; index += 1) {
+    const paletteIndex = decoded[index];
+    const paletteOffset = paletteIndex * 3;
+    const pixelOffset = index * 4;
+    sourcePixels[pixelOffset] = palette[paletteOffset];
+    sourcePixels[pixelOffset + 1] = palette[paletteOffset + 1];
+    sourcePixels[pixelOffset + 2] = palette[paletteOffset + 2];
+    sourcePixels[pixelOffset + 3] = transparency?.[paletteIndex] ?? 255;
   }
 }
 
@@ -133,4 +157,5 @@ frames.forEach((frame, index) => {
 });
 
 await writeFile(icoPath, ico);
-process.stdout.write(`Generated ${icoPath.pathname} with nearest-neighbor frames: ${sizes.join(', ')} px\n`);
+await writeFile(iconPngPath, frames.at(-1).png);
+process.stdout.write(`Generated ${icoPath.pathname} from the original 16×16 pixel icon with nearest-neighbor scaling: ${sizes.join(', ')} px\n`);

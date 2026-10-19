@@ -1,4 +1,4 @@
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const {
   existsSync,
   mkdirSync,
@@ -167,7 +167,6 @@ function refreshEnvelope(previous, agents, now, eventAt = Number(previous?.event
     state: latest?.state ?? null,
     updatedAt: now,
     eventAt: latest ? Number(latest.eventAt) : eventAt,
-    notification: null,
     source: 'claude',
     interruptedSessions: normalizeInterruptedSessions(previous?.interruptedSessions, now),
     agents: entries.map((agent) => ({
@@ -195,7 +194,9 @@ function sessionKeyFor(input) {
 function normalizeInterruptedSessions(value, now = Date.now()) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return Object.fromEntries(
-    Object.entries(value).filter(([, at]) => Number.isFinite(Number(at)) && now - Number(at) < INTERRUPT_TOMBSTONE_TTL_MS),
+    Object.entries(value).filter(
+      ([, at]) => Number.isFinite(Number(at)) && now - Number(at) < INTERRUPT_TOMBSTONE_TTL_MS,
+    ),
   );
 }
 
@@ -337,7 +338,11 @@ function runTranscriptWatcher(sessionKey, transcriptPath, watchDir) {
   } catch (error) {
     if (error?.code !== 'ENOENT') log('transcript-watcher=open-failed', error);
     if (ownsLock) {
-      try { rmSync(watchDir, { recursive: true, force: true }); } catch { /* Best-effort cleanup. */ }
+      try {
+        rmSync(watchDir, { recursive: true, force: true });
+      } catch {
+        /* Best-effort cleanup. */
+      }
     }
     return;
   }
@@ -352,14 +357,21 @@ function runTranscriptWatcher(sessionKey, transcriptPath, watchDir) {
   const processLine = (line) => {
     if (!line.trim()) return;
     let record;
-    try { record = JSON.parse(line); } catch { return; }
+    try {
+      record = JSON.parse(line);
+    } catch {
+      return;
+    }
     if (isInterruptTranscriptRecord(record)) {
       pendingInterruptAt = transcriptTimestamp(record);
       pendingInterruptSince = Date.now();
       return;
     }
-    if (pendingInterruptAt && isSubsequentUserPromptRecord(record)
-      && transcriptTimestamp(record) > pendingInterruptAt) {
+    if (
+      pendingInterruptAt &&
+      isSubsequentUserPromptRecord(record) &&
+      transcriptTimestamp(record) > pendingInterruptAt
+    ) {
       pendingInterruptAt = 0;
       pendingInterruptSince = 0;
     }
@@ -417,10 +429,18 @@ function runTranscriptWatcher(sessionKey, transcriptPath, watchDir) {
   const cleanup = () => {
     clearInterval(timer);
     if (descriptor !== undefined) {
-      try { closeSync(descriptor); } catch { /* Best-effort descriptor cleanup. */ }
+      try {
+        closeSync(descriptor);
+      } catch {
+        /* Best-effort descriptor cleanup. */
+      }
     }
     if (ownsLock) {
-      try { rmSync(watchDir, { recursive: true, force: true }); } catch { /* Best-effort lock cleanup. */ }
+      try {
+        rmSync(watchDir, { recursive: true, force: true });
+      } catch {
+        /* Best-effort lock cleanup. */
+      }
     }
   };
   process.once('SIGINT', cleanup);
@@ -431,6 +451,16 @@ function runTranscriptWatcher(sessionKey, transcriptPath, watchDir) {
 function putAgent(agents, key, sessionKey, role, state, now, resetStartedAt = false) {
   if (!ALL_STATES.has(state)) return;
   const previous = agents[key];
+  // Repeated hooks with the same state do not represent a new lifecycle transition.
+  // Keep the original timestamp/revision so a repeated Stop cannot replay completion.
+  if (
+    !resetStartedAt &&
+    previous?.sessionKey === sessionKey &&
+    previous?.role === role &&
+    previous?.state === state
+  ) {
+    return;
+  }
   agents[key] = {
     key,
     sessionKey,
@@ -454,9 +484,12 @@ function stateForEvent(input) {
       return 'result';
     case 'PostToolUseFailure':
       return input.is_interrupt === true ? null : 'result';
-    case 'SubagentStop':
     case 'Stop':
       return 'success';
+    case 'SubagentStop':
+      // A subagent finishing is not the client's task finishing. The root Stop hook
+      // owns the client-level completion signal; processEvent removes this subagent.
+      return null;
     case 'StopFailure':
       return 'error';
     case 'PreCompact':
@@ -487,6 +520,10 @@ function processEvent(input) {
   const path = bridgePath();
   const now = Date.now();
   const sessionKey = sessionKeyFor(input);
+  const rawAgentId = typeof input.agent_id === 'string' && input.agent_id ? input.agent_id : null;
+  const isSubagentEvent = eventName === 'SubagentStart' || eventName === 'SubagentStop';
+  const key = rawAgentId ? agentKey(sessionKey, rawAgentId) : rootKey(sessionKey);
+  const role = rawAgentId || isSubagentEvent ? 'agent' : 'root';
   let eventState = nextState ?? 'idle';
 
   withBridgeLock(path, () => {
@@ -498,7 +535,10 @@ function processEvent(input) {
     if (eventName === 'SessionStart' && input.source !== 'compact') {
       clearSession(agents, sessionKey);
       delete interruptedSessions[sessionKey];
-    } else if (eventName === 'SessionEnd' || (eventName === 'Notification' && input.notification_type === 'idle_prompt')) {
+    } else if (
+      eventName === 'SessionEnd' ||
+      (eventName === 'Notification' && input.notification_type === 'idle_prompt')
+    ) {
       clearSession(agents, sessionKey);
       delete interruptedSessions[sessionKey];
     } else if (eventName === 'PostToolUseFailure' && input.is_interrupt === true) {
@@ -508,17 +548,15 @@ function processEvent(input) {
       interruptedSessions[sessionKey] = now;
     } else if (interruptedSessions[sessionKey] && eventName !== 'UserPromptSubmit') {
       // Delayed tool/subagent hooks must not recreate a canceled session's animation.
+    } else if (eventName === 'SubagentStop') {
+      // Release only the finished subagent. Never publish its stop as a client completion.
+      if (rawAgentId) delete agents[key];
     } else {
       if (eventName === 'UserPromptSubmit') {
         // A new explicit prompt starts a fresh lifecycle after an interrupt.
         delete interruptedSessions[sessionKey];
         clearSession(agents, sessionKey);
       }
-      const rawAgentId = typeof input.agent_id === 'string' && input.agent_id ? input.agent_id : null;
-      const isSubagentEvent = eventName === 'SubagentStart' || eventName === 'SubagentStop';
-      const key = rawAgentId ? agentKey(sessionKey, rawAgentId) : rootKey(sessionKey);
-      const role = rawAgentId || isSubagentEvent ? 'agent' : 'root';
-
       if (eventName === 'SubagentStart' && rawAgentId) delete agents[key];
       if (nextState !== null) {
         putAgent(agents, key, sessionKey, role, nextState, now);

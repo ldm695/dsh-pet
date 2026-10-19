@@ -3,14 +3,13 @@
  *
  * 背景：animations / animationWeights / eventsRefreshSec / physics / confineToScreen / workStatusTexts /
  * whisperModel / chatModel 这八个条目级字段
- * 必须由 flattenConfigPets 从「条目」吹进每只实例。客户端曾经还有第二份手抄的填充——设置页保存后把
+ * 必须由 flattenConfigPets 从「条目」吹进每只实例。设置页曾经还有第二份手抄的填充——保存后把
  * 可编辑的裸实例列表回推给容器时"补吹"一遍——它漏掉了 physics：新增宠物或同步后该实例的
  * physics 是 undefined，拖拽跟手第一帧读 cfg.physics.throwPower 直接抛错（表现为宠物完全拖不动）。
  * 现在设置页改用 host 写接口返回的成品聚合重新拍平，第二份实现已删除（见 petBridge.reload）。
  * 本文件把这条不变式钉住：
  *   ① 成品经 flattenConfigPets 后，每只实例的条目级字段齐全（可执行的契约，用真实内置默认配置）；
- *   ② 客户端不得再出现"手抄条目级字段"的填充、host 写接口必须返回成品聚合（源码级守卫——
- *      src/client/pet.ts 依赖 React/DOM，无法在 node 中导入，只能读源码断言）。
+ *   ② 设置页使用 flattenConfigPets，host 写接口返回成品聚合。
  *
  * 用 Node 内置 test runner（node:test），不引入任何 npm 依赖。
  */
@@ -80,25 +79,16 @@ describe('flattenConfigPets —— 成品 → 渲染列表的唯一填充点', (
     assert.deepEqual(pet.animations, ['a.webm']);
   });
 
-  test('源码守卫：客户端只有这一处填充，host 的写接口返回成品聚合', () => {
-    const clientPet = readSource('../client/pet.ts');
-    const clientSettings = readSource('../client/settings.ts');
+  test('源码守卫：桌面设置页使用成品聚合，host 的写接口返回成品聚合', () => {
+    const petSettings = readSource('../standalone/pet-settings.ts');
     const host = readSource('../host/index.ts');
 
-    // ① 旧的手抄填充（mc.<字段> 映射）、以及"设置页回推列表"这条旁路，都不得复活
     assert.ok(
-      !/petBridge\.sync/.test(clientPet + clientSettings),
+      !/petBridge\.sync/.test(petSettings),
       'petBridge.sync 已删除：设置页不得再把"可编辑的裸实例列表"回推给容器（那正是漏吹 physics 的来源）',
     );
-    for (const field of ENTRY_FIELDS) {
-      assert.ok(
-        !new RegExp(`${field}:\\s*mc\\.`).test(clientPet),
-        `客户端不得手抄条目级字段 ${field}——它只应由 flattenConfigPets 从成品吹入`,
-      );
-    }
-    // ② 容器必须经 flattenConfigPets 拿条目级字段
-    assert.ok(/flattenConfigPets/.test(clientPet), '容器必须用 flattenConfigPets 拍平成品聚合');
-    // ③ host 的 GET / PUT / POST /config 与 POST /pet-display 都返回成品聚合——调用方拿写接口的
+    assert.ok(/flattenConfigPets/.test(petSettings), '桌面设置页必须用 flattenConfigPets 拍平成品聚合');
+    // host 的 GET / PUT / POST /config 与 POST /pet-display 都返回成品聚合——调用方拿写接口的
     //    响应直接拍平，不自己拼字段，也不再补一次 GET（补拉的那一次可能拿到陈旧配置）
     const returns = host.match(/obj: readAllConfig\(configPaths\)/g) ?? [];
     assert.equal(returns.length, 4, 'GET / PUT / POST /config 与 POST /pet-display 都应返回成品聚合');
@@ -130,32 +120,32 @@ describe('flattenConfigPets —— 成品 → 渲染列表的唯一填充点', (
     //    ?force=1 → 宿主的损坏预检被绕过 → 静默白名单重建、字段全丢、永不弹窗（真实事故）。
     //    所以：onClick 必须包一层，且 force 只认严格 true。
     assert.ok(
-      !/onClick:\s*save\b/.test(clientSettings),
+      !/onClick:\s*save\b/.test(petSettings),
       '保存按钮必须写 onClick: () => void save()：直接把 save 交给 React 会把 MouseEvent 当 force',
     );
     assert.ok(
-      /force === true \? '\?force=1'/.test(clientSettings),
+      /force === true \? '\?force=1'/.test(petSettings),
       'force 必须严格比较 true（真值判断会让任何实参都开启强行覆盖）',
     );
     // ⑦ 系统通知开关必须与其余三个全局开关**同构**：只改本地状态、随「保存」写入。
     //    它曾经是唯一即时写盘的开关（toggleNotify 里直接 PUT /config），而 PUT /config 会让宿主
     //    重启桌面 Helper（全部桌面宠物窗口重建：拖拽落点清空、宠物跳回配置角落）——于是
     //    "改个通知开关，桌面被重置"，与其它开关行为不一致（真实反馈）。写盘只允许出现在 save() 里。
-    const toggle = /const toggleNotify = async[\s\S]*?\n {4}\};/.exec(clientSettings);
+    const toggle = /const toggleNotify = async[\s\S]*?\n {4}\};/.exec(petSettings);
     assert.ok(toggle, '设置页必须有 toggleNotify（系统通知开关）');
     assert.ok(
       !/fetch\(|method: 'PUT'/.test(toggle[0]),
       '系统通知开关不得即时写盘：切换只改本地状态，随「保存」写入（否则会重启桌面 Helper）',
     );
     assert.ok(
-      /notificationsEnabled: notifyEnabled/.test(clientSettings),
+      /notificationsEnabled: notifyEnabled/.test(petSettings),
       '「保存」的请求体必须带上通知开关（否则切了开关点保存也不生效）',
     );
     // ⑧ 物理参数（设置页「物理」区）必须真的提交：physics 原先**不在白名单**里（只在 existing 里
     //    透传），前端就算把输入框画出来、改了值，写盘时也会被丢弃。守卫两侧：
     //    「保存」请求体必须带 physics；宿主必须用同一份 physicsValid 整段校验它。
     //    取请求体字面量再找键（不写死 `physics: physics`：打包器会把同名简写压成 `physics,`）。
-    const saveBody = /const body: Record<string, unknown> = \{([\s\S]*?)\n {8}\};/.exec(clientSettings);
+    const saveBody = /const body: Record<string, unknown> = \{([\s\S]*?)\n {8}\};/.exec(petSettings);
     assert.ok(saveBody, '设置页必须有「保存」的请求体字面量');
     assert.ok(
       /(^|[^.\w])physics\b/.test(saveBody[1]),

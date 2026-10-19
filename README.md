@@ -4,6 +4,8 @@
 
 本仓库基于上游项目开发，维护 Windows 便携桌面应用，以及桌面交互和工作状态联动相关功能。
 
+本 Fork 不再将 DSH Pet 注册为 DSH Web 插件；DSH Web 可照常运行，但不会加载桌宠覆盖层。DSH Desktop 的会话与焦点上报桥接仍保留，用于独立 EXE 的工作状态和通知判断。
+
 本项目保留上游代码的署名与许可要求。Fork 维护的改动见[改动说明](FORK_CUSTOMIZATIONS.md)。
 
 ## 功能概览
@@ -20,12 +22,11 @@
 - [安装与构建说明](INSTALL.md)
 - [Fork 改动说明](FORK_CUSTOMIZATIONS.md)
 - [HTTP API 概览](API.md)与 [OpenAPI 规范](openapi.yaml)
-- [社区移植与集成项目](ECOSYSTEM.md)
-- [插件包说明](dsh-pet/README.md)
+- [应用与功能说明](dsh-pet/README.md)
 
 工作状态桥接插件需要按需单独安装：
 
-- [DSH 桥接插件](dsh-pet/dsh-pet-work-status-bridge/README.md)
+- [DSH Desktop 工作状态桥接插件](dsh-pet/dsh-pet-work-status-bridge/README.md)
 - [Codex 桥接插件](dsh-pet/codex-pet-work-status-bridge/README.md)
 - [Claude Code 桥接插件](dsh-pet/claude-code-pet-work-status-bridge/README.md)
 

@@ -1,5 +1,5 @@
 /**
- * 桌宠配置管理设置页（settings.section 插槽，id: pet-config）
+ * 桌面应用内的桌宠配置表单。
  *
  * - 多开：管理多个桌宠，每个宠物独立 id/name/size/位置（corner + marginX/Y）
  * - 数据流：设置页持有「main 条目宠物列表」→ 保存时全量 PUT /dsh-pet-7340/config
@@ -9,12 +9,12 @@
  * - 即时生效：保存/同步后用 host 返回的**成品聚合**调用 petBridge.reload，
  *   容器走同一份 flattenConfigPets 重新渲染，无需刷新页面（设置页不自己拼任何条目级字段）
  *
- * 样式对齐官方设置页：max-width 720px、全走 --dsw-alias-* 语义 token（主题跟随）。
+ * 样式沿用 DSH 主题 token；页面由独立应用的设置窗口加载。
  */
 import { flattenConfigPets, PET_DISPLAYS } from '../shared/config';
-import { DEFAULT_FONT, FONT_PRESETS, FONT_SIZE_MAX, FONT_SIZE_MIN } from '../shared/fonts';
+import { DEFAULT_FONT, FONT_PRESETS, FONT_SIZE_MAX, FONT_SIZE_MIN, fontStackOf } from '../shared/fonts';
+import { NOTIFY_ICONS as NOTIFY_ICON_NAMES } from '../shared/notify';
 import { DEFAULT_PHYSICS } from '../shared/physics';
-import { NOTIFY_ICONS, reloadNotifications, requestNotificationPermission } from './notify';
 import type {
   Corner,
   FontConfig,
@@ -28,6 +28,26 @@ import type {
 import type { ChangeEvent, Dispatch, FunctionComponent, SetStateAction } from 'react';
 import type * as ReactNS from 'react';
 import type { jsx } from 'react/jsx-runtime';
+
+type NotificationPermissionResult =
+  | { ok: true }
+  | { ok: false; reason: 'unsupported' | 'denied' | 'rejected' | 'error'; message?: string };
+
+async function requestNotificationPermission(): Promise<NotificationPermissionResult> {
+  if (typeof Notification === 'undefined') return { ok: false, reason: 'unsupported' };
+  if (Notification.permission === 'granted') return { ok: true };
+  if (Notification.permission === 'denied') return { ok: false, reason: 'denied' };
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission === 'granted') return { ok: true };
+    if (permission === 'denied') return { ok: false, reason: 'rejected' };
+    return { ok: false, reason: 'error', message: '权限未授予（' + permission + '）' };
+  } catch (error) {
+    return { ok: false, reason: 'error', message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+const NOTIFY_TEST_ICON = '/dsh-pet-7340/pic/' + NOTIFY_ICON_NAMES.test + '.png';
 
 /** 容器与设置页共享的桥（同一 bundle 单例）：
  * current=最新完整宠物列表（**成品拍平**，含条目级字段与文件宠物，默认空；容器是唯一写入方）；
@@ -81,7 +101,7 @@ const SETTINGS_CSS = [
   // 浮层：position:fixed（与 DSH 一致——脱离设置页的滚动容器，不被 overflow 裁掉）
   // 浮层：position:fixed（与 DSH 一致——脱离设置页的滚动容器，不被 overflow 裁掉）；
   // z-index 取与插件右键菜单同一档（2147483000），保证压得住 DSH 自己的层叠上下文
-  '.dsh-pet-mp__panel{position:fixed;z-index:2147483000;display:flex;flex-direction:column;gap:4px;padding:4px;overflow:hidden;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md,10px);background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-elevation-prominent,0 8px 30px rgba(0,0,0,.35));color:var(--dsw-alias-label-primary)}',
+  '.dsh-pet-mp__panel{position:fixed;z-index:2147483000;display:flex;flex-direction:column;gap:4px;padding:4px;overflow:hidden;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md,10px);background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-elevation-prominent,0 8px 30px rgba(0,0,0,.35));color:var(--dsw-alias-label-primary);font-family:var(--dsh-pet-font-family,inherit)}',
   '.dsh-pet-mp__search{box-sizing:border-box;width:100%;height:28px;padding:0 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:13px;outline:none}',
   '.dsh-pet-mp__search:focus{border-color:var(--dsw-alias-state-business-primary)}',
   '.dsh-pet-mp__list{display:flex;flex-direction:column;min-height:0;overflow-y:auto;scrollbar-width:thin}',
@@ -99,7 +119,7 @@ const SETTINGS_CSS = [
   // 类名统一 dsh-pet-cfg__ 前缀，不会撞 DSH 自己的类名。
 
   // 页面根容器与标题
-  '.dsh-pet-cfg{container-type:inline-size;display:flex;flex-direction:column;gap:12px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px}',
+  '.dsh-pet-cfg{container-type:inline-size;display:flex;flex-direction:column;gap:12px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;font-family:var(--dsh-pet-font-family,inherit)}',
   '.dsh-pet-cfg__title{display:flex;align-items:center;gap:6px;margin:0;font-size:16px;font-weight:500;line-height:24px}',
 
   // 卡片：宠物配置 / 全局开关 / AI 模型 / 物理 / 高级配置 / 卸载与存储 统一用这一个框
@@ -169,6 +189,13 @@ const SETTINGS_CSS = [
 
   // 操作区 / 提示文字 / 路径
   '.dsh-pet-cfg__actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px}',
+  '.dsh-pet-cfg__savePanel{display:flex;flex-direction:column;gap:10px;margin-top:4px;padding:14px 16px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-1)}',
+  '.dsh-pet-cfg__saveHead{display:flex;flex-direction:column;gap:2px}',
+  '.dsh-pet-cfg__saveTitle{font-size:14px;font-weight:600;color:var(--dsw-alias-label-primary)}',
+  '.dsh-pet-cfg__saveHint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}',
+  '.dsh-pet-cfg__saveRow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
+  '.dsh-pet-cfg__btn.is-save{min-width:128px;min-height:36px;padding:6px 18px;font-size:14px;font-weight:600}',
+  '.dsh-pet-cfg__saveTools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l2)}',
   '.dsh-pet-cfg__msg{margin-left:4px;font-size:12px;color:var(--dsw-alias-state-success-primary)}',
   '.dsh-pet-cfg__msg.is-err{color:var(--dsw-alias-state-error-primary)}',
   '.dsh-pet-cfg__note{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}',
@@ -237,11 +264,9 @@ export const zh = {
   fixedEnabledHint:
     '启用后随机动画不再让宠物自己转向或走开，只播原地待机与随机小动作；右键菜单点播、接口触发、余额/碎碎念/工作状态动画不受影响。',
   displayLabel: '显示位置',
-  displayHint: 'web=仅浏览器 / desktop=仅桌面 / both=两者都显示 / none=都不显示',
-  'display.web': '仅浏览器',
+  displayHint: '桌宠只在 Windows 桌面显示，也可关闭显示。',
   'display.desktop': '仅桌面',
-  'display.both': '两者都显示',
-  'display.none': '都不显示',
+  'display.none': '不显示',
   cornerLabel: '首次启动位置',
   'corner.top-left': '左上角',
   'corner.top-right': '右上角',
@@ -249,18 +274,19 @@ export const zh = {
   'corner.bottom-right': '右下角',
   marginX: '水平偏移',
   marginY: '垂直偏移',
-  save: '保存',
-  sync: '同步',
-  confirmSync: '确定同步吗？将用项目内置的默认配置（完整字段 + 注释）覆盖用户配置，当前的自定义内容会丢失。',
+  save: '保存设置',
+  saveHint: '修改完成后点击“保存设置”，更改将写入配置并应用到桌宠。',
+  sync: '恢复默认配置',
+  confirmSync: '确定恢复默认配置吗？这会用项目内置默认配置覆盖用户配置，当前自定义内容会丢失。',
   corruptTitle: '用户配置已损坏，未保存',
   corruptConfirm: '强行保存',
   corruptBody:
     '用户配置文件解析不了（内容已损坏，不是合法 JSON/JSONC）：{path}。继续保存会按白名单重建这个文件——它里面现有的内容（animations / physics / memes 等自定义字段）会全部丢失。取消 = 不动文件（先去把配置改回合法再保存）；确认 = 强行保存（丢弃文件里现有的内容）。',
   syncHint:
-    '「同步」会把项目内置的默认配置（含注释与全部高级字段）写入用户配置文件，覆盖当前自定义内容；之后可直接编辑该文件。注意两点：① 文件一旦生成即为显式覆盖层——插件升级后内置默认的变化不会自动生效（除非再次同步或删除该文件）；② 在本页点「保存」会按白名单重写该文件（字段值保留，但注释会被去掉）。',
+    '「恢复默认配置」会把项目内置默认配置（含注释与全部高级字段）写入用户配置文件，覆盖当前自定义内容。此文件生成后属于显式覆盖层，插件升级不会自动覆盖它；本页点击「保存设置」会按白名单重写此文件，保留字段值但移除注释。',
   configMeta: '高级配置（文件）',
   configMetaHint:
-    '用户配置可覆盖宠物列表 / 动画池 / 播放权重，修改后刷新或重启生效：浏览器端刷新页面，桌面端右键宠物 →「重载配置」（重载全部桌面宠物窗口）；默认配置为完整参考。',
+    '用户配置可覆盖宠物列表 / 动画池 / 播放权重。手动修改后，使用桌宠右键菜单中的「重载配置」应用；默认配置为完整参考。',
   defaultConfig: '默认配置（只读，完整参考）',
   userConfig: '用户配置（自定义覆盖）',
   animationDir: '动画素材目录（可自定义/扩充动画）',
@@ -272,9 +298,9 @@ export const zh = {
   invalid: '请检查输入：大小需为正数，边距可为任意数字。',
   busy: '保存中…',
   extraPetsHint:
-    '另 {n} 只额外宠物由 pet/ 目录文件定义（<名>-config.json + <名>-animation/ + <名>-memes/），它们不在此列表——改文件后浏览器刷新页面、桌面端右键「重载配置」即可生效。',
-  notifyToggle: '系统通知',
-  notifyToggleHint: '对话完成 / 生成失败 / 权限申请 / 用户选择，在窗口失焦时弹出系统级通知（桌面右下角）。',
+    '另 {n} 只额外宠物由 pet/ 目录文件定义（<名>-config.json + <名>-animation/ + <名>-memes/），它们不在此列表——修改文件后使用桌宠右键菜单中的「重载配置」应用。',
+  notifyToggle: 'DSH 通知',
+  notifyToggleHint: '控制 DSH 工作流和桌宠对话回复的通知。',
   whisperImageToggle: '碎碎念配图',
   whisperImageToggleHint:
     '碎碎念时从表情包池随机抽一张，连同那句话一起显示（图片映射在配置文件顶层 memes）。token：碎碎念本来就每次生成都要调一次模型，配图只是把抽中那张的名称+描述（约 100 字符 / ≈60 token）加进同一次请求，增量可忽略。',
@@ -283,7 +309,7 @@ export const zh = {
     '对话时由 AI 按当前语境从表情包池挑一张配图（可不挑；图片映射在配置文件顶层 memes）。token：每条消息都要把整张清单附进请求，当前约 1.1k 字符（≈650 token，约碎碎念配图的 11 倍），并随图片数量线性增长；关掉则一个字符都不附。',
   confineToggle: '抛掷锁定在当前屏幕',
   confineToggleHint:
-    '多屏用户：甩出去的宠物只在松手时所在那块屏幕内弹（屏缝当墙，不飞到隔壁屏）；关掉则照常跨屏飞行。只影响桌面模式——浏览器 overlay 本来就只在视口内弹。',
+    '多屏用户：甩出去的宠物只在松手时所在那块屏幕内弹（屏缝当墙，不飞到隔壁屏）；关掉则照常跨屏飞行。',
   displayPriorityLabel: '桌宠显示层级',
   displayPriorityHint:
     '全局设置，只影响桌面模式。Windows 检测到全屏应用时隐藏该显示器上的桌宠；macOS 跟随全屏空间隐藏。Linux 暂不支持检测其它应用的全屏状态。',
@@ -292,7 +318,7 @@ export const zh = {
   'displayPriority.normal': '不置顶',
   physicsTitle: '物理（拖拽抛掷手感）',
   physicsHint:
-    '全局默认，所有宠物共用（pet pack 可在自己种类文件里单独覆盖）；随「保存」写入用户配置（不做即时写入）。浏览器保存后即时生效，桌面端由保存重载宠物窗口后生效。',
+    '全局默认，所有宠物共用（pet pack 可在自己种类文件里单独覆盖）；点击「保存」后写入配置并重载桌宠窗口。',
   'physics.gravity': '重力 gravity',
   'physics.gravityHint': 'px/s²，越大落得越快；0 = 无重力（抛出去匀速直线飞）',
   'physics.restitution': '弹性 restitution',
@@ -308,7 +334,7 @@ export const zh = {
   invalidPhysics: '请检查物理参数：重力 / 地面摩擦 ≥ 0，弹性 0~1，总力度 > 0。',
   fontTitle: '外观与字体',
   fontHint:
-    '字体种类作用于现在用软糖体的全部文字：宠物气泡、悬浮提示、对话窗、得分弹窗；字号只作用于宠物气泡与悬浮提示（对话窗与得分弹窗的字号不变）。全局默认，所有宠物共用（pet pack 可在自己种类文件里单独覆盖）；随「保存」写入用户配置，浏览器保存后即时生效，桌面端由保存重载宠物窗口后生效。',
+    '字体种类作用于现在用软糖体的全部文字：宠物气泡、悬浮提示、对话窗、得分弹窗；字号只作用于宠物气泡与悬浮提示（对话窗与得分弹窗的字号不变）。全局默认，所有宠物共用（pet pack 可在自己种类文件里单独覆盖）；点击「保存」后写入配置并重载桌宠窗口。',
   fontFamilyLabel: '字体',
   fontFamilyHint:
     '「软糖体（内置）」随插件提供；其余为系统字体，机器上没装时自动回退到字体栈里的下一个（不会空白或报错）。',
@@ -362,30 +388,20 @@ export const zh = {
   invalidChatImageLimit: '请检查对话配图张数上限：需为 ≥ 0 的数字（0 = 不限制）。',
   notifyTest: '测试弹窗',
   notifyTestOk: '测试通知已发送，请查看桌面右下角。',
-  notifyDenyUnsupported: '当前环境不支持系统通知（浏览器无 Notification API）。',
-  notifyDenyBlocked: '通知权限已被浏览器标记为「阻止」。',
+  notifyDenyUnsupported: '当前环境不支持系统通知。',
+  notifyDenyBlocked: '系统通知权限已被阻止。',
   notifyDenyRejected: '你在权限询问弹窗中选择了「阻止」。',
   notifyDenyError: '申请权限时出错',
-  notifyGuide: '引导：点击地址栏左侧 🔒/ⓘ →「网站设置」→「通知」→ 改为「允许」，刷新页面后重试。',
-  storageTitle: '卸载与存储',
-  storageHint: '插件在本机落下的全部位置。删缓存不影响使用（会自动重下/重建）；删「插件用户数据」会丢配置与对话记忆。',
+  notifyGuide: '请在 Windows 设置的“系统 > 通知”中允许 DSH Pet 发送通知。',
   standaloneStorageTitle: '数据与缓存',
   standaloneStorageHint: '独立版运行所需的数据目录与缓存位置。用户数据包含自定义配置、对话记忆和自定义素材。',
   standaloneStorageNote:
     '退出桌宠请使用系统托盘菜单中的「退出 DSH Pet」。删除用户数据会清除配置、对话记忆和自定义素材。',
   'storage.userData':
     '插件用户数据：自定义配置 main-config.jsonc、对话记忆 memory.json、自定义动画素材 main-animation/、文件宠物 pet/',
-  'storage.electron': '桌面宠物用的 Electron 运行时（体积较大；删除后下次启用桌面模式会自动重新下载）',
+  'storage.electron': '桌面宠物用的 Electron 运行时（体积较大；删除后下次启动会自动重新下载）',
   'storage.desktopCache': '桌面宠物窗口的缓存与主屏缩放缓存（可删，会自动重建）',
-  'storage.electronCache': 'Electron 安装包下载缓存（可删，需要时会重新下载）',
-  'storage.package': '插件本体（由 DSH 管理，用下面的卸载命令移除，不要手删）',
   storageMissing: '（尚未创建）',
-  uninstallTitle: '卸载方法',
-  uninstallStep1: '1. 先退出 DSH（桌面宠物随之退出）；不要在桌宠运行时删除上面的文件。',
-  uninstallStep2: '2. 卸载插件本体（终端执行，会同时从 profile 的 bundle 层移除）：',
-  uninstallStep3:
-    '3. 按需删除上面的位置：缓存类删了无影响；「插件用户数据」删了会丢配置与对话记忆（想保留就先备份其中的 main-config.jsonc）。',
-  uninstallCmd: 'dsh plugin --profile {profile} remove dsh-pet',
 };
 
 export const en = {
@@ -432,11 +448,9 @@ export const en = {
   fixedEnabledHint:
     'When enabled, the random chain no longer turns this pet or walks it away — only idle and in-place actions play. Right-click picks, API triggers and balance / whisper / work-status animations are unaffected.',
   displayLabel: 'Display',
-  displayHint: 'web = browser only / desktop = desktop only / both = both / none = neither',
-  'display.web': 'Browser only',
+  displayHint: 'Show the pet on the Windows desktop, or hide it.',
   'display.desktop': 'Desktop only',
-  'display.both': 'Both',
-  'display.none': 'Neither',
+  'display.none': 'Hidden',
   cornerLabel: 'First-launch position',
   'corner.top-left': 'Top-left',
   'corner.top-right': 'Top-right',
@@ -444,19 +458,20 @@ export const en = {
   'corner.bottom-right': 'Bottom-right',
   marginX: 'Horizontal offset',
   marginY: 'Vertical offset',
-  save: 'Save',
-  sync: 'Sync',
+  save: 'Save settings',
+  saveHint: 'Select this after editing to save your changes and apply them to the pets.',
+  sync: 'Restore defaults',
   confirmSync:
-    'Sync? This overwrites the user config with the bundled default config (all fields + comments); current customizations are lost.',
+    'Restore the default configuration? This overwrites the user config with the bundled defaults and removes current customizations.',
   corruptTitle: 'User config is corrupted — not saved',
   corruptConfirm: 'Save anyway',
   corruptBody:
     'The user config file cannot be parsed (corrupted, not valid JSON/JSONC): {path}. Saving now rebuilds it from the whitelist — everything currently in that file (animations / physics / memes …) will be lost. Cancel = leave the file untouched (fix it and save again); Confirm = save anyway (discard what is in the file).',
   syncHint:
-    '"Sync" writes the bundled default config (comments + every advanced field included) to the user config file, overwriting your current customizations; the file is then directly editable. Two caveats: (1) once created, that file is an explicit override layer — later changes to the bundled defaults will not take effect automatically (until you sync again or delete the file); (2) clicking "Save" on this page rewrites the file from a whitelist — field values are kept, comments are dropped.',
+    '"Restore defaults" writes the bundled default config (including comments and advanced fields) to the user config file, overwriting customizations. Once created, this file is an override layer and will not be replaced automatically on plugin upgrades. Clicking "Save settings" rewrites it from a whitelist, preserving values but removing comments.',
   configMeta: 'Advanced (files)',
   configMetaHint:
-    'User config may override pets / animation pools / weights — refresh or restart to apply: refresh the page in the browser, or right-click a desktop pet → "Reload config" (rebuilds every desktop pet window). The default config is the complete reference.',
+    'User config may override pets / animation pools / weights. After editing files, use a desktop pet’s “Reload config” menu item to apply them. The default config is the complete reference.',
   defaultConfig: 'Default config (read-only, complete reference)',
   userConfig: 'User config (custom overrides)',
   animationDir: 'Animation assets dir (add/customize animations here)',
@@ -468,10 +483,9 @@ export const en = {
   invalid: 'Check your input: size must be positive; margins can be any number.',
   busy: 'Saving…',
   extraPetsHint:
-    '{n} extra pet(s) are file-defined in the pet/ directory (<name>-config.json + <name>-animation/ + <name>-memes/). They are not in this list — after editing the files, refresh the page (browser) or right-click a desktop pet → "Reload config".',
-  notifyToggle: 'System notifications',
-  notifyToggleHint:
-    'OS-level toasts (bottom-right of the desktop) for conversation completion, failures, permission requests, and questions — only while this window is unfocused.',
+    '{n} extra pet(s) are file-defined in the pet/ directory (<name>-config.json + <name>-animation/ + <name>-memes/). They are not in this list — after editing the files, use a desktop pet’s “Reload config” menu item.',
+  notifyToggle: 'DSH notifications',
+  notifyToggleHint: 'Controls notifications for DSH workflow events and pet chat replies.',
   whisperImageToggle: 'Whisper images',
   whisperImageToggleHint:
     'Attach one random meme from the pool to each whisper line (image mapping lives in the top-level `memes` config field). Tokens: a whisper already calls the model every cycle, so the image only appends the name + description of that one meme (~100 chars / ~60 tokens) to the same request — negligible.',
@@ -480,7 +494,7 @@ export const en = {
     'Let the AI pick one meme from the pool that fits the current context (optional; mapping lives in the top-level `memes` config field). Tokens: every message carries the whole catalog — currently ~1.1k chars (~650 tokens, about 11x the whisper case) and growing with the number of images; turning this off appends nothing at all.',
   confineToggle: 'Lock throws to the current screen',
   confineToggleHint:
-    'Multi-monitor: a thrown pet bounces only inside the screen it was released on (screen seams act as walls, so it never flies to the neighbouring monitor); turn this off to let it cross screens as usual. Desktop only — the browser overlay always bounces inside the viewport anyway.',
+    'Multi-monitor: a thrown pet bounces only inside the screen it was released on (screen seams act as walls, so it never flies to the neighbouring monitor); turn this off to let it cross screens as usual.',
   displayPriorityLabel: 'Pet window priority',
   displayPriorityHint:
     'Global desktop-mode setting. Windows hides pets on the monitor with a fullscreen app; macOS follows fullscreen Spaces. Detection of other apps fullscreen is not supported on Linux.',
@@ -489,7 +503,7 @@ export const en = {
   'displayPriority.normal': 'Normal window level',
   physicsTitle: 'Physics (drag & throw feel)',
   physicsHint:
-    'Global default, shared by every pet (a pet pack may override it in its own kind file); written to the user config on "Save" (never written immediately). Applies instantly in the browser; on the desktop it applies once Save reloads the pet windows.',
+    'Global default, shared by every pet (a pet pack may override it in its own kind file); clicking “Save” writes it and reloads the pet windows.',
   'physics.gravity': 'Gravity',
   'physics.gravityHint': 'px/s² — the higher, the faster it falls; 0 = weightless (flies straight forever)',
   'physics.restitution': 'Bounciness',
@@ -508,7 +522,7 @@ export const en = {
   invalidPhysics: 'Check the physics values: gravity / ground friction ≥ 0, bounciness 0–1, throw power > 0.',
   fontTitle: 'Appearance & font',
   fontHint:
-    'The family applies to every place that currently uses the candy font: pet bubble, hover tooltip, chat popup, score popup. The size applies only to the pet bubble and the hover tooltip (chat and score popups keep their own size). Global default, shared by every pet (a pet pack may override it in its own kind file); written to the user config on "Save" — instant in the browser, and on the desktop it applies once Save reloads the pet windows.',
+    'The family applies to every place that currently uses the candy font: pet bubble, hover tooltip, chat popup, score popup. The size applies only to the pet bubble and the hover tooltip (chat and score popups keep their own size). Global default, shared by every pet (a pet pack may override it in its own kind file); clicking “Save” writes it and reloads the pet windows.',
   fontFamilyLabel: 'Font',
   fontFamilyHint:
     '"Candy (bundled)" ships with the plugin; the others are system fonts. If a font is missing on this machine, it falls back to the next one in the stack (never blank, never an error).',
@@ -569,14 +583,10 @@ export const en = {
   notifyTest: 'Test notification',
   notifyTestOk: 'Test notification sent — check the bottom-right of your desktop.',
   notifyDenyUnsupported: 'System notifications are not supported in this environment (no Notification API).',
-  notifyDenyBlocked: 'Notification permission is blocked by the browser.',
+  notifyDenyBlocked: 'System notification permission is blocked.',
   notifyDenyRejected: 'You chose "Block" in the permission prompt.',
   notifyDenyError: 'Failed to request permission',
-  notifyGuide:
-    'Guide: click the 🔒/ⓘ icon next to the address bar → Site settings → Notifications → set to "Allow", then refresh and retry.',
-  storageTitle: 'Uninstall & storage',
-  storageHint:
-    'Every location this plugin writes to. Deleting cache folders is harmless (they re-download / rebuild); deleting "plugin user data" loses your config and chat memory.',
+  notifyGuide: 'Allow DSH Pet notifications in Windows Settings under System > Notifications.',
   standaloneStorageTitle: 'Data and cache',
   standaloneStorageHint:
     'Local data and cache paths used by the standalone app. User data contains custom config, chat memory, and custom assets.',
@@ -584,28 +594,18 @@ export const en = {
     'Quit the app from the DSH Pet system tray menu. Deleting user data removes config, chat memory, and custom assets.',
   'storage.userData':
     'Plugin user data: custom config main-config.jsonc, chat memory memory.json, custom animation assets main-animation/, file pets pet/',
-  'storage.electron':
-    'Electron runtime used by the desktop pet (large; re-downloaded automatically the next time desktop mode starts)',
+  'storage.electron': 'Electron runtime used by the desktop pet (large; re-downloaded automatically the next time the app starts)',
   'storage.desktopCache':
     'Desktop pet window cache and primary-monitor scale cache (safe to delete, rebuilt automatically)',
   'storage.electronCache': 'Electron installer download cache (safe to delete, re-downloaded when needed)',
-  'storage.package': 'The plugin itself (managed by DSH — remove it with the command below instead of deleting it)',
   storageMissing: ' (not created yet)',
-  uninstallTitle: 'How to uninstall',
-  uninstallStep1:
-    '1. Quit DSH first (the desktop pet exits with it); do not delete these files while the pet is running.',
-  uninstallStep2: '2. Remove the plugin itself (run in a terminal; this also drops it from the profile bundle layer):',
-  uninstallStep3:
-    '3. Delete the locations above as needed: cache folders are harmless; deleting "plugin user data" loses your config and chat memory (back up main-config.jsonc first if you want to keep it).',
-  uninstallCmd: 'dsh plugin --profile {profile} remove dsh-pet',
 };
 
 /**
  * 制造「桌宠配置」设置页组件（工厂函数）。
  *
- * 为什么是工厂而非直接定义组件：client 半侧是 __ModuleLoader__ 单文件形态，
- * react 能力不能顶层 import，只能由 DSH 的 require('react') 在运行时注入，
- * 因此把组件依赖作为参数传入，在工厂内制造出可用的组件后再注册进设置页插槽。
+ * 设置窗口在运行时提供 React 能力，因此把组件依赖作为参数传入，
+ * 在工厂内创建设置页组件，避免将 React 打入桌宠宿主 bundle。
  *
  * @param rt        运行时注入的依赖集合
  * @param rt.h      react/jsx-runtime 的 jsx 函数（即 factory 里的 `h`）——
@@ -614,8 +614,7 @@ export const en = {
  *                  （宠物列表 / 选中项 / 忙碌 / 保存消息），值变化时自动重渲染
  * @param rt.useRef react 的 useRef hook——「AI 模型」单下拉选择器用它拿触发器/浮层节点
  *                  （浮层定位与"点外面关闭"判定），与宠物页面同一份注入
- * @param rt.t      locale 绑定到本插件的翻译函数（ctx.locale.bind(NS)）——
- *                  取中英文文案，如 `t('nav')` → '桌宠配置' / 'Pet Config'
+ * @param rt.t      设置页的翻译函数，取中英文文案，如 `t('nav')` → '桌宠配置' / 'Pet Config'
  * @returns PetConfigSection 组件：即整个「桌宠配置」设置页
  *          （props 仅有 close，由设置页外壳提供，本页当前未使用）
  */
@@ -630,15 +629,14 @@ export function makePetConfigSection(rt: {
   t: (key: string) => string;
   notificationIcon?: string;
   notificationAppName?: string;
-  standalone?: boolean;
   standaloneAddon?: ReactNS.ReactNode;
 }): FunctionComponent<{ close?: () => void }> {
-  const { h, useState, useEffect, useRef, useCallback, t, standalone = false } = rt;
-  const notificationIcon = rt.notificationIcon ?? NOTIFY_ICONS.test;
+  const { h, useState, useEffect, useRef, useCallback, t } = rt;
+  const notificationIcon = rt.notificationIcon ?? NOTIFY_TEST_ICON;
   const notificationAppName = rt.notificationAppName ?? 'DSH Pet';
   const floating = (node: ReactNS.ReactNode): ReactNS.ReactNode =>
     rt.createPortal ? rt.createPortal(node, document.body) : node;
-  const displayOptions: PetDisplay[] = standalone ? ['desktop', 'none'] : PET_DISPLAYS;
+  const displayOptions: PetDisplay[] = PET_DISPLAYS;
 
   // 设置页样式（只有模型选择器用得上：hover/焦点环/箭头旋转这些伪类行内样式表达不了）
   injectSettingsCss();
@@ -689,6 +687,7 @@ export function makePetConfigSection(rt: {
   const ConfigSelect: FunctionComponent<{
     label: string;
     value: string;
+    fontFamily: string;
     options: Array<{ value: string; label: string }>;
     disabled: boolean;
     onChange: (value: string) => void;
@@ -821,6 +820,7 @@ export function makePetConfigSection(rt: {
                   top: pos.top + 'px',
                   width: pos.width + 'px',
                   maxHeight: pos.maxHeight + 'px',
+                  fontFamily: props.fontFamily,
                 },
                 children: props.options.map((option, index) =>
                   h('button', {
@@ -926,6 +926,7 @@ export function makePetConfigSection(rt: {
   const ModelPicker: FunctionComponent<{
     label: string;
     value: ModelSelection;
+    fontFamily: string;
     disabled: boolean;
     catalog: ModelCatalogGroup[] | null;
     failed: boolean;
@@ -1145,6 +1146,7 @@ export function makePetConfigSection(rt: {
                   bottom: pos.bottom === undefined ? undefined : pos.bottom + 'px',
                   width: pos.width + 'px',
                   maxHeight: pos.maxHeight + 'px',
+                  fontFamily: props.fontFamily,
                 },
                 children: [
                   searchRow,
@@ -1205,8 +1207,6 @@ export function makePetConfigSection(rt: {
       memes?: string;
       /** 插件落盘的全部位置（路径 + 是否已存在），host 按平台推导 */
       storage?: Array<{ key: string; path: string; exists?: boolean }>;
-      /** 当前 profile 名（拼卸载命令用；反推不出时为空串） */
-      profile?: string;
     }>(null);
     useEffect(() => {
       fetch('/dsh-pet-7340/config/meta')
@@ -1219,7 +1219,7 @@ export function makePetConfigSection(rt: {
     // 与其余三个全局开关**完全同构**：切换只改本地 UI 状态，随「保存」一起整包写入。
     // 为什么不做即时写入：PUT /config 会触发宿主重启桌面 Helper（全部桌面宠物窗口重建——
     // 拖拽落点清空、宠物跳回配置角落），于是"改个通知开关，桌面被重置"，与其它开关行为不一致。
-    // 引擎重读放在 save() 成功之后（reloadNotifications）：保存后即时生效，无需刷新页面。
+    // 通知配置由桌面宿主处理。
     const [notifyEnabled, setNotifyEnabled] = useState(true);
     // 表情包配图开关（全局：写用户级配置；与「保存」一起提交，不做即时写入）
     const [whisperImage, setWhisperImage] = useState(false);
@@ -1235,6 +1235,8 @@ export function makePetConfigSection(rt: {
     // 与四个全局开关 / physics 同一套语义：只改本地状态，随「保存」整包写入（不做即时写入）。
     // 初值仅作占位；成品配置加载成功后才允许编辑和保存。
     const [font, setFont] = useState<FontConfig>({ ...DEFAULT_FONT });
+    // 设置页字体单独追踪已应用值；编辑中的 font 只在保存成功后更新此值。
+    const [appliedFontFamily, setAppliedFontFamily] = useState(fontStackOf(DEFAULT_FONT.family));
     // AI 模型（条目级：碎碎念 / 对话各自的服务商 + 模型，两者都留空 = 跟随当前对话的模型）。
     // 与四个全局开关同一套语义：只改本地状态，随「保存」整包写入（不做即时写入）。
     const [whisperModel, setWhisperModel] = useState<ModelSelection>({ provider: '', model: '' });
@@ -1258,13 +1260,15 @@ export function makePetConfigSection(rt: {
     const [apiKeyFeedback, setApiKeyFeedback] = useState<{ ok: boolean; text: string } | null>(null);
     // 权限申请按钮的反馈（就地显示在按钮旁，与全局保存反馈分离）
     const [permMsg, setPermMsg] = useState<{ kind: 'ok' | 'err' | ''; text: string }>({ kind: '', text: '' });
+
     // 首次读取与恢复默认必须更新同一组控件，避免下一次保存回写过期值。
     const applyConfig = useCallback((merged: Record<string, Record<string, unknown>>) => {
       const m = merged.main;
       if (!m || !Array.isArray(m.pets)) throw new Error('Invalid config response');
-      const loadedPets: Pet[] = (m.pets as Pet[]).map((pet) =>
-        standalone && (pet.display === 'web' || pet.display === 'both') ? { ...pet, display: 'desktop' } : pet,
-      );
+      const loadedPets: Pet[] = (m.pets as Pet[]).map((pet) => ({
+        ...pet,
+        display: pet.display === 'both' ? 'desktop' : pet.display === 'web' ? 'none' : pet.display,
+      }));
       setPets(loadedPets.map((p) => ({ ...p, position: { ...p.position } })));
       setSelId((id) => (loadedPets.some((p) => p.id === id) ? id : (loadedPets[0]?.id ?? '')));
       if (typeof m.notificationsEnabled === 'boolean') setNotifyEnabled(m.notificationsEnabled);
@@ -1284,7 +1288,9 @@ export function makePetConfigSection(rt: {
       }
       // 字体段：同 physics——成品已填满，缺子键再用默认兜底一次
       if (m.font && typeof m.font === 'object') {
-        setFont({ ...DEFAULT_FONT, ...(m.font as FontConfig) });
+        const loadedFont = { ...DEFAULT_FONT, ...(m.font as FontConfig) };
+        setFont(loadedFont);
+        setAppliedFontFamily(fontStackOf(loadedFont.family));
       }
       // 模型选择：成品同样已填满（内置默认 = 两者都空 = 跟随当前对话），读得出就原样上屏
       const wm = m.whisperModel as Partial<ModelSelection> | undefined;
@@ -1347,7 +1353,6 @@ export function makePetConfigSection(rt: {
     }, []);
 
     useEffect(() => {
-      if (!standalone) return;
       let alive = true;
       fetch('/dsh-pet-7340/api-key', { cache: 'no-store' })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
@@ -1365,10 +1370,10 @@ export function makePetConfigSection(rt: {
     }, []);
 
     // 切换系统通知：与配图/抛掷锁定开关同构——只改本地状态（开启时顺带借这次用户手势申请权限），
-    // 配置在点「保存」时整包写入；保存成功后由 save() 调 reloadNotifications() 让引擎即时重读。
+    // 配置在点「保存」时整包写入；通知配置由桌面宿主处理。
     const toggleNotify = async (v: boolean) => {
       setNotifyEnabled(v);
-      // 开启时借用户手势申请系统通知权限（无手势的自动申请可能被浏览器静默压制）
+      // 开启时借用户手势申请系统通知权限（无手势的自动申请可能被系统静默压制）
       if (v) await requestNotificationPermission();
     };
 
@@ -1403,7 +1408,7 @@ export function makePetConfigSection(rt: {
     /**
      * 「测试弹窗」按钮：发一条测试系统通知，验证整条链路通不通。
      *
-     * 顺带承担申请权限的职责——没授权时先申请（借这次用户手势，无手势的自动申请可能被浏览器
+     * 顺带承担申请权限的职责——没授权时先申请（借这次用户手势，无手势的自动申请可能被系统
      * 静默压制），授权成功再发测试通知。所以这一个按钮同时是「拿权限」和「验链路」的入口，
      * 不需要再单独摆一个「获取权限」按钮。
      */
@@ -1551,9 +1556,11 @@ export function makePetConfigSection(rt: {
           return;
         }
         if (!res.ok) throw new Error('HTTP ' + res.status);
-        // 同上：PUT 响应即成品聚合，容器据此重新拍平（新增/删除宠物、改大小位置都走这条路）
-        petBridge.reload((await res.json()) as Record<string, Record<string, unknown>>);
-        void reloadNotifications(); // 通知引擎重读开关：保存后即时生效，无需刷新页面
+        // 同上：PUT 响应即成品聚合，容器据此重新拍平（新增/删除宠物、改大小位置都走这条路）。
+        // 设置页字体也只在保存成功后应用，编辑中的选择不会提前改变界面。
+        const merged = (await res.json()) as Record<string, Record<string, unknown>>;
+        petBridge.reload(merged);
+        setAppliedFontFamily(fontStackOf(font.family));
         setMsg({ kind: 'ok', text: t('saved') });
       } catch {
         setMsg({ kind: 'err', text: t('loadError') });
@@ -1577,7 +1584,6 @@ export function makePetConfigSection(rt: {
         applyConfig(merged);
         // 同一份成品交给容器拍平：编辑列表（裸实例）与渲染列表（含条目级字段）都由成品派生
         petBridge.reload(merged);
-        void reloadNotifications();
         setMsg({ kind: 'ok', text: t('saved') });
       } catch {
         setMsg({ kind: 'err', text: t('loadError') });
@@ -1685,7 +1691,15 @@ export function makePetConfigSection(rt: {
       const label = t(key === 'whisperModel' ? 'whisperModelLabel' : 'chatModelLabel');
       return field(
         label,
-        h(ModelPicker, { label, value, disabled: busy, catalog, failed: catalogErr, onChange: setter }),
+        h(ModelPicker, {
+          label,
+          value,
+          fontFamily: appliedFontFamily,
+          disabled: busy,
+          catalog,
+          failed: catalogErr,
+          onChange: setter,
+        }),
         t('modelFieldHint'),
         end,
       );
@@ -1693,7 +1707,7 @@ export function makePetConfigSection(rt: {
 
     return h('section', {
       className: 'dsh-pet-cfg',
-      style: { maxWidth: '720px' },
+      style: { maxWidth: '720px', fontFamily: appliedFontFamily },
       children: [
         // 标题：intro 与「额外宠物」说明都收进问号，不再各占一行小字
         h('h2', {
@@ -1797,6 +1811,7 @@ export function makePetConfigSection(rt: {
                       h(ConfigSelect, {
                         label: t('displayLabel'),
                         value: cur.display,
+                        fontFamily: appliedFontFamily,
                         disabled: busy,
                         options: displayOptions.map((d) => ({ value: d, label: t('display.' + d) })),
                         onChange: (value: string) => updateSel({ display: value as PetDisplay }),
@@ -1815,6 +1830,7 @@ export function makePetConfigSection(rt: {
                       h(ConfigSelect, {
                         label: t('cornerLabel'),
                         value: cur.position.corner,
+                        fontFamily: appliedFontFamily,
                         disabled: busy,
                         options: CORNERS.map((c) => ({ value: c, label: cornerLabel(c) })),
                         onChange: (value: string) => updateSel({ position: { corner: value as Corner } }),
@@ -1856,7 +1872,7 @@ export function makePetConfigSection(rt: {
         // 全局开关卡（需求 4：四个开关一行）。
         // 四个开关行为**一致**：切换只改本地状态，随「保存」整包写入用户级配置——不做即时写入
         // （即时写盘会触发宿主重启桌面 Helper，把全部桌面宠物窗口重建一遍）。系统通知额外在保存后
-        // 由 save() 调 reloadNotifications() 让通知引擎即时重读。
+        // 系统通知由桌面宿主处理。
         // 「测试弹窗」按钮不在这里——它是个动作，跟「保存 / 同步」同一行（见下面的操作区）。
         h('div', {
           className: 'dsh-pet-cfg__card',
@@ -1879,6 +1895,7 @@ export function makePetConfigSection(rt: {
                   h(ConfigSelect, {
                     label: t('displayPriorityLabel'),
                     value: displayPriority,
+                    fontFamily: appliedFontFamily,
                     disabled: busy,
                     options: (['always-on-top', 'hide-on-fullscreen', 'normal'] as PetDisplayPriority[]).map(
                       (value) => ({
@@ -1892,7 +1909,7 @@ export function makePetConfigSection(rt: {
                 ),
               ],
             }),
-            standalone ? (rt.standaloneAddon ?? null) : null,
+            rt.standaloneAddon ?? null,
           ],
         }),
 
@@ -1912,6 +1929,7 @@ export function makePetConfigSection(rt: {
                   h(ConfigSelect, {
                     label: t('fontFamilyLabel'),
                     value: font.family,
+                    fontFamily: appliedFontFamily,
                     options: FONT_PRESETS.map((p) => ({ value: p.id, label: t('font.' + p.id) })),
                     disabled: busy,
                     onChange: (value: string) => setFont((f) => ({ ...f, family: value as FontFamilyId })),
@@ -1953,8 +1971,7 @@ export function makePetConfigSection(rt: {
           className: 'dsh-pet-cfg__card',
           children: [
             cardHead(t('modelTitle'), t('modelHint')),
-            standalone
-              ? h('div', {
+            h('div', {
                   className: 'dsh-pet-cfg__apiKey',
                   children: [
                     field(
@@ -2007,8 +2024,7 @@ export function makePetConfigSection(rt: {
                       ],
                     }),
                   ],
-                })
-              : null,
+                }),
             catalogErr
               ? h('p', {
                   className: 'dsh-pet-cfg__note',
@@ -2035,7 +2051,7 @@ export function makePetConfigSection(rt: {
 
         // 物理卡（需求 6）：四个数字输入一行 + 两个开关一行。
         // 与上面四个开关同一套语义（只改本地状态，随「保存」整包写入；不做即时写入）。
-        // 浏览器保存后即时生效；桌面端由保存触发的 Helper 重启重新读取——physics 在 sprite 构造时只读一次。
+        // 保存触发的 Helper 重启后重新读取——physics 在 sprite 构造时只读一次。
         h('div', {
           className: 'dsh-pet-cfg__card',
           children: [
@@ -2067,44 +2083,60 @@ export function makePetConfigSection(rt: {
           ],
         }),
 
-        // 操作区：「测试弹窗」与「保存 / 同步」同一行（都是动作）；「同步」的副作用说明收进问号
+        // 操作区：保存作为明确主操作；恢复默认配置与测试弹窗收在次级操作区。
         h('div', {
-          className: 'dsh-pet-cfg__actions',
+          className: 'dsh-pet-cfg__savePanel',
           children: [
-            h('button', {
-              type: 'button',
-              disabled: busy,
-              onClick: () => void save(),
-              className: 'dsh-pet-cfg__btn is-primary',
-              children: t('save'),
+            h('div', {
+              className: 'dsh-pet-cfg__saveHead',
+              children: [
+                h('div', { key: 'title', className: 'dsh-pet-cfg__saveTitle', children: t('save') }),
+                h('div', { key: 'hint', className: 'dsh-pet-cfg__saveHint', children: t('saveHint') }),
+              ],
             }),
-            h('button', {
-              type: 'button',
-              disabled: busy,
-              onClick: sync,
-              className: 'dsh-pet-cfg__btn',
-              children: t('sync'),
+            h('div', {
+              className: 'dsh-pet-cfg__saveRow',
+              children: [
+                h('button', {
+                  type: 'button',
+                  disabled: busy,
+                  onClick: () => void save(),
+                  className: 'dsh-pet-cfg__btn is-primary is-save',
+                  children: t('save'),
+                }),
+                msg.text
+                  ? h('span', {
+                      className: 'dsh-pet-cfg__msg' + (msg.kind === 'err' ? ' is-err' : ''),
+                      children: msg.text,
+                    })
+                  : null,
+              ],
             }),
-            h('button', {
-              type: 'button',
-              onClick: () => void testNotification(),
-              className: 'dsh-pet-cfg__btn',
-              children: t('notifyTest'),
+            h('div', {
+              className: 'dsh-pet-cfg__saveTools',
+              children: [
+                h('button', {
+                  type: 'button',
+                  disabled: busy,
+                  onClick: sync,
+                  className: 'dsh-pet-cfg__btn is-danger',
+                  children: t('sync'),
+                }),
+                q(t('syncHint')),
+                h('button', {
+                  type: 'button',
+                  onClick: () => void testNotification(),
+                  className: 'dsh-pet-cfg__btn',
+                  children: t('notifyTest'),
+                }),
+                permMsg.text
+                  ? h('span', {
+                      className: 'dsh-pet-cfg__msg' + (permMsg.kind === 'err' ? ' is-err' : ''),
+                      children: permMsg.text,
+                    })
+                  : null,
+              ],
             }),
-            q(t('syncHint')),
-            // 两个反馈各归各的：msg = 保存/同步结果，permMsg = 测试通知结果
-            msg.text
-              ? h('span', {
-                  className: 'dsh-pet-cfg__msg' + (msg.kind === 'err' ? ' is-err' : ''),
-                  children: msg.text,
-                })
-              : null,
-            permMsg.text
-              ? h('span', {
-                  className: 'dsh-pet-cfg__msg' + (permMsg.kind === 'err' ? ' is-err' : ''),
-                  children: permMsg.text,
-                })
-              : null,
           ],
         }),
 
@@ -2129,13 +2161,10 @@ export function makePetConfigSection(rt: {
           ? h('div', {
               className: 'dsh-pet-cfg__card',
               children: [
-                cardHead(
-                  standalone ? t('standaloneStorageTitle') : t('storageTitle'),
-                  standalone ? t('standaloneStorageHint') : t('storageHint'),
-                ),
+                cardHead(t('standaloneStorageTitle'), t('standaloneStorageHint')),
                 // 存储位置清单：每条都是「路径（可选中复制）→ 作用」；路径也沿用应用字体
                 ...paths.storage
-                  .filter((s) => !standalone || s.key === 'userData' || s.key === 'desktopCache')
+                  .filter((s) => s.key === 'userData' || s.key === 'desktopCache')
                   .map((s) =>
                     h('div', {
                       key: s.key,
@@ -2150,28 +2179,11 @@ export function makePetConfigSection(rt: {
                       ],
                     }),
                   ),
-                standalone
-                  ? h('div', {
+                h('div', {
                       key: 'standalone-note',
                       className: 'dsh-pet-cfg__note',
                       children: t('standaloneStorageNote'),
-                    })
-                  : [
-                      h('div', {
-                        key: 'ut',
-                        className: 'dsh-pet-cfg__cardTitle',
-                        style: { marginTop: '4px' },
-                        children: t('uninstallTitle'),
-                      }),
-                      h('div', { key: 'u1', className: 'dsh-pet-cfg__note', children: t('uninstallStep1') }),
-                      h('div', { key: 'u2', className: 'dsh-pet-cfg__note', children: t('uninstallStep2') }),
-                      h('div', {
-                        key: 'cmd',
-                        className: 'dsh-pet-cfg__cmd',
-                        children: t('uninstallCmd').replace('{profile}', paths.profile || '<profile>'),
-                      }),
-                      h('div', { key: 'u3', className: 'dsh-pet-cfg__note', children: t('uninstallStep3') }),
-                    ],
+                    }),
               ],
             })
           : null,

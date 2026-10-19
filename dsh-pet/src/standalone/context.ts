@@ -18,6 +18,7 @@
  *   - `on(...)` → 不订阅任何事件：独立模式没有 DSH 会话，工作状态因此保持空闲
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { saveDeepSeekApiKey } from './api-key-store';
@@ -33,7 +34,71 @@ import {
 /** 独立模式下模型及余额路由使用的 DeepSeek 官方 API 服务商 id。 */
 export const STANDALONE_PROVIDER = 'deepseek-official';
 
-/** 独立模式的日志接口（与插件对 `ctx.logger` 的使用面一致） */
+interface AutoStartState {
+  available: boolean;
+  enabled: boolean;
+}
+
+interface PendingAutoStartRequest {
+  resolve(state: AutoStartState): void;
+  reject(error: Error): void;
+  timeout: NodeJS.Timeout;
+}
+
+const pendingAutoStartRequests = new Map<string, PendingAutoStartRequest>();
+let autoStartMessageListenerAttached = false;
+
+function requestAutoStart(action: 'get' | 'set', enabled?: boolean): Promise<AutoStartState> {
+  if (process.env.DSH_PET_AUTOSTART_SUPPORTED !== '1') {
+    return Promise.resolve({ available: false, enabled: false });
+  }
+  const ipcProcess = process as NodeJS.Process & {
+    send?: (message: unknown, callback?: (error: Error | null) => void) => boolean;
+  };
+  if (typeof ipcProcess.send !== 'function') return Promise.resolve({ available: false, enabled: false });
+
+  if (!autoStartMessageListenerAttached) {
+    ipcProcess.on('message', (message: unknown) => {
+      if (typeof message !== 'object' || message === null) return;
+      const response = message as {
+        channel?: unknown;
+        requestId?: unknown;
+        ok?: unknown;
+        state?: unknown;
+        error?: unknown;
+      };
+      if (response.channel !== 'dsh-pet:auto-start:result' || typeof response.requestId !== 'string') return;
+      const pending = pendingAutoStartRequests.get(response.requestId);
+      if (!pending) return;
+      clearTimeout(pending.timeout);
+      pendingAutoStartRequests.delete(response.requestId);
+      if (response.ok === true && typeof response.state === 'object' && response.state !== null) {
+        const state = response.state as Partial<AutoStartState>;
+        pending.resolve({ available: state.available === true, enabled: state.enabled === true });
+      } else {
+        pending.reject(new Error(typeof response.error === 'string' ? response.error : '读取 Windows 自启动状态失败。'));
+      }
+    });
+    autoStartMessageListenerAttached = true;
+  }
+
+  const requestId = randomUUID();
+  return new Promise<AutoStartState>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingAutoStartRequests.delete(requestId);
+      reject(new Error('与桌面程序通信超时，请重启后重试。'));
+    }, 5000);
+    pendingAutoStartRequests.set(requestId, { resolve, reject, timeout });
+    ipcProcess.send?.({ channel: 'dsh-pet:auto-start', requestId, action, enabled }, (error) => {
+      if (!error) return;
+      clearTimeout(timeout);
+      pendingAutoStartRequests.delete(requestId);
+      reject(error);
+    });
+  });
+}
+
+/** 独立模式的日志接口，供桌面宿主模块使用。 */
 export interface StandaloneLogger {
   info(message: string): void;
   warn(message: string): void;
@@ -47,7 +112,7 @@ export interface RegisteredRoute {
   kind: string;
   /** 路由路径，例如 `/dsh-pet-7340`；独立模式按它做前缀匹配，不自己硬编码前缀 */
   path: string;
-  /** 真实 Node HTTP handler：自己写响应头与 body（与 DSH WebServer 的契约一致） */
+  /** Node HTTP handler：自行写入响应头与响应体。 */
   handler: (req: IncomingMessage, res: ServerResponse) => unknown;
 }
 
@@ -64,7 +129,7 @@ export interface StandaloneContextOptions {
 }
 
 export interface StandaloneContext {
-  /** 交给 `apply()` 的伪 ctx */
+  /** 交给宿主初始化函数的运行时上下文适配层 */
   ctx: Record<string, unknown>;
   /** `apply()` 期间注册的路由（按注册顺序） */
   routes: RegisteredRoute[];
@@ -262,6 +327,83 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
       },
     });
   }
+
+  const sendAutoStart = (res: ServerResponse, status: number, body: unknown): void => {
+    const payload = JSON.stringify(body);
+    res.writeHead(status, {
+      'content-type': 'application/json; charset=utf-8',
+      'content-length': Buffer.byteLength(payload),
+      'cache-control': 'no-store',
+    });
+    res.end(payload);
+  };
+  routes.push({
+    kind: 'exact',
+    path: '/dsh-pet-7340/auto-start',
+    handler: async (req, res) => {
+      if (req.method === 'GET') {
+        try {
+          sendAutoStart(res, 200, await requestAutoStart('get'));
+        } catch (error) {
+          sendAutoStart(res, 503, {
+            available: true,
+            enabled: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
+      }
+      if (req.method !== 'POST') {
+        sendAutoStart(res, 405, { error: 'Method not allowed' });
+        return;
+      }
+      const contentLength = Number(req.headers['content-length'] ?? 0);
+      if (contentLength > 1024) {
+        sendAutoStart(res, 413, { error: '自启动设置请求内容过大。' });
+        req.resume();
+        return;
+      }
+      const rawBody = await new Promise<string | undefined>((resolve, reject) => {
+        let body = '';
+        let tooLarge = false;
+        req.setEncoding('utf8');
+        req.on('data', (chunk: string) => {
+          if (tooLarge) return;
+          body += chunk;
+          if (Buffer.byteLength(body) > 1024) {
+            tooLarge = true;
+            body = '';
+          }
+        });
+        req.once('end', () => resolve(tooLarge ? undefined : body));
+        req.once('error', reject);
+      });
+      if (rawBody === undefined) {
+        sendAutoStart(res, 413, { error: '自启动设置请求内容过大。' });
+        return;
+      }
+      let request: { enabled?: unknown };
+      try {
+        request = JSON.parse(rawBody) as { enabled?: unknown };
+      } catch {
+        sendAutoStart(res, 400, { error: '无效的 JSON 请求。' });
+        return;
+      }
+      if (typeof request.enabled !== 'boolean') {
+        sendAutoStart(res, 400, { error: '无效的自启动设置。' });
+        return;
+      }
+      try {
+        sendAutoStart(res, 200, await requestAutoStart('set', request.enabled));
+      } catch (error) {
+        sendAutoStart(res, 503, {
+          available: true,
+          enabled: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+  });
 
   const webServer = {
     /** 读取时取值：服务先监听、端口确定后才 apply，插件在 launchHelper 里读到的就是真端口 */

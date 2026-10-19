@@ -13,7 +13,7 @@ const pet = {
   id: 'pet-1',
   name: 'Blue',
   size: 240,
-  display: 'web',
+  display: 'desktop',
   position: { corner: 'top-right', marginX: 20, marginY: 20 },
 };
 const defaults = {

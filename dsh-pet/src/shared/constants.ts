@@ -1,5 +1,4 @@
 // 画布 / 几何常量：与 640×360 播放变体强耦合，属于运行时几何，不作为配置。
-// 浏览器 overlay 与桌面模式共用同一组（src/shared = shared-core 单一来源）。
 /** thumb 画布高度 */
 export const CANVAS_H = 360;
 /** thumb 画布上「脚底」的 y 坐标（人物站在 y=330 线上） */
@@ -12,9 +11,7 @@ export const DRAG_THRESHOLD = 5;
  *  运行时乘以 实际size/基准 等比缩放 —— 任何缩放下，行进距离与人物自身大小成比例（小宠物挪小步、大宠物挪大步） */
 export const PET_REF_WIDTH = 462;
 
-/** 播放动画扩展名（集中开关，浏览器与桌面共用同一常量）：
- *  - 默认 '.webm'（VP9-alpha，发布格式）：Chrome/Edge/Firefox 与桌面模式（Electron=Chromium）直接透明播放；
- *  - macOS 的 Safari/WKWebView 不认 webm alpha（渲染黑底），需改为 '.mov'（HEVC-with-Alpha）——
- *    素材从仓库 GitHub Release（固定 tag assets-mov）下载放入 main-animation/mov/，
- *    并把本常量改为 '.mov' 后重新构建（自构建用户改这里；npm 包用户改产物 lib/client.js 中同名常量）。 */
+/** 播放动画扩展名（桌面应用构建时集中读取）：
+ *  - 默认 '.webm'（VP9-alpha，发布格式），Electron Chromium 直接透明播放；
+ *  - 如需切换素材格式，修改本常量并重新构建。 */
 export const ANIMATION_EXT = '.webm';

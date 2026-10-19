@@ -3,28 +3,25 @@ openapi: 3.1.0
 info:
   title: dsh-pet HTTP API
   version: 0.3.7
-  summary: DSH 桌宠插件的宿主 HTTP 接口
+  summary: DSH Pet Windows 应用的本机 HTTP 接口
   description: |
-    dsh-pet 的宿主（host）半侧通过 DSH 的 `webServer` 服务注册**一条前缀路由** `/dsh-pet-7340`，
-    浏览器半侧、桌面 Electron 半侧、以及设置页全都消费同一份实现（`handlePetRoute`）。
-    本文件是该路由的公开契约：任何第三方插件 / 脚本都可以按此访问桌宠能力。
+    DSH Pet Windows 应用在本机 HTTP 服务上提供**一条前缀路由** `/dsh-pet-7340`，
+    桌面 Electron Helper、内嵌设置页与本机集成共用同一份实现（`handlePetRoute`）。
+    本文件是该路由的契约：本机脚本或集成可以按此访问桌宠能力。DSH Pet 不再作为 DSH Web 插件加载。
 
     ## 部署形态
 
-    接口挂在 **DSH 自己的 Web 服务**上，因此没有固定端口：
+    接口由桌宠应用自己的本机服务提供：
 
-    - `servers` 里的 `http://127.0.0.1:{port}` 是占位——`{port}` 就是 `ctx.webServer.port`，
-      也就是 `dsh web` 启动时打印的地址（未显式指定端口时默认 3080）。
-      插件本身不固定监听端口，只往宿主的 Web 服务上挂路由。
+    - 默认地址为 `http://127.0.0.1:6952`；若端口被占用，应用会自动顺延。
     - 只监听 **127.0.0.1**，不对外网暴露，也**没有任何鉴权**：任何能访问本机该端口的进程都能调用。
       请勿把该端口转发/代理到公网。
-    - 桌面半侧不走 HTTP，而是 `dsh-pet-bridge://` 自定义 scheme 经主进程管道转发到**同一个**
-      `handlePetRoute`。所以下表所有路径对两端行为完全一致。
+    - 桌面 Helper 也可通过 `dsh-pet-bridge://` 主进程管道调用同一组处理器。
 
     ## 两分钟上手
 
     ```bash
-    BASE=http://127.0.0.1:3080/dsh-pet-7340
+    BASE=http://127.0.0.1:6952/dsh-pet-7340
 
     # 1. 拉一次统一状态（只读、零副作用，可以随便轮询）
     curl -s $BASE/state
@@ -64,12 +61,12 @@ externalDocs:
 servers:
   - url: http://127.0.0.1:{port}
     description: |
-      本机 DSH Web 服务。`{port}` = `ctx.webServer.port`（`dsh web` 默认 3080）。
+      DSH Pet Windows 应用的本机服务（默认端口 6952；被占用时顺延）。
       路由前缀固定为 `/dsh-pet-7340`（7340 是历史遗留的名字，**不是端口号**）。
     variables:
       port:
-        default: "3080"
-        description: DSH Web 服务实际监听的端口
+        default: "6952"
+        description: DSH Pet 本机服务实际监听的端口
 
 tags:
   - name: State
@@ -125,7 +122,7 @@ paths:
           碎碎念与对话回复**不写**这两个字段，消费端按缺省处理——行为与改造前完全一致。
         - **`sections.config` 是配置变更信号**（`data` 恒为 `{}`，只看 `counter`）：它变了就说明配置
           被写过，消费端应重拉 `GET /config`。**当前唯一的写方是 `POST /pet-display`**（桌面端右键改
-          显示位置）——那是唯一一个**不是发起页面自己**的配置改动，浏览器端只能靠这个信号知道。
+          显示位置）——托盘或桌宠菜单等本机调用方可通过这个信号判断配置是否改变。
           配置本体太大，不能塞进每秒一次的 `/state`，所以这里只放一个信号。
           保存 / 同步配置（`PUT` / `POST /config`）**不写它**：它们的调用方自己就拿到了成品聚合。
           **用户手工编辑 `main-config.jsonc` / `pet/*.json` 不会被感知**——宿主不再读盘比对 mtime
@@ -270,8 +267,8 @@ paths:
         并显示。宿主侧其他插件（例如"女仆"巡检插件想在巡检完替主人说一句）用它把文本送进
         桌宠气泡，桌宠就成了那套人格的实体。
 
-        文本写进 `pets.<id>.say` —— 与碎碎念、对话回复**同一个叶子**，因此浏览器与桌面两端
-        在 1 秒内自动显示，**消费端无需改动**。这是动作端点，只回 `{ ok }`，文本本身从
+        文本写进 `pets.<id>.say` —— 与碎碎念、对话回复**同一个叶子**，由桌面渲染端统一展示。
+        这是动作端点，只回 `{ ok }`，文本本身从
         `/state` 读。
 
         **校验**（任何一条不通过都返回 HTTP 200 + `ok: false`，与 `POST /chat` 口径一致）：
@@ -428,8 +425,8 @@ paths:
       operationId: playAnimation
       summary: 点播动画——让桌宠播一段指定动画
       description: |
-        效果与**右键菜单里点「动作」树完全一致**：两端都复用同一个菜单动作处理函数
-        （浏览器 `handleMenuAction` / 桌面 `sprite.onMenuAction`），所以镜像修正（文字类朝右时
+        效果与**右键菜单里点「动作」树完全一致**：渲染端复用同一个菜单动作处理函数
+        （桌面 `sprite.onMenuAction`），所以镜像修正（文字类朝右时
         先强制朝左）、移动类走真实位移、其余播一遍这些语义天然一致。
 
         名字写进 `pets.<id>.anim`，消费端在 1 秒内轮询发现 `counter` 变化后换源播放。
@@ -535,14 +532,12 @@ paths:
         让指定桌宠移动到归一化坐标处，写进 `pets.<id>.position`；渲染端在 1 秒内轮询发现
         `counter` 变化后执行。这是动作端点，只回 `{ ok }`（成功时另带宿主夹取后的 `x`/`y`）。
 
-        **坐标语义（两端不同，务必看清）**：`x`/`y` 是宠物**中心**的归一化坐标，合法 `0~1`。
+        **坐标语义**：`x`/`y` 是宠物**中心**相对于所有显示器工作区外接矩形的归一化坐标，合法 `0~1`。
         选中心而不是左上角，是为了让调用方**不必知道宠物多大**——用左上角的话，想居中就得先去
         `GET /config` 查这只宠物的 `size`。
 
-        - **浏览器 overlay**：`0~1` 就是**视口**。`0.5` = 屏幕正中。
-        - **桌面**：`0~1` 是**全部显示器工作区并集的外接矩形**——不是主屏，也不是某一块屏。
-          左右并排的双屏下 `x: 0.5` 落在两块屏的接缝上；三屏等宽时 `x: 1/3` 约等于第二块屏的左缘。
-          所以**同一个 `x` 在两端含义不同**，调用方需要知道自己面对的是哪一种。
+        `0~1` 对应**全部显示器工作区并集的外接矩形**——不是主屏，也不是某一块屏。
+        左右并排的双屏下 `x: 0.5` 落在两块屏的接缝上；三屏等宽时 `x: 1/3` 约等于第二块屏的左缘。
 
         **越界与不可达都会被夹取**：
 
@@ -768,7 +763,7 @@ paths:
       description: |
         `POST /anim` 的 `ok: true` **只代表受理了**，不代表视频播完了：素材不存在、解码失败、
         被别的动画顶掉，受理响应都不会有任何反馈（历史上表现为"点了没反应"）。
-        本接口返回那一次点播的**真实状态**——状态由**真正在播的那一端**（浏览器 / 桌面渲染进程）
+        本接口返回那一次点播的**真实状态**——状态由**桌面渲染进程**
         上报驱动，宿主不做猜测（读视频时长再起定时器是错的：加载失败时根本没开始播，
         定时器却会照常走到"播完"）。
 
@@ -878,7 +873,7 @@ paths:
       operationId: reportPlayback
       summary: 上报播放状态（内部通道：渲染端 → 宿主）
       description: |
-        **这是回执的地基。** 宿主只知道"受理了"，不知道播没播完——动画在浏览器 / 桌面渲染进程里播，
+        **这是回执的地基。** 宿主只知道"受理了"，不知道播没播完——动画在桌面渲染进程里播，
         只有那一端知道真相。所以没有本接口的上报，`GET /playback/{id}` 永远只会停在 `accepted`。
 
         **第三方调用方不需要调它**，它由本插件自己的渲染端在四个时机各发一次：
@@ -965,8 +960,8 @@ paths:
       description: |
         返回该宠物的最近若干轮对话（**一次性读取，不是轮询**），供对话弹窗打开时回填历史。
 
-        记忆的唯一读写方是宿主（落盘在 `memory.json`），浏览器与桌面两端都只是客户端，
-        因此同一 DSH 实例下的两端**天然共享同一份记忆**。文件全量保留、不删除，
+        记忆的唯一读写方是宿主（落盘在 `memory.json`），桌面窗口仅作为客户端，
+        因此同一 DSH Pet 实例下的所有桌宠窗口**天然共享同一份记忆**。文件全量保留、不删除，
         只是响应时按 `chatMemoryRounds`（默认 5 轮，1 轮 = 1 问 1 答）截取尾部。
       parameters:
         - $ref: "#/components/parameters/PetIdQuery"
@@ -1051,7 +1046,7 @@ paths:
         返回**合并成品**：内置默认（`assets/config.jsonc`）与用户层
         （`$DSH_HOME/dsh-pet/main-config.jsonc`）深度合并后的结果，
         每个条目的字段都已填满（动画池、权重、物理参数、工作状态文案等），
-        浏览器/桌面/设置页直接消费，**无需任何校验或兜底**。
+        桌面渲染端与设置页直接消费，**无需任何校验或兜底**。
 
         顶层键是"条目名"（`main`、`test1`……），不是数组。
 
@@ -1124,7 +1119,7 @@ paths:
                       whisperEnabled: true
                       workStatusEnabled: true
                       fixedEnabled: false
-                      display: both
+                      display: desktop
                       position:
                         corner: bottom-right
                         marginX: 24
@@ -1209,7 +1204,7 @@ paths:
         按宠物 id 改它的 `display`，并返回改动后的成品聚合（与 `GET /config` 同一份）。
 
         这是 `PUT /config` 的**单只快捷形式**：调用方不必回传整段 `pets[]`（那既容易误伤同层
-        其它宠物，也要自己判断该写哪一层）。桌面端与浏览器端的右键菜单「显示位置」都走它。
+        其它宠物，也要自己判断该写哪一层）。桌面右键菜单和托盘「显示位置」操作都走它。
 
         **层归属由宿主反查，调用方不要传**：`id` 在合并后是**全局唯一**的（`mergePet` 会跳过
         重复实例），宿主用 `findPetInstance` 定位后按条目归属决定写哪个文件——`main` 条目写
@@ -1231,16 +1226,16 @@ paths:
                   description: 宠物实例 id（合并后全局唯一）
                 display:
                   type: string
-                  enum: [web, desktop, both, none]
+                  enum: [desktop, none]
                   description: |
-                    目标显示位置：`web` 仅网页 / `desktop` 仅桌面 / `both` 两者 / `none` 都不显示。
-                    选 `none` 后这只宠物两端都不可见，恢复入口是设置页的「显示位置」下拉框。
+                    目标显示位置：`desktop` 显示在桌面 / `none` 隐藏。
+                    选 `none` 后宠物不可见，恢复入口是设置页或托盘菜单。
             examples:
-              toWeb:
-                summary: 从桌面撤下，保留在网页
+              hidePet:
+                summary: 隐藏这只桌宠
                 value:
                   id: main
-                  display: web
+                  display: none
       responses:
         "200":
           description: 改动成功，返回改动后的成品聚合
@@ -1902,7 +1897,7 @@ components:
         data:
           description: |
             通知帧；`null` = 从未写过。
-            由宿主监听 DSH 宿主事件生成，浏览器轮询到变化后弹系统 toast。
+            由宿主监听 DSH Desktop 宿主事件生成，桌面应用轮询到变化后弹系统通知。
             **单槽**：新通知直接覆盖旧的，不排队（1 秒轮询下同一拍只处理最新一条）。
           oneOf:
             - $ref: "#/components/schemas/NotifyFrame"
@@ -2139,7 +2134,7 @@ components:
           description: |
             可选配图**名称**（不是 URL）：配置 `memes` 的键，也就是该图文件的文件名（不含扩展名）。
             仅在配置开启了 `whisperImageEnabled` / `chatImageEnabled` 且命中池内图片时出现。
-            消费端（浏览器 / 桌面）按素材根拼成 `/dsh-pet-7340/pic/memes/<素材根>/<名>.png`
+            桌面 Helper 按素材根拼成 `/dsh-pet-7340/pic/memes/<素材根>/<名>.png`
             取图，素材根 = 该宠物的条目 key（`assetRoot`）。
         duration:
           type: number
@@ -2286,8 +2281,8 @@ components:
             事件动画（余额/碎碎念/工作状态）、点击回应与拖拽均不受影响。缺失默认 `false`。
         display:
           type: string
-          enum: [web, desktop, both, none]
-          description: 显示在哪：仅浏览器 / 仅桌面 / 两者 / 都不显示
+          enum: [desktop, none]
+          description: 显示在哪：桌面 / 隐藏
         position:
           $ref: "#/components/schemas/Position"
 
@@ -2350,7 +2345,7 @@ components:
           description: 宠物固定（随机链不再抽「转向 / 移动」两档；主动触发不受影响）
         display:
           type: string
-          enum: [web, desktop, both, none]
+          enum: [desktop, none]
         position:
           $ref: "#/components/schemas/Position"
         whisperPrompt:

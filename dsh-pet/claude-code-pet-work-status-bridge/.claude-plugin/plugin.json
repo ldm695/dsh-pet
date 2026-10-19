@@ -1,6 +1,6 @@
 {
   "name": "dsh-pet-work-status-bridge-claude-code",
-  "version": "0.2.6",
+  "version": "0.2.11",
   "description": "将 Claude Code 多会话与子代理工作状态同步给 DSH Pet 桌宠独立版。",
   "author": {
     "name": "Leonardus MA"

@@ -2,8 +2,8 @@
  * 桌面 Helper 进程管理器 —— 拉起/守护 Electron 透明窗口进程。
  *
  * 架构：Helper 与宿主之间除了日志，还有一条 **stdin/stdout JSON 行协议**（bridge）：
- *   - 渲染端不再直接访问 DSH WebServer（DSH Desktop 2.0.3+ 的浏览器访问闸门会给插件自拉的
- *     独立进程裸 HTTP 请求回 403），改走自定义 scheme `dsh-pet-bridge://` → Electron 主进程
+ *   - 渲染端不再直接访问 DSH WebServer（DSH Desktop 2.0.3+ 会拦截桌宠 Helper 子进程的
+ *     裸 HTTP 请求），改走自定义 scheme `dsh-pet-bridge://` → Electron 主进程
  *     （main.js 的 protocol.handle）→ 本模块的管道 → 宿主 handlePetRoute（与 HTTP 路由同一份逻辑）。
  *   - 协议行统一前缀 `dsh-pet-bridge:`，与普通日志行区分（main.js 的 console 输出也走 stdout）。
  *   - 素材（webm/字体/光标）不把二进制过管道：宿主返回文件绝对路径，main.js 自行读盘应答。
@@ -171,7 +171,7 @@ export interface EnsureElectronOptions {
  * 进程内下载并解压 Electron 到 $DSH_HOME/electron。
  * 不 spawn 子进程：在 CLI node 与 Electron 宿主（DSH Desktop）里都可用，
  * 修复原 ensure-electron.mjs 用 process.execPath 调脚本导致宿主重复拉起的问题。
- * 已存在则原样返回；失败返回 undefined（不影响 DSH 与浏览器 overlay）。
+ * 已存在则原样返回；失败返回 undefined，由桌面宿主报告启动错误。
  */
 export async function ensureElectronDownload(options: EnsureElectronOptions = {}): Promise<string | undefined> {
   const version = options.version || process.env.DSH_PET_ELECTRON_VERSION || '43.3.0';
@@ -189,7 +189,7 @@ export async function ensureElectronDownload(options: EnsureElectronOptions = {}
   log(`Electron not found, downloading v${version} (${PLAT}-${process.arch}) ...`);
 
   try {
-    // 目录创建也可能失败（权限不足、同名文件等），与下载失败一样降级到浏览器宠物。
+    // 目录创建也可能失败（权限不足、同名文件等），与下载失败一样返回启动错误。
     mkdirSync(targetDir, { recursive: true });
     // 官方 @electron/get 下载：负责 URL 拼装、镜像、SHA256 校验（sumchecker）、下载缓存
     // （同一版本只下载一次，之后命中缓存秒回）。超时用 AbortController 传给 fetch。
@@ -229,9 +229,8 @@ export async function ensureElectronDownload(options: EnsureElectronOptions = {}
       // 为什么用**动态 import**而不是顶层静态 import：该包是 N-API 原生模块，预编译产物只覆盖
       // 官方列出的 11 个 target，**没有 Android**（Termux 是 aarch64-linux-android / Bionic，
       // 与列表里的 linux-gnu / linux-musl 都不是一回事）。静态 import 会在模块求值期就执行
-      // binding.js 顶层的 `if (!nativeBinding) throw`，于是**只想用 Web 模式**的用户也会因为
-      // 「插件入口加载失败」而整个 entry 激活失败（同类故障见 issue #80）。改成按需加载后，
-      // 这条路径只在真要解压时才走，失败也落进本函数的 catch → 降级到浏览器宠物。
+      // binding.js 顶层的 `if (!nativeBinding) throw`；按需加载后只有确实需要解压时才载入，
+      // 失败会落进本函数的 catch 并返回启动错误。
       const { default: extract } = await import('@electron-internal/extract-zip');
       await extract(zipPath, { dir: targetDir });
       if (!existsSync(exe)) {

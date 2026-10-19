@@ -1,5 +1,5 @@
 /**
- * host 侧工作状态联动核心（自包含，不 import src/shared —— DSH 单文件加载约束）。
+ * host 侧工作状态联动核心（运行时自包含；仅通过 import type 共用状态联合类型）。
  *
  * 职责：监听 DSH `session/event`，把 6 类会话事件压缩成"当前活动工作状态"，由 index.ts
  * 写进 S 的 sections.workStatus，浏览器/桌面统一轮询 /state 后按 counter 变化渲染。
@@ -12,8 +12,10 @@
  *   0 thinking / 1 working / 2 result / 3 waiting / 4 success / 5 error
  */
 
+import type { WorkStatusState } from '../shared/work-status';
+
 /** 工作状态档位（数组索引 = events.workStatus 档位） */
-export type HostWorkStatusState = 'thinking' | 'working' | 'result' | 'waiting' | 'success' | 'error';
+export type HostWorkStatusState = WorkStatusState;
 
 /**
  * turn/end reason.kind → 状态：
@@ -132,8 +134,8 @@ export function currentTaskFromTodo(event: {
   return points.length > TASK_TEXT_MAX ? `${points.slice(0, TASK_TEXT_MAX).join('')}…` : content;
 }
 
-/** 工作状态快照（/work-status 端点响应体）：state 为主状态；task 为 todo 详情（可 null） */
-export interface WorkStatusSnapshot {
+/** host 聚合器的内部展示快照；对外的 `/state` DTO 定义在 `src/shared/work-status.ts`。 */
+export interface WorkStatusStoreSnapshot {
   state: HostWorkStatusState | null; // null = 尚无会话活动（空闲）
   task: string | null; // 当前任务详情（todo/write 提供，可 null）
   ts: number; // 最近一次变化的时间戳（轮询侧检测变化用）
@@ -191,7 +193,7 @@ export class WorkStatusStore {
   // dependencies 里、宿主 DSH 的安装树里也没有，DSH 加载插件树时直接 ERR_MODULE_NOT_FOUND、
   // 整个 profile 起不来。scripts/prepack-check.js 第 8 项守着这条。
   declare private readonly sessions: Map<string, SessionWorkEntry>;
-  declare private readonly snap: WorkStatusSnapshot;
+  declare private readonly snap: WorkStatusStoreSnapshot;
 
   constructor() {
     this.sessions = new Map();
@@ -234,7 +236,7 @@ export class WorkStatusStore {
   }
 
   /** 展示快照（对象引用稳定，供 /work-status 直接序列化） */
-  snapshot(): WorkStatusSnapshot {
+  snapshot(): WorkStatusStoreSnapshot {
     return this.snap;
   }
 

@@ -87,7 +87,7 @@ export function describePets(pets: Record<string, unknown>[]): string {
 }
 
 /**
- * 该实例是否会出现在桌面（`display` 含 desktop/both）。
+ * 该实例是否会出现在桌面（`display` 为 desktop）。
  *
  * 口径来源是 `src/host/index.ts` 的 `isDesktopVisible`（那里是模块内 const、未导出），
  * 独立模式只是为了**打印提示**才知道这条规则，不参与渲染决策（渲染由插件自己判断），
@@ -95,5 +95,5 @@ export function describePets(pets: Record<string, unknown>[]): string {
  */
 export function isDesktopVisible(pet: Record<string, unknown>): boolean {
   const display = pet.display;
-  return display === 'desktop' || display === 'both';
+  return display === 'desktop';
 }

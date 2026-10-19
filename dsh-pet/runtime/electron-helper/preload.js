@@ -20,6 +20,7 @@
 //       reportCollide：本窗飞行方检测到撞到 targetId → 主进程把动量结果转发给目标窗；
 //       onPetHit：订阅「你被撞了」→ 用新初速 startThrow 抛出去（与浏览器 onHit 同语义）。
 const { contextBridge, ipcRenderer } = require('electron');
+const { MOVE_TARGETS_CHANNELS } = require('./move-ipc.js');
 
 contextBridge.exposeInMainWorld('petBridge', {
   setBounds(
@@ -40,6 +41,8 @@ contextBridge.exposeInMainWorld('petBridge', {
     bodyY,
     bodyWidth,
     bodyHeight,
+    freeMotion,
+    positionClaim,
   ) {
     ipcRenderer.send('pet:set-bounds', {
       petId,
@@ -59,6 +62,8 @@ contextBridge.exposeInMainWorld('petBridge', {
       bodyY,
       bodyWidth,
       bodyHeight,
+      freeMotion,
+      positionClaim,
     });
   },
   rendererVisualReady() {
@@ -67,11 +72,23 @@ contextBridge.exposeInMainWorld('petBridge', {
   workStatusDiagnostic(record) {
     ipcRenderer.send('pet:work-status-diagnostic', record);
   },
-  reserveMove(petId, route) {
-    return ipcRenderer.invoke('pet:reserve-move', { ...route, petId });
-  },
-  releaseMove(petId, reservationId) {
-    ipcRenderer.send('pet:release-move', { petId, reservationId });
+  moveTargets: {
+    begin(petId, moveId, point, kind = 'claim', reason = 'movement') {
+      ipcRenderer.send(MOVE_TARGETS_CHANNELS.begin, { ...point, petId, moveId, kind, reason });
+    },
+    end(petId, moveId, point, reason) {
+      ipcRenderer.send(MOVE_TARGETS_CHANNELS.end, { ...point, petId, moveId, reason });
+    },
+    subscribe(cb) {
+      const listener = (_event, targets) => {
+        if (Array.isArray(targets)) cb(targets);
+      };
+      ipcRenderer.on(MOVE_TARGETS_CHANNELS.snapshot, listener);
+      return () => ipcRenderer.removeListener(MOVE_TARGETS_CHANNELS.snapshot, listener);
+    },
+    forget(petId) {
+      ipcRenderer.send(MOVE_TARGETS_CHANNELS.forget, { petId });
+    },
   },
   setInteractive(interactive) {
     ipcRenderer.send('pet:set-interactive', !!interactive);

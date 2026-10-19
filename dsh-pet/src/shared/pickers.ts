@@ -1,4 +1,4 @@
-// 纯选择逻辑：不依赖 React / DOM，可独立单测。浏览器 bundle 与桌面 shared-core 共用同一份源码。
+// 纯选择逻辑：不依赖 React / DOM，可独立单测；桌面 shared-core 使用这一份源码。
 import type { Category, EventSlot, Events, Weights } from './types';
 
 /** 从字符串池里等概率随机抽一个；exclude 排除某个名字（避免连续重复） */
@@ -37,7 +37,7 @@ export const isEventAnim = (events: Readonly<Events> | undefined, anim: string):
  * workStatus 播完（ended）续播决策：找到包含 current 动画的档位——
  * 多候选档位（≥2）→ 返回档内下一候选（排除 current，避免连抽）：播完一段自动轮换，长时间状态不单段重复；
  * 单候选/单动画档位或动画不属于 workStatus 池 → null（原样续播同一段/按原语义处理）。
- * 浏览器与桌面共用同一份决策，双端轮换行为严格一致。
+ * 桌面渲染器调用同一份决策。
  */
 export const nextWorkStatusAnim = (pool: readonly EventSlot[], current: string): string | null => {
   const idx = pool.findIndex((slot) => slotIncludes(slot, current));

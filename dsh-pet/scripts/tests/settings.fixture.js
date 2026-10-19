@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
 import { jsx } from 'react/jsx-runtime';
-import { makePetConfigSection, petBridge, en, zh } from '../../src/client/settings.ts';
+import { makePetConfigSection, petBridge, en, zh } from '../../src/standalone/pet-settings.ts';
 
 petBridge.current = window.initialConfig.main.pets;
 petBridge.template = petBridge.current[0];

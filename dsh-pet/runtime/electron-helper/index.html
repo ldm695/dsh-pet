@@ -41,6 +41,13 @@
         left: 0;
         top: 0;
         pointer-events: none;
+        transition: opacity 0.22s ease;
+      }
+      .pet-sprite.fullscreen-hidden {
+        opacity: 0;
+      }
+      .pet-sprite.fullscreen-hidden .pet-hit {
+        pointer-events: none;
       }
       .pet-stage {
         position: relative;
@@ -70,7 +77,7 @@
       .pet-hit.dragging {
         cursor: grabbing;
       }
-      /* 余额气泡：与浏览器 overlay 同一套视觉（白色圆润泡 + 峰/谷/错误着色）。
+      /* 余额气泡：白色圆润泡 + 峰/谷/错误着色。
          尺寸分两类锚点：盒子（宽度/内边距/圆角/尾巴/阴影/行间距）锚在字号 --f 上——字号调大盒子同步变大，
          文字不会顶出白底；位置（bottom 偏移）仍锚在宠物宽度 var(--pet-size)，气泡始终贴着宠物头顶。
          宽度必须写 width:max-content：气泡是 left:50% 的绝对定位盒，可用宽度只有包含块一半，
@@ -135,7 +142,7 @@
       .pet-bubble.is-on {
         opacity: 1;
       }
-      /* 碎碎念变体：与浏览器 overlay 一致 —— 字号缩到余额气泡的 0.75、宽度下限更窄（0.10 → 2.1978），
+      /* 碎碎念变体：字号缩到余额气泡的 0.75、宽度下限更窄（0.10 → 2.1978），
          上限与余额气泡相同；宽度取宽/折行规则继承 .pet-bubble，高度随行数自然增长 */
       .pet-bubble.is-whisper {
         font-size: calc(var(--f) * 0.7473);

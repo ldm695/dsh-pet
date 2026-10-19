@@ -43,7 +43,7 @@ export const PLAYBACK_KEEP_MS = 60 * 1000;
 
 /**
  * `?timeout=` 上限（ms）：挂起等待的封顶时长，防止调用方把连接挂死。
- * 取值偏保守：DSH WebServer 是否对长期持有的响应设了空闲超时**尚未核实**，
+ * 取值偏保守：本机 HTTP 服务对长期持有的响应是否设了空闲超时**尚未核实**，
  * 先压在 10s（请求量已比 200ms 轮询省 50 倍），核实后可以再调大。
  */
 export const MAX_PLAYBACK_WAIT_MS = 10 * 1000;

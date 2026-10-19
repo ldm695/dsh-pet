@@ -73,10 +73,10 @@ describe('describePets —— 启动横幅与体检报告共用的展示串', ()
     assert.match(describePets([]), /pets 为空/);
   });
 
-  test('id/size/display 原样打印（独立模式不替用户判断 display）', () => {
-    const text = describePets([{ id: 'main', size: 462, display: 'both' }]);
+  test('id/size/display 原样打印（仅桌面/隐藏）', () => {
+    const text = describePets([{ id: 'main', size: 462, display: 'desktop' }]);
     assert.match(text, /main/);
     assert.match(text, /size=462/);
-    assert.match(text, /display=both/);
+    assert.match(text, /display=desktop/);
   });
 });

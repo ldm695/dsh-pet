@@ -190,6 +190,77 @@ describe('/models 路由 —— 设置页「AI 模型」下拉框的数据源', 
   });
 });
 
+describe('/config/meta 与 /app-icon.png 只读路由', () => {
+  test('/config/meta 返回预先准备的路径与完整存储位置清单', async () => {
+    const r = await call('/dsh-pet-7340/config/meta');
+    assert.equal(r.status, 200);
+    const body = JSON.parse(r.body) as {
+      user: string;
+      default: string;
+      animations: string;
+      memes: string;
+      profile: string;
+      storage: Array<{ key: string; path: string; exists: boolean }>;
+    };
+    assert.match(body.user, /dsh-pet[\\/]main-config\.jsonc$/);
+    assert.match(body.default, /[\\/]assets[\\/]config\.jsonc$/);
+    assert.match(body.animations, /dsh-pet[\\/]main-animation$/);
+    assert.match(body.memes, /dsh-pet[\\/]memes$/);
+    assert.equal(body.profile, '');
+    assert.deepEqual(
+      body.storage.map((item) => item.key),
+      ['userData', 'electron', 'desktopCache', 'electronCache', 'package'],
+    );
+    assert.ok(body.storage.every((item) => typeof item.path === 'string' && typeof item.exists === 'boolean'));
+  });
+
+  test('/config/meta 保持既有的 method 不限行为', async () => {
+    assert.equal((await call('/dsh-pet-7340/config/meta', 'POST')).status, 200);
+  });
+
+  test('/app-icon.png 仍限制 GET；源码测试布局下缺少包内图标时返回原 404 文案', async () => {
+    assert.equal((await call('/dsh-pet-7340/app-icon.png', 'POST')).status, 405);
+    const r = await call('/dsh-pet-7340/app-icon.png');
+    assert.equal(r.status, 404);
+    assert.equal(r.body, 'dsh-pet: app icon not found');
+  });
+});
+
+describe('配置与桌宠显示路由的注册入口', () => {
+  test('apply() 注册的 handler 保留方法校验与请求解析行为', async () => {
+    assert.equal((await call('/dsh-pet-7340/config', 'PATCH')).status, 405);
+    assert.equal((await call('/dsh-pet-7340/config', 'PUT', '{')).status, 400);
+    assert.equal((await call('/dsh-pet-7340/pet-display', 'GET')).status, 405);
+    assert.equal((await call('/dsh-pet-7340/pet-display', 'POST', '{')).status, 400);
+    assert.equal(
+      (await call('/dsh-pet-7340/pet-display', 'POST', JSON.stringify({ id: 'main', display: 'invalid' }))).status,
+      400,
+    );
+    assert.equal((await call('/dsh-pet-7340/pet-display/bulk', 'GET')).status, 405);
+    assert.equal((await call('/dsh-pet-7340/pet-display/bulk', 'POST', '{')).status, 400);
+    assert.equal((await call('/dsh-pet-7340/reload', 'GET')).status, 405);
+  });
+});
+
+describe('状态、播放回执、聊天与独立版控制的注册入口', () => {
+  test('apply() dispatcher 保留 extracted handlers 的方法、错误映射与宿主模式限制', async () => {
+    const report = await call('/dsh-pet-7340/playback/missing/report', 'POST', '{"status":"ended"}');
+    assert.equal(report.status, 404);
+    assert.deepEqual(JSON.parse(report.body), { error: 'unknown playback' });
+
+    const malformedChat = await call('/dsh-pet-7340/chat?pet=main', 'POST', '{');
+    assert.equal(malformedChat.status, 200);
+    assert.equal(JSON.parse(malformedChat.body).reason, 'generate-error');
+
+    const settingsMethod = await call('/dsh-pet-7340/settings/open', 'GET');
+    assert.equal(settingsMethod.status, 405);
+    const settingsInHost = await call('/dsh-pet-7340/settings/open', 'POST');
+    assert.equal(settingsInHost.status, 404);
+    const quitInHost = await call('/dsh-pet-7340/app/quit', 'POST');
+    assert.equal(quitInHost.status, 404);
+  });
+});
+
 describe('/state + /balance —— 轮询统一状态与余额动作端点', () => {
   test('GET /state 返回 { sections, pets }（初始叶子 counter=0 / data=null）', async () => {
     const r = await call('/dsh-pet-7340/state');

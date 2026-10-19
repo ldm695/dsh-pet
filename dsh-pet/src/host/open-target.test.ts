@@ -1,8 +1,8 @@
 /**
- * 「打开网站」按宿主形态自动分派的契约测试（宿主 = DSH 桌面应用 / dsh web）。
+ * 「打开网站」按运行环境自动分派的契约测试（DSH Desktop Electron / Node 命令行）。
  *
- * 需求：同一个工具项，宿主是**桌面应用**时要"打开桌面端"（把主窗口叫回前台），宿主是 web 时才是
- * "打开网站"（浏览器打开站点）。两半各自构建、无法互相 import，所以按本仓库既有做法读源码断言。
+ * 同一个工具项在 DSH Desktop 环境唤起桌面主窗口，在普通 Node 环境打开配置的站点。
+ * 两半各自构建、无法互相 import，所以按本仓库既有做法读源码断言。
  *
  * 链路（改名/改判据只改一侧即失败）：
  *   宿主 index.ts 判 isDesktopHost → 注入 DSH_PET_OPEN_TARGET=desktop|site
@@ -32,7 +32,7 @@ describe('「打开网站」按宿主形态自动分派', () => {
   test('宿主：桌面应用判定 + 形态注入', () => {
     assert.ok(
       /const isDesktopHost = \(\): boolean => Boolean\(process\.versions\.electron\)/.test(host),
-      '宿主必须用 process.versions.electron 判定形态（桌面应用以 ELECTRON_RUN_AS_NODE 跑，该字段仍在；dsh web 是纯 Node）',
+      '宿主必须用 process.versions.electron 判定形态（桌面应用以 ELECTRON_RUN_AS_NODE 跑，该字段仍在；Node 命令行没有该字段）',
     );
     assert.ok(
       /DSH_PET_OPEN_TARGET: isDesktopHost\(\) \? 'desktop' : 'site'/.test(host),
@@ -73,6 +73,6 @@ describe('「打开网站」按宿主形态自动分派', () => {
   });
 
   test('独立模式不注入该变量 → 自动回落 site（不破坏"不打开 DSH 也能养桌宠"）', () => {
-    assert.ok(!/DSH_PET_OPEN_TARGET/.test(standaloneContext), '独立模式必须不注入形态：默认 site，行为与以前一致');
+    assert.ok(!/DSH_PET_OPEN_TARGET/.test(standaloneContext), '独立 Node 模式不注入形态：默认打开配置的站点');
   });
 });

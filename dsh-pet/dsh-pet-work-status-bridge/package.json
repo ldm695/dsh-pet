@@ -1,7 +1,7 @@
 {
   "name": "dsh-pet-work-status-bridge",
   "version": "0.2.0",
-  "description": "将 DSH 多会话与并行 Agent 的工作状态安全同步给 DSH Pet 独立版。",
+  "description": "为 DSH Desktop 上报会话状态与窗口焦点，供 DSH Pet Windows 应用读取。",
   "type": "module",
   "main": "index.js",
   "exports": {

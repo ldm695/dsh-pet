@@ -16,7 +16,7 @@
  * 合并规则（唯一规则）：
  *   - 内置默认配置是唯一默认值来源（「代码里的配置绝对正确」）；
  *   - 覆盖文件写了 → 用自己的值；**没写 → 静默填内置默认值**（结构性常态，不告警——
- *     设置页写的用户层本就只含 pets + notificationsEnabled；文件宠物也可以写得很短）；
+ *     设置页写的用户层本就只含 pets 与用户可编辑的全局开关；文件宠物也可以写得很短）；
  *   - **对象字段也是整段替换**（`physics` / `eventsRefreshSec` / `whisperModel` … 都适用）：
  *     写了就整段用自己的，缺的子键**不会**从内置默认补回来——消费端各自兜底
  *     （如余额周期读不到就按 1800、碎碎念按 300）；
@@ -28,11 +28,11 @@
  *   - 身份字段例外（无默认可填）：id 必须存在、全局唯一（缺失/重复/非法/冲突 →
  *     跳过该实例并告警）；name 缺失/空 → 按该宠物 id 处理并告警（既定规则，不继承默认名字）。
  *
- * 消费端契约：其他代码（路由/命令/碎碎念/对话/桌面）只消费 readAllConfig 的返回值，
- * 不做任何校验/兜底；浏览器与桌面通过 GET /dsh-pet-7340/config 拿到同一份成品。
+ * 消费端契约：其他代码（本机 API/菜单/碎碎念/对话/Electron 桌面）只消费 readAllConfig 的返回值，
+ * 不做任何校验/兜底；设置页与桌面 Helper 通过本机 API 拿到同一份成品。
  *
- * 本模块是 host 自包含实现（不 import src/shared —— DSH 单文件加载约束）；
- * 浏览器/桌面侧的对应纯逻辑（把成品拍平成渲染列表）在 src/shared/config.ts。
+ * 本模块是 host 自包含实现（不 import src/shared —— 保持宿主边界简单）；
+ * Electron 侧把成品拍平成渲染列表的纯逻辑在 src/shared/config.ts。
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -41,9 +41,8 @@ import { dirname, join } from 'node:path';
 const CORNERS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'] as const;
 const CORNER_SET: ReadonlySet<string> = new Set(CORNERS);
 
-/** display 白名单（导出：宿主路由 POST /pet-display 写单只宠物的显示位置时复用同一份枚举，
- *  读写两侧必须同一份规则，不在路由里另写一个 Set） */
-const PET_DISPLAYS = ['web', 'desktop', 'both', 'none'] as const;
+/** display 白名单（Web overlay 已移除；旧 web/both 值只在配置读取时映射） */
+const PET_DISPLAYS = ['desktop', 'none'] as const;
 export const PET_DISPLAY_SET: ReadonlySet<string> = new Set(PET_DISPLAYS);
 
 /** font.family 白名单（预设 id）——**必须与 src/shared/fonts.ts 的 FONT_PRESETS 保持一致**：
@@ -530,6 +529,13 @@ function petEnum(
   return typeof def === 'string' ? def : '';
 }
 
+/** Old configs can be read without losing desktop visibility or retaining a browser-only value. */
+function normalizePetDisplay(value: unknown): unknown {
+  if (value === 'both') return 'desktop';
+  if (value === 'web') return 'none';
+  return value;
+}
+
 /** 一只实例 → 完成品实例（id 必须自己的且全局唯一；其余字段没写/非法 → 默认 + 告警） */
 function mergePet(
   base: Record<string, unknown>,
@@ -561,7 +567,7 @@ function mergePet(
     whisperEnabled: petBool(p.whisperEnabled, base.whisperEnabled, label, 'whisperEnabled', id),
     workStatusEnabled: petBool(p.workStatusEnabled, base.workStatusEnabled, label, 'workStatusEnabled', id),
     fixedEnabled: petBool(p.fixedEnabled, base.fixedEnabled, label, 'fixedEnabled', id),
-    display: petEnum(p.display, PET_DISPLAY_SET, base.display, label, 'display', id),
+    display: petEnum(normalizePetDisplay(p.display), PET_DISPLAY_SET, base.display, label, 'display', id),
     position: {
       corner: petEnum(ownPos.corner, CORNER_SET, basePos.corner, label, 'position.corner', id),
       marginX: petNumber(ownPos.marginX, basePos.marginX, -Infinity, label, 'position.marginX', id),
@@ -669,7 +675,7 @@ export function saveUserConfig(
     // 传了必须是布尔，没传则走下面的读取侧默认值（内置默认 false = 保持原行为）。
     const fixedEnabled = pp.fixedEnabled;
     if (fixedEnabled !== undefined && typeof fixedEnabled !== 'boolean') return null;
-    const display = String(pp.display ?? '');
+    const display = String(normalizePetDisplay(pp.display) ?? '');
     if (!PET_DISPLAY_SET.has(display)) return null;
     const pos = pp.position && typeof pp.position === 'object' ? (pp.position as Record<string, unknown>) : {};
     const corner = String(pos.corner ?? '');
@@ -762,6 +768,7 @@ export function saveUserConfig(
   if (cil !== undefined) bodyOwned.add('chatImageLimit');
   if (existing && typeof existing === 'object') {
     for (const key of Object.keys(existing)) {
+      if (key === 'notifyDshEnabled' || key === 'notifyClaudeCodeEnabled' || key === 'notifyCodexEnabled') continue;
       if (bodyOwned.has(key)) continue; // 白名单字段由请求体决定
       // 只透传可精调的顶层字段，其余（如 memes/unknown/占位）一并保留，不丢弃用户内容
       outConfig[key] = existing[key];

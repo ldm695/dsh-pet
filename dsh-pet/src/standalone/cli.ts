@@ -66,7 +66,7 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
       path: '/settings',
       handler: (_req, res) => {
         const appName = process.env.DSH_PET_DISPLAY_NAME === 'DSH Pet' ? 'DSH Pet' : '哦鲸鲸';
-        const html = STANDALONE_SETTINGS_HTML.replaceAll('__DSH_PET_APP_NAME__', appName);
+        const html = STANDALONE_SETTINGS_HTML.replace(/__DSH_PET_APP_NAME__/g, appName);
         res.writeHead(200, {
           'content-type': 'text/html; charset=utf-8',
           'content-length': Buffer.byteLength(html),
@@ -158,7 +158,7 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
     `  配置        ${configSource}`,
     `  宠物        ${describePets(pets)}`,
     desktopVisible.length === 0
-      ? '  桌面小窗    0 只：display 需要 desktop 或 both 才会出现透明小窗（服务仍在运行）'
+      ? '  桌面小窗    0 只：请将至少一只宠物的 display 设为 desktop（服务仍在运行）'
       : `  桌面小窗    ${desktopVisible.length} 只`,
     apiKeyStatusLine(),
     '  退出        Ctrl+C，或 POST /shutdown',

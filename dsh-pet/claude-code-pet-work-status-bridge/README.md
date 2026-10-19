@@ -4,18 +4,19 @@
 
 ## 状态映射
 
-| Claude Code 事件 | 桌宠状态 |
-| --- | --- |
-| `UserPromptSubmit` | 思考 `thinking` |
-| `PreToolUse`、`SubagentStart` | 工作 `working` |
-| `PostToolUse`、`PostToolUseFailure`、`PermissionDenied` | 整理 `result` |
-| `PermissionRequest`、`Notification`（elicitation 对话/URL） | 等待 `waiting` |
-| `PreCompact` | 思考 `thinking` |
-| `SubagentStop`、`Stop` | 完成 `success` |
-| `StopFailure` | 出错 `error` |
-| `Notification`（`idle_prompt`） | 清理已空闲会话的残留状态 |
-| `SessionStart`（`source=compact`） | 思考 `thinking` |
-| 普通 `SessionStart`、`SessionEnd` | 清理当前会话状态 |
+| Claude Code 事件                                            | 桌宠状态                 |
+| ----------------------------------------------------------- | ------------------------ |
+| `UserPromptSubmit`                                          | 思考 `thinking`          |
+| `PreToolUse`、`SubagentStart`                               | 工作 `working`           |
+| `PostToolUse`、`PostToolUseFailure`、`PermissionDenied`     | 整理 `result`            |
+| `PermissionRequest`、`Notification`（elicitation 对话/URL） | 等待 `waiting`           |
+| `PreCompact`                                                | 思考 `thinking`          |
+| `Stop`                                                      | 完成 `success`           |
+| `SubagentStop`                                              | 释放已结束的子代理，不单独触发任务完成 |
+| `StopFailure`                                               | 出错 `error`             |
+| `Notification`（`idle_prompt`）                             | 清理已空闲会话的残留状态 |
+| `SessionStart`（`source=compact`）                          | 思考 `thinking`          |
+| 普通 `SessionStart`、`SessionEnd`                           | 清理当前会话状态         |
 
 Claude Code 的用户中断不会触发 `Stop`。收到带 `is_interrupt=true` 的 `PostToolUseFailure` 后，插件会清除整个会话的根 Agent 与子代理状态，并抑制该会话的迟到事件，直到下一条 `UserPromptSubmit`。此外，插件会从最近一次 Hook 提供的 `transcript_path` 监视本地会话记录，只检查新追加的用户记录是否是 Claude Code 的中断标记；匹配后短暂等待并核对时间戳，再清理该会话，避免旧中断标记清掉已恢复的新任务。监听器不保存或上传会话记录内容。由于记录格式不是稳定的公开接口，`idle_prompt` 和 10 分钟超时仍作为兜底清理路径。后台 Agent 仍运行期间 Claude Code 不会发出空闲通知。
 
@@ -39,12 +40,12 @@ Claude Code 的用户中断不会触发 `Stop`。收到带 `is_interrupt=true` �
 
 前提：DSH Pet 独立版已运行并开启「工作状态联动」，本机可从命令行执行 `node`。
 
-仓库内插件目录为 `dsh-pet/claude-code-pet-work-status-bridge/`，Hook 配置位于 `hooks/hooks.json`。插件版本为 `0.2.6`。安装或更新后，在 Claude Code 中重新加载插件；若客户端提示审核 hooks，请检查并确认信任。
+仓库内插件目录为 `dsh-pet/claude-code-pet-work-status-bridge/`，Hook 配置位于 `hooks/hooks.json`。插件版本为 `0.2.11`。安装或更新后，在 Claude Code 中重新加载插件；若客户端提示审核 hooks，请检查并确认信任。
 
 如需直接配置到用户级 `settings.json`，可把完整事件配置从 `hooks/hooks.json` 合并进去；不要覆盖文件中已有的其它 hooks。
 
 ## 限制
 
 - 仅 DSH Pet 独立版宿主读取该桥接文件；DSH 内嵌模式不读取此文件。
-- 插件不转发 Claude Code 通知，只同步工作状态。
+- 插件仅同步 Claude Code 工作状态，不发送系统通知；DSH 通知由 DSH 工作流桥接提供。
 - 子代理状态依赖 Claude Code 提供的 `agent_id`；若 Hook 输入缺少该字段，该事件会归属到主 Agent。

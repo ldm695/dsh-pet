@@ -16,6 +16,19 @@ const yaml = require('js-yaml');
 const HERE = dirname(fileURLToPath(import.meta.url)); // dsh-pet/scripts
 const SPEC_PATH = join(HERE, '..', '..', 'openapi.yaml'); // 仓库根
 const HOST_SRC = join(HERE, '..', 'src', 'host', 'index.ts');
+const HOST_ROUTE_SRCS = [
+  HOST_SRC,
+  ...[
+    'asset-route.ts',
+    'readonly-route.ts',
+    'config-route.ts',
+    'action-route.ts',
+    'state-route.ts',
+    'playback-route.ts',
+    'chat-route.ts',
+    'standalone-control-route.ts',
+  ].map((file) => join(HERE, '..', 'src', 'host', file)),
+];
 
 const doc = yaml.load(readFileSync(SPEC_PATH, 'utf8'));
 const fail = [];
@@ -86,8 +99,8 @@ ok.push(`${Object.keys(doc.paths).length} 条路径 / ${ops} 个操作`);
 // ---- 4. 文档路径 vs 真实实现 ----
 // host 路由是 if (rest === 'x') 链 + scope 分支。rest 可能是两段（config/meta），
 // 所以两边都归一化成「一级段」（config/meta → config）再比对，否则会误报。
-const host = readFileSync(HOST_SRC, 'utf8');
-const implemented = new Set([...host.matchAll(/rest === '([^']+)'/g)].map((m) => m[1].split('/')[0]));
+const routeSources = HOST_ROUTE_SRCS.map((path) => readFileSync(path, 'utf8')).join('\n');
+const implemented = new Set([...routeSources.matchAll(/rest === '([^']+)'/g)].map((m) => m[1].split('/')[0]));
 for (const s of ['font', 'pic', 'thumb']) implemented.add(s);
 const documented = new Set();
 for (const p of Object.keys(doc.paths)) {

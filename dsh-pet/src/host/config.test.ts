@@ -36,7 +36,7 @@ const BASE = {
       whisperEnabled: false,
       workStatusEnabled: false,
       fixedEnabled: false,
-      display: 'web',
+      display: 'desktop',
       position: { corner: 'bottom-right', marginX: 40, marginY: 40 },
     },
   ],
@@ -122,6 +122,26 @@ describe('readAllConfig —— events 槽位 string | string[] 校验', () => {
       },
       expectWorkStatus: [['工作思考', '开始工作'], '认真工作', '长时间工作看表', '工作被打扰', '工作结束', '摸鱼被抓'],
     });
+  });
+
+  test('旧显示配置映射到桌面应用支持的值', () => {
+    const legacyPets = [
+      { ...BASE.pets[0], id: 'browser-only', display: 'web' },
+      { ...BASE.pets[0], id: 'both-ends', display: 'both' },
+    ];
+    const paths = withBase({}, { pets: legacyPets });
+    try {
+      const pets = readAllConfig(paths).main.pets as Array<{ id: string; display: string }>;
+      assert.deepEqual(
+        pets.map(({ id, display }) => [id, display]),
+        [
+          ['browser-only', 'none'],
+          ['both-ends', 'desktop'],
+        ],
+      );
+    } finally {
+      rmSync(dirname(paths.defaultFile), { recursive: true, force: true });
+    }
   });
 
   test('空字符串槽位非法 → animations 整段回退默认', () => {
@@ -620,6 +640,18 @@ describe('saveUserConfig —— 对话配图张数上限 chatImageLimit（白名
     for (const [name, value] of bad) {
       assert.equal(saveOnce({ pets: PETS, chatImageLimit: value }), null, `${name} 必须被拒绝`);
     }
+  });
+});
+
+describe('saveUserConfig —— 旧显示配置归一化', () => {
+  test('保存时 both 映射为 desktop，web 映射为 none', () => {
+    const savePet = (display: string) => {
+      const pet = { ...(PETS[0] as Record<string, unknown>), display };
+      const out = saveOnce({ pets: [pet] });
+      return ((out?.pets as Array<{ display: string }>)[0]?.display);
+    };
+    assert.equal(savePet('both'), 'desktop');
+    assert.equal(savePet('web'), 'none');
   });
 });
 

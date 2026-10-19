@@ -3,8 +3,9 @@
 //   - 只含无 React / DOM 依赖的纯函数、类型、常量、拍平逻辑；
 //   - 配置的读取/合并/校验收敛在 host（src/host/config.ts 的 readAllConfig，经
 //     GET /dsh-pet-7340/config 暴露成品）；本目录只负责把成品拍平成渲染列表（flattenConfigPets）；
-//   - host 半侧**不得** import 本目录（DSH 单文件加载约束会拆 chunk 导致加载失败），
-//     其配置实现是自包含的（见 src/host/config.ts 头部注释）；
+//   - host 半侧**不得运行时 import** 本目录（DSH 单文件加载约束会拆 chunk 导致加载失败）；
+//     少数共享 DTO 只允许通过 `import type` 引用，编译后不会留下运行时依赖；
+//     其配置实现仍是自包含的（见 src/host/config.ts 头部注释）；
 //   - 新增「行为」请落在这里 + 两边的薄壳（浏览器 React 组件 / 桌面 DOM sprite）。
 export * from './types';
 export * from './constants';
@@ -22,5 +23,6 @@ export * from './physics'; // 拖拽抛掷物理（弹簧跟手 + 甩抛 + 重�
 export * from './score'; // 点击积分（速度/大小 → 分数，纯逻辑）
 export * from './score-popup'; // 点击积分弹窗 + 粒子爆发（menu/chat 之后第三个 DOM 例外：渲染=两端共用同一份）
 export * from './work-status'; // 工作状态联动（DSH 会话事件 → 档位动画/气泡：档位常量 + reducer + 文案，浏览器消费）
+export * from './work-status-assignment'; // Agent→桌宠占用分配器（Electron 共享逻辑）
 export * from './state'; // 轮询统一状态 S 的客户端侧纯逻辑（拉取 / 拍平 / 比对；两端共用）
 export * from './tooltip'; // 悬浮提示（替代原生 title 属性：class + 样式 + 翻转判据，两端共用同一份）

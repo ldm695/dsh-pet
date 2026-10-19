@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, shell } = require('electron');
+const { app, BrowserWindow, Menu, nativeImage, shell, Tray } = require('electron');
 const { spawn } = require('node:child_process');
 const { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync } = require('node:fs');
 const { join } = require('node:path');
@@ -32,12 +32,12 @@ if (!process.env.DSH_PET_RENDER_MODE) {
   }
 }
 let host;
-let tray;
 let settingsWindow;
 let hostReady = false;
 let quitting = false;
 let servicePort = PORT;
 let hostStdoutBuffer = '';
+let tray;
 
 // The packaged executable is also used to run the transparent-window helper.
 // Electron may keep loading this package's main entry even when the helper JS
@@ -91,6 +91,8 @@ if (helperEntry) {
         sandbox: true,
       },
     });
+    const settingsIcon = nativeImage.createFromPath(join(app.getAppPath(), 'assets', 'dsh-pet-icon-16.png'));
+    if (!settingsIcon.isEmpty()) settingsWindow.setIcon(settingsIcon);
     settingsWindow.removeMenu();
     settingsWindow.setMenuBarVisibility(false);
     settingsWindow.once('ready-to-show', () => settingsWindow && settingsWindow.show());
@@ -118,6 +120,7 @@ if (helperEntry) {
     if (portMatch) {
       servicePort = Number(portMatch[1]);
       hostReady = true;
+      createTray();
       if (settingsWindow && !settingsWindow.isDestroyed() && !settingsWindow.webContents.getURL()) {
         settingsWindow.loadURL(settingsUrl()).catch((error) => {
           log(`[error] Unable to open settings: ${error.message}`);
@@ -129,6 +132,149 @@ if (helperEntry) {
 
   function settingsUrl() {
     return `http://127.0.0.1:${servicePort}/settings`;
+  }
+
+  function autoStartSupported() {
+    return APP_EDITION === 'public' && process.platform === 'win32' && app.isPackaged;
+  }
+
+  function autoStartPath() {
+    // Portable builds must register the outer executable, not Electron's extracted runtime path.
+    return process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+  }
+
+  function getAutoStartState() {
+    if (!autoStartSupported()) return { available: false, enabled: false };
+    const path = autoStartPath();
+    return {
+      available: true,
+      enabled: app.getLoginItemSettings({ path, args: [] }).openAtLogin,
+    };
+  }
+
+  function setAutoStart(enabled) {
+    if (!autoStartSupported()) throw new Error('开机自启动仅支持大众版 Windows Portable。');
+    const path = autoStartPath();
+    app.setLoginItemSettings({ openAtLogin: enabled, path, args: [] });
+    const state = getAutoStartState();
+    log(`[info] Windows login startup ${state.enabled ? 'enabled' : 'disabled'} (${path})`);
+    return state;
+  }
+
+  function handleHostMessage(message) {
+    if (!message || message.channel !== 'dsh-pet:auto-start' || typeof message.requestId !== 'string') return;
+    let response;
+    try {
+      if (message.action === 'get') response = { ok: true, state: getAutoStartState() };
+      else if (message.action === 'set' && typeof message.enabled === 'boolean') {
+        response = { ok: true, state: setAutoStart(message.enabled) };
+      } else {
+        throw new Error('无效的开机自启动请求。');
+      }
+    } catch (error) {
+      response = { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+    if (!host?.connected) return;
+    host.send({ channel: 'dsh-pet:auto-start:result', requestId: message.requestId, ...response }, (error) => {
+      if (error) log(`[warning] Unable to return auto-start result: ${error.message}`);
+    });
+  }
+
+  const PET_ROUTE = '/dsh-pet-7340';
+  const isDesktopDisplay = (display) => display === 'desktop';
+  const toggleDisplay = (display) => (isDesktopDisplay(display) ? 'none' : 'desktop');
+
+  async function trayRequest(method, path, body) {
+    const response = await fetch(`http://127.0.0.1:${servicePort}${PET_ROUTE}${path}`, {
+      method,
+      headers: body ? { 'content-type': 'application/json' } : undefined,
+      body,
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${text}`);
+    return text ? JSON.parse(text) : {};
+  }
+
+  async function refreshTrayMenu() {
+    if (!tray || tray.isDestroyed()) return;
+    try {
+      const merged = await trayRequest('GET', '/config');
+      const pets = Object.values(merged)
+        .flatMap((conf) => (conf && Array.isArray(conf.pets) ? conf.pets : []))
+        .map((pet) => ({
+          id: String(pet?.id || ''),
+          name: String(pet?.name || '').trim(),
+          display: String(pet?.display || ''),
+        }))
+        .filter((pet) => pet.id);
+      const petItems = [
+        {
+          label: '全部显示',
+          type: 'checkbox',
+          checked: pets.length > 0 && pets.every((pet) => isDesktopDisplay(pet.display)),
+          click: () => setTrayPetsDisplay(pets, true),
+        },
+        {
+          label: '全部隐藏',
+          type: 'checkbox',
+          checked: pets.length > 0 && pets.every((pet) => !isDesktopDisplay(pet.display)),
+          click: () => setTrayPetsDisplay(pets, false),
+        },
+        { type: 'separator' },
+        ...pets.map((pet) => ({
+          label: pet.name || pet.id,
+          type: 'checkbox',
+          checked: isDesktopDisplay(pet.display),
+          click: () => setTrayPetDisplay(pet, toggleDisplay(pet.display)),
+        })),
+      ];
+      let contextMenu;
+      contextMenu = Menu.buildFromTemplate([
+        { label: `${APP_DISPLAY_NAME} 设置…`, click: openSettings },
+        { label: '查看日志', click: () => shell.openPath(join(app.getPath('userData'), 'logs', 'standalone.log')) },
+        { type: 'separator' },
+        { label: '桌宠显示', submenu: Menu.buildFromTemplate(petItems) },
+        { type: 'separator' },
+        { label: `退出 ${APP_DISPLAY_NAME}`, click: quit },
+      ]);
+      tray.setContextMenu(contextMenu);
+    } catch (error) {
+      log(`[warning] Unable to refresh tray menu: ${error.message}`);
+    }
+  }
+
+  async function setTrayPetsDisplay(pets, visible) {
+    const ids = pets.map((pet) => pet.id);
+    if (!ids.length) return;
+    try {
+      await trayRequest('POST', '/pet-display/bulk', JSON.stringify({ ids, display: visible ? 'desktop' : 'none' }));
+      await refreshTrayMenu();
+    } catch (error) {
+      log(`[warning] Unable to update all pet display settings: ${error.message}`);
+    }
+  }
+
+  async function setTrayPetDisplay(pet, display) {
+    try {
+      await trayRequest('POST', '/pet-display', JSON.stringify({ id: pet.id, display }));
+      await refreshTrayMenu();
+    } catch (error) {
+      log(`[warning] Unable to update pet display: ${error.message}`);
+    }
+  }
+
+  function createTray() {
+    if (tray) return;
+    const icon = nativeImage.createFromPath(join(app.getAppPath(), 'assets', 'dsh-pet-icon-16.png'));
+    if (icon.isEmpty()) {
+      log('[warning] Tray icon is missing or unreadable');
+      return;
+    }
+    if (process.platform === 'darwin') icon.setTemplateImage(true);
+    tray = new Tray(icon);
+    tray.setToolTip(APP_DISPLAY_NAME);
+    tray.on('click', openSettings);
+    void refreshTrayMenu();
   }
 
   function ensureNotificationShortcut() {
@@ -188,21 +334,22 @@ if (helperEntry) {
       ELECTRON_RUN_AS_NODE: '1',
       DSH_PET_ELECTRON_PATH: process.execPath,
       DSH_PET_PACKAGE_ROOT: packageRoot,
-      DSH_PET_WORK_STATUS_DIAGNOSTICS_FILE: join(
-        app.getPath('userData'),
-        'logs',
-        'work-status-diagnostics.jsonl',
-      ),
+      DSH_PET_WORK_STATUS_DIAGNOSTICS_FILE: join(app.getPath('userData'), 'logs', 'work-status-diagnostics.jsonl'),
+      // TEMPORARY MOVE DIAGNOSTICS: remove this env var before a formal release.
+      DSH_PET_MOVE_DIAGNOSTICS_FILE: join(app.getPath('userData'), 'logs', 'move-diagnostics.jsonl'),
       DSH_PET_EDITION: APP_EDITION,
       DSH_PET_DISPLAY_NAME: APP_DISPLAY_NAME,
+      DSH_PET_AUTOSTART_SUPPORTED: autoStartSupported() ? '1' : '0',
       DSH_PET_APP_USER_MODEL_ID: APP_USER_MODEL_ID,
+      DSH_PET_STANDALONE_LOG_FILE: join(app.getPath('userData'), 'logs', 'standalone.log'),
     };
     host = spawn(process.execPath, [hostScript, '--port', String(PORT)], {
       cwd: app.getPath('userData'),
       env,
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
+    host.on('message', handleHostMessage);
     host.stdout.on('data', (chunk) => {
       hostStdoutBuffer += String(chunk);
       let newline;
@@ -221,18 +368,9 @@ if (helperEntry) {
       if (!quitting) quit();
     });
 
-    tray = new Tray(join(packageRoot, 'assets', 'dsh-pet-icon-16.png'));
-    tray.setToolTip(APP_DISPLAY_NAME);
-    tray.setContextMenu(
-      Menu.buildFromTemplate([
-        { label: `${APP_DISPLAY_NAME} 设置…`, click: openSettings },
-        { type: 'separator' },
-        { label: '查看日志', click: () => shell.openPath(join(app.getPath('userData'), 'logs', 'standalone.log')) },
-        { type: 'separator' },
-        { label: `退出 ${APP_DISPLAY_NAME}`, click: quit },
-      ]),
-    );
-    tray.on('click', openSettings);
+    // The unscaled main process owns the tray. DPI linearization remains isolated
+    // in the pet-window helper and cannot affect the native tray menu.
+    if (process.platform === 'darwin' && app.dock) app.dock.hide();
   });
 
   app.on('before-quit', () => {

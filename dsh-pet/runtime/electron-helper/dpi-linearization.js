@@ -21,9 +21,9 @@
  *     · petScale=2，配置 size=462 的宠物被渲染成 924 点宽；
  *     · 窗口（宠物 + 四周各 231 点余量）要 1848×1487 点 —— 比 1920×1080 的屏幕还高，左边缘被挤出
  *       屏幕外，宠物被顶到接近屏幕中央；
- *     · 而同一份配置在浏览器 overlay 里是 462 CSS 像素 —— 桌面端与浏览器端差了整整一倍。
+ *     · 同一尺寸在 CSS 像素坐标中是 462 px；高 DPI 屏幕上需要按 Electron 的缩放因子校准。
  *
- *   故 darwin 一律不启用（`forcedScale` 停在 0，`petScale()` 回落 base），桌面端与浏览器端 1:1
+ *   故 darwin 一律不启用（`forcedScale` 停在 0，`petScale()` 回落 base），保留 1:1
  *   对齐，同时恢复 Retina 的原生 backing store。win32 / linux 行为完全不变。
  */
 

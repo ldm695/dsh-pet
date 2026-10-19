@@ -1,5 +1,5 @@
 // 拖拽抛掷物理（弹簧跟手 + 甩抛 + 重力反弹）：纯计算，无 DOM / rAF。
-// 浏览器 overlay 与桌面模式共用同一份（src/shared = shared-core 单一来源），保证手感严格一致。
+// 桌面模式使用的统一物理参数与计算。
 //
 // 坐标语义：全部为「宠物包围盒左上角」的像素坐标（浏览器 = 视口 px；桌面 = 工作区 px）。
 // 初速估算的轨迹样本用**指针**绝对坐标（浏览器 clientX/Y、桌面 screenX/Y）——
@@ -219,7 +219,7 @@ export const THROW_SPEED_ANCHOR = 1200;
  * 初速 = `power × THROW_SPEED_ANCHOR`，再过**既有软上限**：与拖拽甩抛同一条限速，
  * 所以任意 `power` 都单调可区分且恒不超过 `MAX_THROW_SPEED`。
  *
- * 两端（浏览器 overlay / 桌面 sprite）共用本函数，保证接口抛掷的初速换算严格一致。
+ * 桌面 sprite 使用本函数换算接口抛掷的初速。
  */
 export const throwVelocity = (angleDeg: number, power: number): { vx: number; vy: number } => {
   const speed = softClampSpeed(power * THROW_SPEED_ANCHOR);
@@ -359,7 +359,7 @@ export const throwStep = (
  *
  * lockScreen ≥ 0 = **锁定在该屏**（配置根字段 confineToScreen 开启时由桌面端传入）：边界恒取
  * space.bounds[lockScreen]，两条轴的邻屏探测一律跳过——屏缝与空洞一样当墙，甩出去只在本屏内弹、
- * 不会飞到隔壁显示器。浏览器 overlay 只有一块屏（视口），该开关在那里天然无效果。
+ * 不会飞到隔壁显示器。
  * 索引越界（飞行途中拔掉显示器导致屏数变少）即退回不锁定，免得拿一块不存在的屏当边界。
  */
 export const throwStepRegion = (

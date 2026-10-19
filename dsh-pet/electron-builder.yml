@@ -10,10 +10,12 @@ extraMetadata:
 files:
   - desktop-main.cjs
   - package.json
-  - lib/**
+  - lib/standalone.js
+  - lib/standalone-settings.js
   - runtime/electron-helper/**
   - assets/config.jsonc
   - assets/dsh-pet-icon-16.png
+  - assets/dsh-pet-icon-256.png
   - assets/dsh-pet-icon.ico
   - assets/logo.png
   - assets/webm/**
@@ -22,6 +24,8 @@ files:
   - assets/memes/**
   - node_modules/@electron/get/**
   - node_modules/@electron-internal/extract-zip/**
+  - node_modules/koffi/**
+  - node_modules/.pnpm/@koromix+koffi-win32-x64@*/node_modules/@koromix/koffi-win32-x64/**
   - '!**/*.map'
   - '!**/*.test.*'
 win:

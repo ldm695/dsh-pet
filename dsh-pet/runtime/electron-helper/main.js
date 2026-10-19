@@ -8,7 +8,7 @@
  * 点击穿透由 setIgnoreMouseEvents 和宠物/控件命中区独立管理。
  * 输入：窗口默认**整窗点击穿透**（setIgnoreMouseEvents(true,{forward:true})），渲染端在光标
  * 进/出宠物身体命中区时经 pet:set-interactive 翻转可交互——透明像素不挡下层应用，
- * 与浏览器 overlay（仅 .dsh-pet-hit 可交互）严格对齐。
+ * 窗口命中区域仅覆盖 .dsh-pet-hit。
  *
  * 数据通道（bridge 模式，DSH_PET_BRIDGE=1 由宿主注入）：
  * 渲染端不再直连宿主 WebServer（DSH Desktop 2.0.3+ 的浏览器访问闸门会拦无令牌裸 HTTP）——
@@ -41,7 +41,7 @@ try {
 const { app, BrowserWindow, ipcMain, screen, shell, protocol } = electronApi;
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { execFileSync, spawn } = require('node:child_process');
+const { execFileSync } = require('node:child_process');
 const { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } = require('node:fs');
 const fsPromises = require('node:fs/promises');
 // 点击穿透兜底通道的纯判定（不依赖 Electron 的 forward 鼠标钩子；见文件头注释）
@@ -53,6 +53,8 @@ const { HOST_POLL_MS, hostIsGone, isBrokenPipeError, parseHostPid } = require('.
 // 全局 DPI 线性化的纯判定与换算（含平台例外：macOS 的 DIP 已是「点」，无需补偿；见该文件头）
 const { shouldLinearize, resolveForcedScale, resolvePetScale } = require('./dpi-linearization.js');
 const { buildDeskGeometry } = require('./desktop-geometry.js');
+const { MoveTargets } = require('./move-targets.js');
+const { MOVE_TARGETS_CHANNELS, registerMoveTargetHandlers } = require('./move-ipc.js');
 
 // 允许无用户手势直接播放（余额动画等）
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
@@ -268,9 +270,9 @@ function petScale() {
 /** bridge 模式：DSH_PET_BRIDGE=1（宿主注入）。开启时注册 dsh-pet-bridge scheme + 管道转发 */
 const BRIDGE = process.env.DSH_PET_BRIDGE === '1';
 
-/** 「打开网站」这一项的去向（宿主按自身形态注入）：
- *  'desktop' = 宿主是 DSH 桌面应用 → 唤起桌面应用主窗口；
- *  'site'    = dsh web / 独立模式 / 手写 start-desktop（无该变量）→ 原行为：默认浏览器打开站点。 */
+/** 「打开网站」这一项的去向：
+ *  'desktop' = DSH Desktop 环境 → 唤起桌面应用主窗口；
+ *  'site'    = Node 命令行或手动 Helper → 默认浏览器打开配置的站点。 */
 const OPEN_TARGET = process.env.DSH_PET_OPEN_TARGET === 'desktop' ? 'desktop' : 'site';
 /** 协议行前缀（与 helper-process.ts 的 BRIDGE_PREFIX 一致） */
 const BRIDGE_PREFIX = 'dsh-pet-bridge:';
@@ -295,6 +297,9 @@ if (BRIDGE) {
 
 /** 窗口表：petId -> BrowserWindow */
 const windows = new Map();
+// Main-process visual/input watchdogs can sleep while the entire overlay is hidden by fullscreen.
+// The fullscreen detector itself remains active so it can wake these timers as soon as visibility returns.
+const fullscreenWatcherRefreshers = new Set();
 const pendingPetPositions = new Map();
 let petPositionSaveTimer = null;
 function petPositionFile() {
@@ -344,9 +349,10 @@ const DISPLAY_PRIORITY = ['hide-on-fullscreen', 'normal'].includes(process.env.D
   ? process.env.DSH_PET_DISPLAY_PRIORITY
   : 'always-on-top';
 const fullscreenDisplayIds = new Set();
-let fullscreenWatcher;
+let fullscreenPollTimer;
 let fullscreenStateReady = false;
-let fullscreenWatcherFallback;
+let fullscreenZOrderTimer;
+let overlayLoweredForFullscreen = false;
 
 function shouldHideOnFullscreen(win) {
   if (DISPLAY_PRIORITY !== 'hide-on-fullscreen' || process.platform !== 'win32') return false;
@@ -359,6 +365,10 @@ function shouldHideOnFullscreen(win) {
   }
 }
 
+function allOverlayPetsHiddenOnFullscreen() {
+  return windows.size > 0 && [...windows.keys()].every((petId) => fullscreenHiddenPets.has(petId));
+}
+
 function showPetWindow(win) {
   if (win.isDestroyed()) return;
   if (win === overlayWindow) {
@@ -366,7 +376,6 @@ function showPetWindow(win) {
     // has produced the first frame; otherwise Windows may briefly composite the default white
     // backing during helper restarts (for example, after saving pet settings).
     if (!overlayFirstFrameReady || !overlayRendererVisualReady) return;
-    if (windows.size > 0 && [...windows.keys()].every((petId) => fullscreenHiddenPets.has(petId))) return;
   } else if (shouldHideOnFullscreen(win)) return;
   if (!win.isVisible()) {
     if (win === overlayWindow && !overlayInitialCompositionReady) {
@@ -406,11 +415,46 @@ function applyFullscreenVisibility() {
       if (shouldHide) fullscreenHiddenPets.add(petId);
       hidden[petId] = shouldHide;
     }
+    const allPetsHidden = allOverlayPetsHiddenOnFullscreen();
+    if (!allPetsHidden && fullscreenZOrderTimer) {
+      clearTimeout(fullscreenZOrderTimer);
+      fullscreenZOrderTimer = undefined;
+    }
+    if (!allPetsHidden) {
+      if (overlayLoweredForFullscreen) {
+        overlayWindow.setAlwaysOnTop(true, 'screen-saver');
+        overlayLoweredForFullscreen = false;
+      }
+      showPetWindow(overlayWindow);
+      const point = screen.getCursorScreenPoint();
+      setWindowIgnore(overlayWindow, !overlayPointIsInteractive(overlayWindow, point));
+    } else {
+      // Renderer-hidden pets must not leave stale native hit targets behind.
+      setWindowIgnore(overlayWindow, true);
+    }
+    inputBusy.set(
+      overlayWindow.id,
+      [...overlayInputs].some(([petId, entry]) => !fullscreenHiddenPets.has(petId) && entry.busy),
+    );
     overlayWindow.webContents.send('pet:fullscreen-visibility', hidden);
+    for (const refresh of fullscreenWatcherRefreshers) refresh();
     updateOverlayShape();
-    if (windows.size > 0 && [...windows.keys()].every((petId) => fullscreenHiddenPets.has(petId))) {
-      if (overlayWindow.isVisible()) overlayWindow.hide();
-    } else showPetWindow(overlayWindow);
+    if (allPetsHidden && !fullscreenZOrderTimer && !overlayLoweredForFullscreen) {
+      const target = overlayWindow;
+      fullscreenZOrderTimer = setTimeout(() => {
+        fullscreenZOrderTimer = undefined;
+        if (overlayWindow === target && !target.isDestroyed() && allOverlayPetsHiddenOnFullscreen()) {
+          // Keep the shared HWND visible so Windows does not animate it back onscreen on restore.
+          // Lower it after the per-pet opacity fade, and leave the renderer/native input pass-through.
+          setWindowIgnore(target, true);
+          if (DISPLAY_PRIORITY !== 'normal') {
+            target.setAlwaysOnTop(false);
+            overlayLoweredForFullscreen = true;
+          }
+        }
+      }, 220);
+      fullscreenZOrderTimer.unref?.();
+    }
     return;
   }
   for (const win of new Set(windows.values())) {
@@ -423,12 +467,16 @@ function applyFullscreenVisibility() {
   }
 }
 
-function updateFullscreenDisplays(line) {
-  const [leftText, topText, rightText, bottomText, className = ''] = String(line || '')
-    .trim()
-    .split(',');
-  const values = [leftText, topText, rightText, bottomText].map(Number);
-  if (values.length !== 4 || values.some((value) => !Number.isFinite(value))) return;
+function updateFullscreenDisplays(sample) {
+  const {
+    left: sampleLeft = 0,
+    top: sampleTop = 0,
+    right: sampleRight = 0,
+    bottom: sampleBottom = 0,
+    className = '',
+  } = sample || {};
+  const values = [sampleLeft, sampleTop, sampleRight, sampleBottom].map(Number);
+  if (values.some((value) => !Number.isFinite(value))) return;
   const [left, top, right, bottom] = values;
   const width = right - left;
   const height = bottom - top;
@@ -451,64 +499,47 @@ function updateFullscreenDisplays(line) {
   fullscreenDisplayIds.clear();
   for (const id of next) fullscreenDisplayIds.add(id);
   fullscreenStateReady = true;
-  if (fullscreenWatcherFallback) {
-    clearTimeout(fullscreenWatcherFallback);
-    fullscreenWatcherFallback = undefined;
-  }
   applyFullscreenVisibility();
 }
 
 function startFullscreenWatcher() {
   if (DISPLAY_PRIORITY !== 'hide-on-fullscreen' || process.platform !== 'win32') return;
-  const script = path.join(__dirname, 'fullscreen-window-watcher.ps1');
-  try {
-    fullscreenWatcher = spawn(
-      'powershell.exe',
-      ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script],
-      { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] },
-    );
-    let buffer = '';
-    fullscreenWatcher.stdout.setEncoding('utf8');
-    fullscreenWatcher.stdout.on('data', (chunk) => {
-      buffer += chunk;
-      let newline;
-      while ((newline = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, newline);
-        buffer = buffer.slice(newline + 1);
-        updateFullscreenDisplays(line);
-      }
-    });
-    fullscreenWatcher.on('error', () => {
-      fullscreenWatcher = undefined;
-      fullscreenStateReady = true;
-      fullscreenDisplayIds.clear();
-      applyFullscreenVisibility();
-    });
-    fullscreenWatcher.on('close', () => {
-      fullscreenWatcher = undefined;
-      fullscreenStateReady = true;
-      fullscreenDisplayIds.clear();
-      applyFullscreenVisibility();
-    });
-    fullscreenWatcherFallback = setTimeout(() => {
-      fullscreenWatcherFallback = undefined;
-      if (!fullscreenStateReady) {
-        // 检测器不可用时保持桌宠可见，避免选项导致宠物永久消失。
-        fullscreenStateReady = true;
-        applyFullscreenVisibility();
-      }
-    }, 3000);
-    fullscreenWatcherFallback.unref?.();
-  } catch {
+  const failOpen = (error) => {
+    stopFullscreenWatcher();
     fullscreenStateReady = true;
+    fullscreenDisplayIds.clear();
+    applyFullscreenVisibility();
+    if (error) {
+      console.warn('[dsh-pet desktop helper] fullscreen detection disabled:', String(error?.message || error));
+    }
+  };
+
+  try {
+    const { createForegroundWindowProbe } = require('./win32-fullscreen.js');
+    const getForegroundWindow = createForegroundWindowProbe();
+    let failed = false;
+    const poll = () => {
+      try {
+        updateFullscreenDisplays(getForegroundWindow());
+      } catch (error) {
+        failed = true;
+        failOpen(error);
+      }
+    };
+
+    poll();
+    if (!failed) {
+      fullscreenPollTimer = setInterval(poll, 500);
+      fullscreenPollTimer.unref?.();
+    }
+  } catch (error) {
+    failOpen(error);
   }
 }
 
 function stopFullscreenWatcher() {
-  if (fullscreenWatcherFallback) clearTimeout(fullscreenWatcherFallback);
-  fullscreenWatcherFallback = undefined;
-  if (fullscreenWatcher && !fullscreenWatcher.killed) fullscreenWatcher.kill();
-  fullscreenWatcher = undefined;
+  if (fullscreenPollTimer) clearInterval(fullscreenPollTimer);
+  fullscreenPollTimer = undefined;
 }
 
 /** win.id -> 上一次请求的窗口矩形；宠物窗口尺寸固定，只在位置变化时移动原生窗口。 */
@@ -529,105 +560,65 @@ const winMargins = new Map();
  */
 const petStates = new Map();
 let petStateBroadcastTimer = null;
-/** Current timed roam routes; one route per pet. Main-process arbitration keeps simultaneous moves atomic. */
-const moveReservations = new Map();
-let nextMoveReservationId = 1;
+// Normal movement claims receive a stable priority. O-relief moves update only their
+// endpoint, so a pet cannot pass its O marker to another pet while trying to yield.
+const moveTargets = new MoveTargets();
+let lastMoveTargetsJSON = '';
+let lastMoveTargetFlags = new Map();
+// TEMPORARY MOVE DIAGNOSTICS: remove the JSONL persistence path before a formal release.
+const MOVE_DIAGNOSTICS_SESSION = `${Date.now()}-${process.pid}`;
 
-function routePosition(route, timestamp) {
-  const elapsed = Math.max(0, Math.min(route.duration, (timestamp - route.startedAt) / 1000));
-  const travelDuration = Math.max(0.1, route.duration - route.leadSec - route.tailSec);
-  const progress = Math.max(0, Math.min(1, (elapsed - route.leadSec) / travelDuration));
-  return {
-    x: route.startX + (route.targetX - route.startX) * progress,
-    y: route.startY + (route.targetY - route.startY) * progress,
-  };
+function persistMoveDiagnostic(record, source) {
+  const file =
+    process.env.DSH_PET_MOVE_DIAGNOSTICS_FILE || path.join(app.getPath('userData'), 'logs', 'move-diagnostics.jsonl');
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    appendFileSync(
+      file,
+      `${JSON.stringify({ ...record, at: new Date().toISOString(), sessionId: MOVE_DIAGNOSTICS_SESSION, source })}\n`,
+      'utf8',
+    );
+  } catch (error) {
+    console.error(`[dsh-pet-move] diagnostics-write-failed ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
-function routesConflict(a, b, now) {
-  const start = Math.max(now, a.startedAt, b.startedAt);
-  const end = Math.min(a.startedAt + a.duration * 1000, b.startedAt + b.duration * 1000);
-  if (end <= start) return false;
-  const minDistance = (a.size + b.size) * 0.42;
-  const steps = Math.max(1, Math.ceil((end - start) / 40));
-  for (let i = 0; i <= steps; i += 1) {
-    const t = start + ((end - start) * i) / steps;
-    const p = routePosition(a, t);
-    const q = routePosition(b, t);
-    if (Math.hypot(p.x - q.x, p.y - q.y) < minDistance) return true;
-  }
-  return false;
+function traceMoveTarget(event, detail) {
+  const record = { event, ...detail };
+  console.error('[dsh-pet-move] ' + JSON.stringify(record));
+  // TEMPORARY MOVE DIAGNOSTICS: remove this persistence call with the writer above.
+  persistMoveDiagnostic(record, 'helper-main');
 }
 
-function routeConflictsWithStationaryPet(route, state) {
-  if (!(state.size > 0)) return false;
-  const center = { x: state.x + state.size / 2, y: state.y + (state.size * 9) / 32 };
-  const minDistance = (route.size + state.size) * 0.42;
-  const start = routePosition(route, route.startedAt);
-  const initialDistance = Math.hypot(start.x - center.x, start.y - center.y);
-  const steps = Math.max(1, Math.ceil((route.duration * 1000) / 40));
-  let previousDistance = initialDistance;
-  for (let i = 1; i <= steps; i += 1) {
-    const p = routePosition(route, route.startedAt + (route.duration * 1000 * i) / steps);
-    const distance = Math.hypot(p.x - center.x, p.y - center.y);
-    // Existing overlap cannot be undone before the clip's lead-in ends. Let a pet escape
-    // an initial overlap, but never let its planned route move deeper into the other pet.
-    if (initialDistance < minDistance) {
-      if (distance < previousDistance - 2) return true;
-    } else if (distance < minDistance) return true;
-    previousDistance = distance;
+function broadcastMoveTargets() {
+  const targets = moveTargets.snapshot();
+  const encoded = JSON.stringify(targets);
+  if (encoded === lastMoveTargetsJSON) return;
+  lastMoveTargetsJSON = encoded;
+  for (const target of targets) {
+    if (target.needsMove !== (lastMoveTargetFlags.get(target.petId) || false)) {
+      traceMoveTarget('overlap-marker', {
+        petId: target.petId,
+        O: target.needsMove,
+        reason: target.needsMove
+          ? target.moveKind === 'yield'
+            ? 'yield-endpoint-still-overlaps'
+            : 'newer-claim-overlap'
+          : 'endpoint-no-longer-overlaps',
+        blockers: target.blockers,
+        x: target.x,
+        y: target.y,
+        priority: target.priority,
+        moveKind: target.moveKind,
+      });
+    }
   }
-  return false;
+  lastMoveTargetFlags = new Map(targets.map((target) => [target.petId, target.needsMove]));
+  for (const win of new Set(windows.values())) {
+    if (!win.isDestroyed()) win.webContents.send(MOVE_TARGETS_CHANNELS.snapshot, targets);
+  }
 }
 
-function reserveMoveRoute(petId, input) {
-  const now = Date.now();
-  for (const [id, route] of moveReservations) {
-    if (route.startedAt + route.duration * 1000 <= now) moveReservations.delete(id);
-  }
-  const route = {
-    petId,
-    startX: Number(input?.startX),
-    startY: Number(input?.startY),
-    targetX: Number(input?.targetX),
-    targetY: Number(input?.targetY),
-    size: Number(input?.size),
-    duration: Number(input?.duration),
-    leadSec: Number(input?.leadSec),
-    tailSec: Number(input?.tailSec),
-    startedAt: now,
-  };
-  if (
-    ![
-      route.startX,
-      route.startY,
-      route.targetX,
-      route.targetY,
-      route.size,
-      route.duration,
-      route.leadSec,
-      route.tailSec,
-    ].every(Number.isFinite) ||
-    route.size <= 0 ||
-    route.duration <= 0
-  )
-    return { ok: false };
-
-  for (const [id, other] of moveReservations) {
-    if (other.petId !== petId && routesConflict(route, other, now)) return { ok: false, retryAfterMs: 240 };
-  }
-  for (const [otherId, state] of petStates) {
-    if (otherId === petId || moveReservationsHasPet(otherId)) continue;
-    if (routeConflictsWithStationaryPet(route, state)) return { ok: false, retryAfterMs: 240 };
-  }
-  const reservationId = String(nextMoveReservationId++);
-  moveReservations.set(reservationId, route);
-  return { ok: true, reservationId };
-}
-
-function moveReservationsHasPet(petId) {
-  for (const route of moveReservations.values()) if (route.petId === petId) return true;
-  return false;
-}
 /** 把当前全量宠物状态广播给所有窗口（碰撞检测的共享站场） */
 function broadcastPetStates() {
   const states = {};
@@ -645,12 +636,38 @@ function broadcastPetStates() {
   for (const win of new Set(windows.values())) {
     if (!win.isDestroyed()) win.webContents.send('pet:flight-states', states);
   }
+  broadcastMoveTargets();
 }
 
 /** 记录/更新一只宠物的状态并广播 */
-function updatePetState(petId, partial) {
+function updatePetState(petId, partial, { newClaim = false, claimReason = 'direct-position' } = {}) {
   const prev = petStates.get(petId) || { x: 0, y: 0, vx: 0, vy: 0, size: 0, bottomPad: 0 };
-  petStates.set(petId, Object.assign({}, prev, partial, { updatedAt: Date.now() }));
+  const state = Object.assign({}, prev, partial, { updatedAt: Date.now() });
+  petStates.set(petId, state);
+  const settledFreeMotion = prev.freeMotion === true && state.freeMotion !== true;
+  const priorTarget = moveTargets.targets.get(petId);
+  const previousPriority = priorTarget?.priority ?? null;
+  moveTargets.updateActual(
+    petId,
+    {
+      x: state.x + state.size / 2,
+      y: state.y + (state.size * 9) / 32,
+      size: state.size,
+    },
+    { freeMotion: state.freeMotion === true, newClaim: newClaim || settledFreeMotion },
+  );
+  const nextTarget = moveTargets.targets.get(petId);
+  if (nextTarget && nextTarget.priority !== previousPriority) {
+    traceMoveTarget('claim-priority', {
+      petId,
+      from: previousPriority,
+      to: nextTarget.priority,
+      kind: nextTarget.moveKind,
+      reason: settledFreeMotion ? 'free-motion-settled' : previousPriority === null ? 'initial-position' : claimReason,
+      x: nextTarget.x,
+      y: nextTarget.y,
+    });
+  }
   if (petStateBroadcastTimer !== null) return;
   petStateBroadcastTimer = setTimeout(() => {
     petStateBroadcastTimer = null;
@@ -677,9 +694,13 @@ function setWindowIgnore(win, ignore) {
     const matches = [];
     if (local) {
       for (const [petId, entry] of overlayInputs) {
-        if ([...(entry.bodyRects || []), ...(entry.rects || [])].some((r) =>
-          local.x >= r.x && local.x <= r.x + r.width && local.y >= r.y && local.y <= r.y + r.height,
-        )) matches.push(petId);
+        if (fullscreenHiddenPets.has(petId)) continue;
+        if (
+          [...(entry.bodyRects || []), ...(entry.rects || [])].some(
+            (r) => local.x >= r.x && local.x <= r.x + r.width && local.y >= r.y && local.y <= r.y + r.height,
+          )
+        )
+          matches.push(petId);
       }
     }
     console.error(
@@ -748,7 +769,8 @@ function overlayPointIsInteractive(win, point) {
   if (!win || !overlayHull) return false;
   const x = point.x - overlayHull.x;
   const y = point.y - overlayHull.y;
-  for (const entry of overlayInputs.values()) {
+  for (const [petId, entry] of overlayInputs) {
+    if (fullscreenHiddenPets.has(petId)) continue;
     if (entry.busy && entry.dragging) return true;
     for (const r of entry.bodyRects || []) {
       if (x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height) return true;
@@ -764,14 +786,17 @@ function overlayPointIsInteractive(win, point) {
 const offBodyMs = new Map();
 
 /**
- * 桌面宠物列表（[{id,size}]）：宿主经 DSH_PET_PETS 透传，每只宠物使用独立 renderer。
- * 解析失败/未透传（手动 start-desktop）时回落到单个默认宠物。
+ * 桌面宠物列表（[{id,size}]）：宿主经 DSH_PET_PETS 透传到共享桌面 renderer。
+ * 解析失败/未透传（手动 start-desktop）时回落到单个默认宠物；显式空数组用于托盘常驻时隐藏全部宠物。
+ * **空数组是合法输入，不等于「未透传」**：宿主在「桌面宠物被全部关掉、但 Helper 仍需活着
+ * 托住托盘」时会明确传 []（见 src/host/index.ts 的 desktopModeEverActive），此时必须建
+ * 0 只桌宠——回落成默认宠物会让渲染端读到「没有 desktop 宠物」并弹出红色错误条。
  */
 function petsFromEnv() {
   try {
     const raw = process.env.DSH_PET_PETS || '';
     const arr = JSON.parse(raw);
-    if (Array.isArray(arr) && arr.length > 0) {
+    if (Array.isArray(arr)) {
       return arr.map((p, i) => ({
         id: String(p?.id ?? `pet-${i}`),
         size: Number(p?.size) > 0 ? Number(p.size) : 462,
@@ -816,7 +841,6 @@ function createPetOverlayWindow() {
   if (!BrowserWindow.prototype.setShape)
     throw new Error('当前 Electron 不支持 BrowserWindow.setShape，无法启用单窗口桌宠渲染');
 
-
   overlayHull = { ...area };
   const win = new BrowserWindow({
     width: Math.round(area.width),
@@ -829,6 +853,7 @@ function createPetOverlayWindow() {
     transparent: true,
     backgroundColor: '#00000000',
     frame: false,
+    icon: path.resolve(__dirname, '..', '..', 'assets', 'dsh-pet-icon.ico'),
     alwaysOnTop: DISPLAY_PRIORITY !== 'normal',
     skipTaskbar: true,
     resizable: false,
@@ -876,6 +901,15 @@ function createPetOverlayWindow() {
     });
   });
   win.webContents.setBackgroundThrottling(false);
+  win.webContents.on('did-start-loading', () => {
+    // A renderer reload must not retain endpoints claimed by its previous sprites.
+    for (const [petId, petWin] of windows) {
+      if (petWin !== win || !moveTargets.remove(petId)) continue;
+      // TEMPORARY MOVE DIAGNOSTICS: remove this record before a formal release.
+      traceMoveTarget('remove-target', { petId, reason: 'renderer-reload' });
+    }
+    broadcastMoveTargets();
+  });
   win.webContents.on('context-menu', (event) => event.preventDefault());
   win.webContents.on('console-message', (_event, detailsOrLevel, legacyMessage) => {
     // Electron 旧签名为 (event, level, message, line, sourceId)，新版把消息
@@ -886,10 +920,21 @@ function createPetOverlayWindow() {
         : typeof detailsOrLevel === 'string'
           ? detailsOrLevel
           : detailsOrLevel?.message;
-    // Forward work-status state transitions to the host logger without requiring DevTools or
-    // the opt-in frame diagnostics switch.
+    // Forward work-status and movement diagnostics without requiring DevTools.
     if (message?.startsWith('[dsh-pet-workdiag]')) console.error(message);
     if (FRAME_DIAGNOSTICS && message?.startsWith('[dsh-pet-frame-diagnostics]')) console.error(message);
+    if (message?.startsWith('[dsh-pet-move]')) {
+      console.error(message);
+      // TEMPORARY MOVE DIAGNOSTICS: remove JSONL forwarding with persistMoveDiagnostic.
+      try {
+        const record = JSON.parse(message.slice('[dsh-pet-move]'.length).trim());
+        if (record && typeof record === 'object' && !Array.isArray(record)) {
+          persistMoveDiagnostic(record, 'renderer');
+        }
+      } catch (error) {
+        console.error(`[dsh-pet-move] diagnostics-parse-failed ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
   });
   const onWorkStatusDiagnostic = (event, record) => {
     if (event.sender !== win.webContents || !record || typeof record !== 'object') return;
@@ -899,9 +944,7 @@ function createPetOverlayWindow() {
       mkdirSync(path.dirname(diagnosticsFile), { recursive: true });
       appendFileSync(diagnosticsFile, `${JSON.stringify(record)}\n`, 'utf8');
     } catch (error) {
-      console.error(
-        `[dsh-pet-workdiag] file-write-failed ${error instanceof Error ? error.message : String(error)}`,
-      );
+      console.error(`[dsh-pet-workdiag] file-write-failed ${error instanceof Error ? error.message : String(error)}`);
     }
   };
   ipcMain.on('pet:work-status-diagnostic', onWorkStatusDiagnostic);
@@ -909,45 +952,66 @@ function createPetOverlayWindow() {
   win.webContents.on('did-finish-load', () => win.webContents.setZoomFactor(scale));
   setWindowIgnore(win, true);
 
-  const pointerTimer = setInterval(() => {
-    if (pointerFallbackPaused || win.isDestroyed()) return;
-    const bounds = win.getBounds();
-    if (bounds.width < 8 || bounds.height < 8) return;
-    const ignoring = windowIgnore.get(win.id) !== false;
-    const point = screen.getCursorScreenPoint();
-    const dragging = [...overlayInputs.values()].some((entry) => entry.dragging);
-    const next = !dragging && !overlayPointIsInteractive(win, point);
-    if (next !== ignoring) setWindowIgnore(win, next);
-  }, POINTER_POLL_MS);
+  let pointerTimer;
   let lastTopmostAssertMs = Date.now();
-  const topmostTimer = setInterval(() => {
-    const nowMs = Date.now();
-    const due = shouldReassertTopmost({
-      nowMs,
-      lastAssertMs: lastTopmostAssertMs,
-      destroyed: win.isDestroyed(),
-      visible: win.isVisible(),
-      paused: pointerFallbackPaused,
-    });
-    if (!due) return;
-    lastTopmostAssertMs = nowMs;
-    if (DISPLAY_PRIORITY !== 'normal') win.setAlwaysOnTop(true, 'screen-saver');
-  }, TOPMOST_WATCHDOG_TICK_MS);
+  let topmostTimer;
+  const stopFullscreenVisualWatchers = () => {
+    if (pointerTimer) clearInterval(pointerTimer);
+    if (topmostTimer) clearInterval(topmostTimer);
+    pointerTimer = undefined;
+    topmostTimer = undefined;
+  };
+  const startFullscreenVisualWatchers = () => {
+    if (win.isDestroyed() || pointerTimer || topmostTimer) return;
+    pointerTimer = setInterval(() => {
+      if (pointerFallbackPaused || win.isDestroyed()) return;
+      const bounds = win.getBounds();
+      if (bounds.width < 8 || bounds.height < 8) return;
+      const ignoring = windowIgnore.get(win.id) !== false;
+      const point = screen.getCursorScreenPoint();
+      const dragging = [...overlayInputs].some(([petId, entry]) => !fullscreenHiddenPets.has(petId) && entry.dragging);
+      const next = !dragging && !overlayPointIsInteractive(win, point);
+      if (next !== ignoring) setWindowIgnore(win, next);
+    }, POINTER_POLL_MS);
+    topmostTimer = setInterval(() => {
+      const nowMs = Date.now();
+      const due = shouldReassertTopmost({
+        nowMs,
+        lastAssertMs: lastTopmostAssertMs,
+        destroyed: win.isDestroyed(),
+        visible: win.isVisible(),
+        paused: pointerFallbackPaused,
+      });
+      if (!due) return;
+      lastTopmostAssertMs = nowMs;
+      if (DISPLAY_PRIORITY !== 'normal') win.setAlwaysOnTop(true, 'screen-saver');
+    }, TOPMOST_WATCHDOG_TICK_MS);
+  };
+  const refreshFullscreenVisualWatchers = () => {
+    if (win === overlayWindow && allOverlayPetsHiddenOnFullscreen()) stopFullscreenVisualWatchers();
+    else startFullscreenVisualWatchers();
+  };
+  fullscreenWatcherRefreshers.add(refreshFullscreenVisualWatchers);
+  refreshFullscreenVisualWatchers();
   win.on('closed', () => {
-    clearInterval(pointerTimer);
-    clearInterval(topmostTimer);
+    fullscreenWatcherRefreshers.delete(refreshFullscreenVisualWatchers);
+    stopFullscreenVisualWatchers();
     for (const [petId, petWin] of windows) {
       if (petWin !== win) continue;
       windows.delete(petId);
       petStates.delete(petId);
       overlayInputs.delete(petId);
       overlayPetBounds.delete(petId);
-      for (const [reservationId, route] of moveReservations) {
-        if (route.petId === petId) moveReservations.delete(reservationId);
-      }
+      // TEMPORARY MOVE DIAGNOSTICS: remove this record before a formal release.
+      if (moveTargets.remove(petId)) traceMoveTarget('remove-target', { petId, reason: 'window-closed' });
     }
     broadcastPetStates();
+    if (fullscreenZOrderTimer) {
+      clearTimeout(fullscreenZOrderTimer);
+      fullscreenZOrderTimer = undefined;
+    }
     overlayWindow = null;
+    overlayLoweredForFullscreen = false;
     overlayFirstFrameReady = false;
     overlayRendererVisualReady = false;
     overlayInitialCompositionReady = false;
@@ -1094,6 +1158,8 @@ async function handleBridgeRequest(request) {
   return new Response(resp.body ?? '', { status: resp.status || 200, headers });
 }
 
+// Tray icon and menu are owned by desktop-main.cjs, outside the scaled pet helper.
+
 app.whenReady().then(() => {
   // 探测子进程：此时没有 force-device-scale-factor，读到的是 Windows 的真实主屏缩放。
   // 退出推迟一拍——在 ready 回调里直接 app.exit() 会赶在 stdout 落盘前拆掉进程
@@ -1126,6 +1192,9 @@ app.whenReady().then(() => {
     );
     startBridgeCallback(); // 宿主应答回调服务器（stdin 在 Electron 主进程不可用，改走本地 HTTP）
   }
+
+  // macOS：桌面宠物 Helper 不该单独占 Dock；常驻入口由 desktop-main.cjs 提供。
+  if (process.platform === 'darwin' && app.dock) app.dock.hide();
 
   startFullscreenWatcher();
   createPetOverlayWindow();
@@ -1194,7 +1263,8 @@ app.whenReady().then(() => {
         bottomPad: Number.isFinite(bottomPad) && bottomPad > 0 ? bottomPad : petStates.get(petId)?.bottomPad || 0,
         vx: Number.isFinite(vx) ? vx : 0,
         vy: Number.isFinite(vy) ? vy : 0,
-      });
+        freeMotion: bounds?.freeMotion === true,
+      }, { newClaim: bounds?.positionClaim === true, claimReason: 'position-command' });
     }
   });
 
@@ -1202,21 +1272,19 @@ app.whenReady().then(() => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win !== overlayWindow || win.isDestroyed()) return;
     overlayRendererVisualReady = true;
+    const visibility = {};
+    for (const petId of windows.keys()) visibility[petId] = fullscreenHiddenPets.has(petId);
+    win.webContents.send('pet:fullscreen-visibility', visibility);
     if (win.__petShapeKey) showPetWindow(win);
   });
 
-  ipcMain.handle('pet:reserve-move', (event, route) => {
-    const win = BrowserWindow.fromWebContents(event.sender);
-    if (!win || win.isDestroyed()) return { ok: false };
-    const petId = String(route?.petId || '');
-    return petId && windows.get(petId) === win ? reserveMoveRoute(petId, route) : { ok: false };
-  });
-  ipcMain.on('pet:release-move', (event, payload) => {
-    const win = BrowserWindow.fromWebContents(event.sender);
-    if (!win || win.isDestroyed()) return;
-    const petId = String(payload?.petId || '');
-    const id = String(payload?.reservationId || '');
-    if (petId && windows.get(petId) === win && moveReservations.get(id)?.petId === petId) moveReservations.delete(id);
+  registerMoveTargetHandlers({
+    ipcMain,
+    BrowserWindow,
+    windows,
+    moveTargets,
+    traceMoveTarget,
+    broadcastMoveTargets,
   });
 
   // 飞行状态上报（碰撞站场）：renderer 飞行中每 ~30ms 上报一次自己的位置/速度/尺寸
@@ -1253,8 +1321,15 @@ app.whenReady().then(() => {
   ipcMain.on('pet:set-interactive', (event, interactive) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return;
+    if (win === overlayWindow && allOverlayPetsHiddenOnFullscreen()) {
+      setWindowIgnore(win, true);
+      return;
+    }
     const point = screen.getCursorScreenPoint();
-    const busy = inputBusy.get(win.id) === true;
+    const busy =
+      win === overlayWindow
+        ? [...overlayInputs].some(([petId, entry]) => !fullscreenHiddenPets.has(petId) && entry.busy)
+        : inputBusy.get(win.id) === true;
     const ignoringNow = windowIgnore.get(win.id) !== false;
     const captureRequested = interactive === true || busy;
     const ignoring =
@@ -1285,7 +1360,7 @@ app.whenReady().then(() => {
     overlayInputs.set(petId, { ...prior, busy: payload.busy === true });
     inputBusy.set(
       win.id,
-      [...overlayInputs.values()].some((entry) => entry.busy),
+      [...overlayInputs].some(([id, entry]) => !fullscreenHiddenPets.has(id) && entry.busy),
     );
   });
 
@@ -1310,7 +1385,7 @@ app.whenReady().then(() => {
 
   // 右键菜单「打开网站」：交给**系统默认浏览器**打开（等效于网页里 Ctrl+点击链接新标签页），
   // 不建专属窗口——宠物窗口机制是透明小窗，不该承载常规网页浏览。URL 由渲染端从
-  // configUrl 推导 = DSH webServer 端口，端口变化自动跟随
+  // configUrl 推导自宿主本机 API 地址，端口变化时自动跟随。
   const openSite = (url) => {
     // 宿主注入的已鉴权站点 URL（含本进程启动令牌）：DSH 只在 `GET /` 接受它并换发绑定 authority 的
     // 浏览器 Cookie，裸 origin 在默认浏览器里必然 401（#87）。令牌等价登录态，所以**只在与目标同
@@ -1335,7 +1410,7 @@ app.whenReady().then(() => {
   //     被单实例锁拦下、宿主收到 second-instance 后 focusPrimaryWindow()；未运行则协议直接把应用拉起来。
   //     比 spawn 宿主 exe 干净——不必处理 ELECTRON_RUN_AS_NODE（spawn 继承它就成了 node 模式，起不了界面）
   //     与安装路径探测。
-  //   site（dsh web / 独立模式）→ 原行为：系统默认浏览器打开站点。
+  //   site（Node 命令行 / 手动 Helper）→ 系统默认浏览器打开配置的站点。
   ipcMain.on('pet:open-site', (event, payload) => {
     const url = payload && typeof payload === 'object' ? String(payload.url || '') : '';
     if (!/^https?:[/][/]/.test(url)) return;
@@ -1655,8 +1730,14 @@ app.whenReady().then(() => {
   }
 });
 
-app.on('before-quit', stopFullscreenWatcher);
+// 退出时销毁托盘图标：不销毁会在 Windows 通知区留下「幽灵图标」（鼠标划过才消失）。
+// 注意宿主改 display 时是 SIGTERM/SIGKILL 硬杀（helper-process.ts），Windows 上那是
+// TerminateProcess、拦不到，所以这条只覆盖优雅退出（窗口全关、宿主存活探测判定退出等）。
+app.on('before-quit', () => {
+  stopFullscreenWatcher();
+});
 
 app.on('window-all-closed', () => {
-  app.quit();
+  // Helper 由宿主托管生命周期；没有可见宠物时也要保持 bridge 在线，
+  // 这样主进程托盘仍可恢复宠物。显示开关变化时宿主会重启这个 helper。
 });

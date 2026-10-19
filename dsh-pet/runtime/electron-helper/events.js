@@ -6,7 +6,7 @@
  */
 'use strict';
 
-// ---- 工作状态联动（DSH 会话状态，每只宠物按 workStatusEnabled 门控；容器 1s 轮询，ts 变化才递增 tick）----
+// ---- 工作状态联动（容器轮询 /state，再由共享分配器交给已启用的宠物）----
 // 气泡驻留语义与浏览器一致：thinking/working/result/waiting（"事情还没完"）常驻直到状态切走；
 //   success/error（"这事结束了"）10s 自动收起；state=null（空闲/回合被打断）收起气泡回待机。
 // 动画循环语义：进行中档位循环播（switchTo once=false），终态档位播一遍回 idle 链；
@@ -190,7 +190,7 @@ PetSprite.prototype.showBalanceNotice = function showBalanceNotice(state, manual
 
 // 收起说话气泡（POST /bubble/clear 的落点）。**只动气泡**：正在播的动画、余额气泡、
 // 工作状态气泡都不碰——气泡与动作是两把锁、分别释放（issue #122 第 5 条）。
-// 与浏览器端 clearWhisperBubble 同一语义。
+// 清除当前桌宠的碎碎念气泡。
 PetSprite.prototype.clearWhisper = function clearWhisper() {
   if (this.whisperTimer !== null) window.clearTimeout(this.whisperTimer);
   this.whisperTimer = null;
@@ -201,7 +201,7 @@ PetSprite.prototype.clearWhisper = function clearWhisper() {
 };
 
 // 碎碎念展示（本宠物）：随机抽 events.whisper 动画 + 弹文本气泡（与余额同一套定时语义）
-// image：host 随机抽定的配图名称（未开配图/池为空则空串，与浏览器端同一契约）
+// image：host 随机抽定的配图名称（未开配图/池为空则空串）
 // duration / anim：POST /broadcast 的两个新参数（issue #122 第 5 条）。两者**互相独立**：
 //   - anim === false 时整段跳过动画联动——不查池、不换源，也不 stopMove()
 //     （stopMove 属于"开始播这段动画"的一部分，不是弹气泡的副作用）。
@@ -364,11 +364,9 @@ function applySayLeaf(petId, leaf) {
   }
 }
 
-// Agent 状态列表按 key 固定分配给桌宠；无空闲桌宠时保留队列，不抢占已有 Agent 的桌宠。
-let activeWorkStatusPetId = null;
-let lastWorkStatusPetId = null;
-const workStatusAgentOwners = new Map();
-let workStatusAssignmentRevision = 0;
+// Assignment policy is shared with the browser client; this runtime owns its own manager instance.
+const workStatusAssignments = new S.WorkStatusAssignmentManager();
+const lastWorkStatusAssignmentRevisions = new Map();
 
 function logWorkStatusDiagnostic(event, details) {
   const record = { at: new Date().toISOString(), surface: 'desktop', event, ...details };
@@ -379,86 +377,74 @@ function logWorkStatusDiagnostic(event, details) {
   }
 }
 
-function selectWorkStatusPet() {
-  const eligible = sprites.filter((sprite) => sprite.pet.workStatusEnabled);
-  if (eligible.length === 0) return null;
-  const previousIndex = eligible.findIndex((sprite) => sprite.pet.id === lastWorkStatusPetId);
-  const selected = eligible[(previousIndex + 1) % eligible.length];
-  lastWorkStatusPetId = selected.pet.id;
-  return selected;
-}
-
-function assignWorkStatusPet(occupiedPetIds) {
-  const available = sprites.filter(
-    (sprite) => sprite.pet.workStatusEnabled && !occupiedPetIds.has(sprite.pet.id),
-  );
-  if (available.length === 0) return null;
-  return available[Math.floor(Math.random() * available.length)] ?? null;
-}
-
-function applyWorkStatusAgents(snapshot) {
-  const agents = Array.isArray(snapshot.agents) ? snapshot.agents : [];
-  const currentByKey = new Map(agents.map((agent) => [agent.key, agent]));
-  const validPetIds = new Set(sprites.filter((sprite) => sprite.pet.workStatusEnabled).map((sprite) => sprite.pet.id));
+function applyWorkStatusAgents(snapshot, leafRevision) {
+  const agents = S.normalizeWorkStatusAgents(snapshot, leafRevision);
+  const eligibleSprites = sprites.filter((sprite) => sprite.pet.workStatusEnabled);
+  const eligiblePetIds = eligibleSprites.map((sprite) => sprite.pet.id);
+  const result = workStatusAssignments.reconcile(agents, eligiblePetIds);
+  const assignmentByPetId = new Map(result.assignments.map((assignment) => [assignment.petId, assignment]));
 
   logWorkStatusDiagnostic('snapshot', {
-    agents: agents.map((agent) => ({ key: agent.key, state: agent.state, sourceName: agent.sourceName, revision: agent.revision })),
-    owners: Array.from(workStatusAgentOwners, ([key, owner]) => ({ key, petId: owner.petId })),
-    eligiblePetIds: Array.from(validPetIds),
-  });
-
-  if (activeWorkStatusPetId !== null) {
-    const legacySprite = sprites.find((sprite) => sprite.pet.id === activeWorkStatusPetId);
-    legacySprite?.onWorkTick(
-      { state: null, task: null },
-      `legacy:released:${++workStatusAssignmentRevision}`,
-      true,
-    );
-    activeWorkStatusPetId = null;
-  }
-
-  // 释放已结束 Agent 的宠物；空出的桌宠可在本轮分配给仍在等待的 Agent。
-  for (const [agentKey, owner] of workStatusAgentOwners) {
-    if (currentByKey.has(agentKey) && validPetIds.has(owner.petId)) continue;
-    const sprite = sprites.find((candidate) => candidate.pet.id === owner.petId);
-    if (sprite) {
-      logWorkStatusDiagnostic('release', { key: agentKey, petId: owner.petId, reason: 'agent-absent-or-pet-ineligible' });
-      sprite.onWorkTick(
-        { state: null, task: null },
-        `${agentKey}:released:${++workStatusAssignmentRevision}`,
-        true,
-      );
-    }
-    workStatusAgentOwners.delete(agentKey);
-  }
-
-  const occupiedPetIds = new Set(Array.from(workStatusAgentOwners.values(), (owner) => owner.petId));
-  const pending = [...currentByKey.values()].sort((a, b) => a.startedAt - b.startedAt);
-  for (const agent of pending) {
-    if (workStatusAgentOwners.has(agent.key)) continue;
-    const sprite = assignWorkStatusPet(occupiedPetIds);
-    if (!sprite) break; // 宠物数量不足：不抢占已绑定宠物，等待有空位后再分配。
-    const owner = { petId: sprite.pet.id, revision: ++workStatusAssignmentRevision };
-    workStatusAgentOwners.set(agent.key, owner);
-    occupiedPetIds.add(owner.petId);
-    logWorkStatusDiagnostic('assign', { key: agent.key, petId: owner.petId, state: agent.state, revision: agent.revision });
-  }
-
-  for (const [agentKey, owner] of workStatusAgentOwners) {
-    const agent = currentByKey.get(agentKey);
-    const sprite = sprites.find((candidate) => candidate.pet.id === owner.petId);
-    if (!agent || !sprite) continue;
-    logWorkStatusDiagnostic('dispatch', {
-      key: agentKey,
-      petId: owner.petId,
+    agents: agents.map((agent) => ({
+      key: agent.key,
       state: agent.state,
       sourceName: agent.sourceName,
       revision: agent.revision,
-      ownerRevision: owner.revision,
+    })),
+    owners: result.assignments.map(({ agentKey, petId, assignmentRevision }) => ({
+      agentKey,
+      petId,
+      assignmentRevision,
+    })),
+    eligiblePetIds,
+  });
+
+  for (const owner of result.released) {
+    lastWorkStatusAssignmentRevisions.delete(owner.agentKey);
+    const sprite = sprites.find((candidate) => candidate.pet.id === owner.petId);
+    // If the same pet gets a new owner in this snapshot, transition directly to that owner's state.
+    if (sprite && !assignmentByPetId.has(owner.petId)) {
+      sprite.onWorkTick({ state: null, task: null }, `${owner.agentKey}:released:${owner.assignmentRevision}`, true);
+    }
+    if (sprite) {
+      logWorkStatusDiagnostic('release', {
+        key: owner.agentKey,
+        petId: owner.petId,
+        assignmentRevision: owner.assignmentRevision,
+        reason: 'agent-absent-or-pet-ineligible',
+      });
+    }
+  }
+
+  for (const assignment of result.assignments) {
+    const { agent, agentKey, petId, assignmentRevision } = assignment;
+    const sprite = sprites.find((candidate) => candidate.pet.id === petId);
+    if (!sprite) continue;
+    if (lastWorkStatusAssignmentRevisions.get(agentKey) !== assignmentRevision) {
+      logWorkStatusDiagnostic('assign', {
+        key: agentKey,
+        petId,
+        state: agent.state,
+        revision: agent.revision,
+        assignmentRevision,
+      });
+      lastWorkStatusAssignmentRevisions.set(agentKey, assignmentRevision);
+    }
+    logWorkStatusDiagnostic('dispatch', {
+      key: agentKey,
+      petId,
+      state: agent.state,
+      sourceName: agent.sourceName,
+      revision: agent.revision,
+      assignmentRevision,
     });
     sprite.onWorkTick(
-      { state: agent.state, task: null, sourceName: agent.sourceName },
-      `${agentKey}:${agent.revision}:${owner.revision}`,
+      {
+        state: agent.state,
+        task: agentKey === S.LEGACY_WORK_STATUS_AGENT_KEY ? snapshot.task : null,
+        sourceName: agent.sourceName,
+      },
+      `${agentKey}:${agent.revision}:${assignmentRevision}`,
       true,
     );
   }
@@ -468,35 +454,7 @@ function applyWorkStatusAgents(snapshot) {
 function applyWorkStatusLeaf(leaf) {
   const snap = S.toWorkStatus(leaf.data);
   if (!snap) return;
-  if (Array.isArray(snap.agents)) {
-    applyWorkStatusAgents(snap);
-    return;
-  }
-  if (workStatusAgentOwners.size > 0) {
-    for (const [agentKey, owner] of workStatusAgentOwners) {
-      const sprite = sprites.find((candidate) => candidate.pet.id === owner.petId);
-      sprite?.onWorkTick(
-        { state: null, task: null },
-        `${agentKey}:released:${++workStatusAssignmentRevision}`,
-        true,
-      );
-    }
-    workStatusAgentOwners.clear();
-  }
-  if (snap.state) {
-    const activeStillEligible = sprites.some(
-      (sprite) => sprite.pet.id === activeWorkStatusPetId && sprite.pet.workStatusEnabled,
-    );
-    if (!activeStillEligible) activeWorkStatusPetId = null;
-    if (activeWorkStatusPetId === null) {
-      activeWorkStatusPetId = selectWorkStatusPet()?.pet.id ?? null;
-    }
-  }
-  workTick++;
-  for (const s of sprites) {
-    s.onWorkTick(snap, workTick, s.pet.id === activeWorkStatusPetId);
-  }
-  if (!snap.state) activeWorkStatusPetId = null;
+  applyWorkStatusAgents(snap, leaf.counter);
 }
 
 /** DSH 桥接通知 → 系统通知（总开关与宠物对话回复共用 notificationsEnabled）。 */
@@ -505,8 +463,10 @@ function applyNotifyLeaf(leaf) {
   if (
     !data ||
     data.type !== 'standalone' ||
+    data.source !== 'dsh' ||
     !config ||
     !config.notificationsEnabled ||
+    data.sourceForeground === true ||
     (document.hasFocus() && !document.hidden) ||
     typeof Notification === 'undefined' ||
     Notification.permission !== 'granted' ||
@@ -574,7 +534,7 @@ async function pollStateOnce() {
     if (!s) return false;
     // 响应带 counter = 宿主支持长轮询；不带 = 老宿主（不认识 since/timeout，会立刻返回全量），
     // 这时必须退回固定间隔轮询，否则这个循环就是忙等。
-    stateLongPoll = typeof s.counter === 'number';
+    stateLongPoll = typeof s.counter === 'number' && s.longPoll !== false;
     if (stateLongPoll) stateSince = s.counter;
     if (stateBaseline === null) {
       stateBaseline = S.flattenCounters(s); // 首拉：只记基线，不渲染（避免启动/重载时重放旧气泡）

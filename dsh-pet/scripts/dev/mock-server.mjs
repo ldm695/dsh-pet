@@ -1,7 +1,7 @@
 /**
  * dev/mock-server.mjs —— 桌面模式运行时验证用 mock DSH 宿主（开发自测工具，不入 npm 包）。
  *
- * 模拟 /dsh-pet-7340 前缀的宿主端点（与浏览器 overlay 共用同一套契约）：
+ * 模拟 /dsh-pet-7340 前缀的本机宿主端点：
  *   GET  /dsh-pet-7340/config              成品配置聚合（{ main: <真实 config.jsonc 解析> }，
  *                                        mock 环境无用户层/文件宠物，只有 main 条目）
  *   GET  /dsh-pet-7340/thumb/<petId>/<name>.webm  从 assets/webm 读素材（petId 段剥掉，统一素材根）
@@ -24,9 +24,7 @@ const PACKAGE_ROOT = resolve(here, '..', '..');
 const WEBM_ROOT = join(PACKAGE_ROOT, 'assets', 'webm');
 const CONFIG_FILE = join(PACKAGE_ROOT, 'assets', 'config.jsonc');
 const USER_CONFIG_ROOT = process.env.DSH_PET_USER_CONFIG_ROOT;
-const readAllConfig = USER_CONFIG_ROOT
-  ? (await import('../../src/host/config.ts')).readAllConfig
-  : null;
+const readAllConfig = USER_CONFIG_ROOT ? (await import('../../src/host/config.ts')).readAllConfig : null;
 
 /** 剥除 JSONC 注释（与真实宿主 readAllConfig 的 stripJsonc 同规则），返回纯 JSON */
 const stripJsonc = (src) =>

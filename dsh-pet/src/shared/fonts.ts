@@ -1,4 +1,4 @@
-// 字体（src/shared 单一来源，浏览器 bundle 与桌面 shared-core 共用）：
+// 字体（src/shared 单一来源，桌面 shared-core 共用）：
 // 本文件是「字体种类 id → 实际 CSS 字体栈」的唯一映射表 + font 段默认值。
 // 设置页的下拉框选项由 FONT_PRESETS 生成；渲染层（气泡 / 悬浮提示 / 对话窗 / 得分弹窗）
 // 按 id 经 fontStackOf 取栈应用，不再各写一份字面量。
@@ -17,7 +17,7 @@ export interface FontPreset {
 /** 字体预设清单：顺序 = 设置页下拉框的显示顺序（第一项是默认）。
  *  candy 是唯一随包发布的字体（assets/fonts/上首软糖体.ttf），两端各自注入 @font-face 后即可用；
  *  它的 CSS 名 "ShangshouSoftCandy" 是**我们自己起的**（与字体文件内部名称无关），改名要同步
- *  浏览器端 bubble.ts 与桌面端 renderer.js 的 @font-face 声明。
+ *  桌面端 renderer.js 的 @font-face 声明。
  *  其余都是系统字体：机器上没装时由后面的兜底自然回退，不报错也不空白。 */
 export const FONT_PRESETS: FontPreset[] = [
   {
@@ -104,7 +104,7 @@ export const BUBBLE_METRICS = {
 } as const;
 
 /** 气泡最大高度（px）：文本最多两行（余额气泡的「主行 + 次要行」），可带一张配图。
- *  桌面端用它定窗口上边距（见 bubbleTopMarginPx）；浏览器端没有窗口限制，不需要。 */
+ *  桌面端用它定窗口上边距（见 bubbleTopMarginPx）。 */
 export function bubbleMaxHeightPx(font: FontConfig | undefined, size: number): number {
   const f = resolveFontPx(font, size).bubble;
   const m = BUBBLE_METRICS;

@@ -1,7 +1,7 @@
 /**
  * pickers 事件档位逻辑单元测试 —— 钉住「数组槽位 = 档内随机 + 避免连续重复」与
  * 「成员判断必须穿透数组槽位」（直接 includes 会漏掉嵌套候选）两套语义，
- * 以及随机链掷骰 rollKind（含宠物固定 fixedEnabled）与「双端必须都传该开关」的源码守卫。
+ * 以及随机链掷骰 rollKind（含宠物固定 fixedEnabled）与桌面渲染器源码守卫。
  *
  * 跑法：node --experimental-strip-types --test src/shared/pickers.test.ts
  */
@@ -164,22 +164,11 @@ describe('rollKind —— 随机链掷骰（含宠物固定 fixedEnabled）', ()
   });
 });
 
-describe('宠物固定 —— 双端一致守卫（两端必须都把这个开关传进掷骰）', () => {
-  // 背景：随机链在两端各有一层薄壳（浏览器 React 组件 / 桌面 DOM sprite），掷骰本身共用
-  // src/shared/pickers 的 rollKind。若只在其中一端传 fixed，另一端的宠物照样自己走/自己翻，
-  // 表现为「设置页勾了没用」——而且只在一种显示模式下复现，极难排查。这里把两侧钉住。
-  const browserShell = readFileSync(fileURLToPath(new URL('../client/pet.ts', import.meta.url)), 'utf8');
+describe('宠物固定 —— 桌面渲染器守卫', () => {
   const desktopShell = readFileSync(
     fileURLToPath(new URL('../../runtime/electron-helper/sprite.js', import.meta.url)),
     'utf8',
   );
-
-  test('浏览器壳（client/pet.ts 的 pickNext）传了 fixed', () => {
-    assert.ok(
-      /rollKind\([^)]*fixed:/.test(browserShell),
-      'client/pet.ts 的 pickNext 必须把 fixed 传进 rollKind（否则浏览器里的宠物照旧乱走）',
-    );
-  });
 
   test('桌面壳（sprite.js 的 playIdle）传了 fixed', () => {
     assert.ok(
@@ -188,8 +177,7 @@ describe('宠物固定 —— 双端一致守卫（两端必须都把这个开�
     );
   });
 
-  test('两端传的都是该宠物自己的配置项（不是写死的 true/false）', () => {
-    assert.ok(/fixed:\s*cfg\.fixedEnabled/.test(browserShell), '浏览器壳必须传 cfg.fixedEnabled');
+  test('传入的是该宠物自己的配置项（不是写死的 true/false）', () => {
     assert.ok(/fixed:\s*this\.pet\.fixedEnabled/.test(desktopShell), '桌面壳必须传 this.pet.fixedEnabled');
   });
 });

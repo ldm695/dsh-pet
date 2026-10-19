@@ -1,8 +1,8 @@
 # DSH Pet HTTP API 概览
 
-DSH Pet 在 DSH Web 服务中注册统一的 `/dsh-pet-7340` 路由前缀。浏览器端、桌面端、设置页和第三方插件共用同一组接口实现。本文提供接口概览；参数、响应结构、字段定义、错误码和示例请参阅根目录的 [`openapi.yaml`](openapi.yaml)。
+DSH Pet Windows 应用在本机 HTTP 服务上提供统一的 `/dsh-pet-7340` 路由前缀，供桌面 Helper、内嵌设置页和本机集成使用。DSH Pet 不再注册为 DSH Web 插件，也不会向 DSH Web 页面显示桌宠。本文提供接口概览；参数、响应结构、字段定义、错误码和示例请参阅根目录的 [`openapi.yaml`](openapi.yaml)。
 
-- **基址**：`http://127.0.0.1:<port>/dsh-pet-7340`，`<port>` 是 DSH Web 服务实际监听的端口
+- **基址**：`http://127.0.0.1:6952/dsh-pet-7340`（默认端口；被占用时应用会顺延）
 - **只监听 127.0.0.1，且没有鉴权**：任何能访问本机该端口的进程都能调用，请勿转发到公网
 
 ---
@@ -38,7 +38,7 @@ DSH Pet 在 DSH Web 服务中注册统一的 `/dsh-pet-7340` 路由前缀。浏�
 | 接口 | 功能 |
 | --- | --- |
 | `PUT /dsh-pet-7340/config` | 保存用户层配置（白名单重建，用户手写的精调字段会保留） |
-| `POST /dsh-pet-7340/pet-display` | **改单只宠物的显示位置**（`web` / `desktop` / `both` / `none`），只传 `{ id, display }` |
+| `POST /dsh-pet-7340/pet-display` | **改单只宠物的显示位置**（`desktop` / `none`），只传 `{ id, display }` |
 | `POST /dsh-pet-7340/config` | 用内置默认整份覆盖用户配置，即「恢复默认」 |
 
 ## 静态资源

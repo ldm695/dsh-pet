@@ -26,7 +26,7 @@ class PetSprite {
     this.bottomPad = (this.size * (9 / 16) * (S.CANVAS_H - S.FEET_Y)) / S.CANVAS_H;
     // 窗口高 = 舞台高 + 脚底垫高（stage 被 translateY(bottomPad) 下移的余量，防底部被窗口裁剪）
     this.winH = this.height + this.bottomPad;
-    // 窗口内【可交互区域】= 身体命中区（像素，窗口坐标）。浏览器 overlay 只有 .dsh-pet-hit 是
+    // 窗口内【可交互区域】= 身体命中区（像素，窗口坐标）。桌宠身体命中区是 .dsh-pet-hit
     // pointer-events:auto（root/stage/气泡全 none）——桌面严格对齐：命中区外含透明像素一律穿透到下层应用。
     // HIT_BOX 是 640×360 舞台坐标：x 按窗口宽缩放；y 除舞台高外还要加 bottomPad（舞台被下移）。
     this.hitRect = {
@@ -37,7 +37,7 @@ class PetSprite {
     };
     window.__dshPetDebug.hitRect = this.hitRect;
     // 左右透明边余量（视频盒内宠物身体居中）：让边界按"身体"贴边——宠物能走到屏幕边缘，
-    // 但身体永不越界（漫游/拖拽都不会弄丢宠物）。与浏览器 overlay 的 sideAllow 同一套语义。
+    // 但身体永不越界（漫游/拖拽都不会弄丢宠物）。
     this.sideAllow = (S.HIT_BOX.x0 / 640) * this.size;
     window.__dshPetDebug.sideAllow = this.sideAllow;
     // 窗口四周外扩：左右下 = WINDOW_MARGIN_RATIO×宠物尺寸（既有取值，不动）；
@@ -71,6 +71,8 @@ class PetSprite {
     this.assetBase = BASE + '/thumb/' + encodeURIComponent(this.assetRoot) + '/';
     this.front = 0; // 0 = A, 1 = B
     this.pending = null;
+    this.videoReleaseTimers = new Map();
+    this.disposed = false;
     this.gen = 0;
     this.anim = this.animations.idle[0] ?? '';
     this.firstVisualFrame = new Promise((resolve) => {
@@ -108,11 +110,18 @@ class PetSprite {
     this.pendingSquash = false;
     this._interactive = null; // 当前可交互状态（null=未定；只在变化时发 IPC，避免逐帧刷屏）
     this.moveRef = null;
+    this.moveStep = null;
     this.moveToken = 0;
     this.pendingMove = null;
-    this.moveReservationId = null;
-    this.moveWaiting = false;
-    this.moveWaitState = null;
+    this.moveTargetId = null;
+    this.moveDriving = false;
+    this.moveDestination = null;
+    this.moveTargets = window.__dshPetMoveTargets || [];
+    const initialTarget = this.moveTargets.find((target) => target.petId === pet.id);
+    this.needsRelocation = initialTarget?.needsMove === true;
+    this.expectedFinalPosition = initialTarget
+      ? { x: initialTarget.x, y: initialTarget.y, size: initialTarget.size }
+      : null;
     // 首次启动按配置角落定位；已有历史屏幕坐标时还原到视口比例，避免分辨率变化后落在屏幕外。
     const lastPosition = this.layout.lastPosition;
     if (lastPosition && Number.isFinite(Number(lastPosition.x)) && Number.isFinite(Number(lastPosition.y))) {
@@ -128,6 +137,9 @@ class PetSprite {
     // 右键菜单（统一自绘组件，两端共用同一份：树+渲染均来自 shared-core）
     this.menuOpen = false; // 菜单开启期间强制整窗可交互（悬停菜单不触发穿透翻转）
     this.menuClose = null; // 当前菜单的 close()（打开时挂载，关闭后置空）
+    this.fullscreenHidden = false;
+    this.fullscreenResume = null;
+    this.fullscreenDeferredAnimation = null;
     // 余额气泡
     this.bubbleOn = false;
     this.bubbleTimer = null;
@@ -145,7 +157,7 @@ class PetSprite {
     this.whisperText = '';
     // 配图名称（配置 memes 的键；whisperImageEnabled 开启时由 host 随机抽定，随文本一起来）
     this.whisperImage = '';
-    // 工作状态联动（DSH 会话状态）：容器 1s 轮询 /state 递增 workTick → 本宠物按档位播动画+气泡。
+    // 工作状态联动（DSH 会话状态）：容器统一轮询 /state 并按共享分配器把 Agent 状态交给本宠物。
     // 气泡单槽优先级 终态任务 > whisper > balance > 非终态任务（见 renderBubble）；
     // workStatusEnabled 未启用时完全免疫（与浏览器一致）
     this.workOn = false;
@@ -168,7 +180,7 @@ class PetSprite {
     this.el.style.top = (CONFIG.overlay ? 0 : this.margin.t) + 'px';
     this.el.style.setProperty('--pet-size', this.size + 'px');
     // 字号（配置 font）：按本宠物尺寸算好最终 px 注入 —— 气泡与悬浮提示的 CSS 读这两个变量
-    // （与浏览器端同一套变量名、同一份换算 S.resolveFontPx，见 shared/fonts.ts）
+    // 使用 shared/fonts.ts 的 S.resolveFontPx 统一换算字号。
     const fontPx = S.resolveFontPx(this.font, this.size);
     this.el.style.setProperty('--dsh-pet-font-bubble', fontPx.bubble + 'px');
     this.el.style.setProperty('--dsh-pet-font-tip', fontPx.tip + 'px');
@@ -196,7 +208,7 @@ class PetSprite {
     this.bubble = document.createElement('div');
     this.bubble.className = 'pet-bubble';
     // 悬浮提示：与气泡同处 this.el 内的绝对定位浮层，位置/翻转由 renderTip 决定，
-    // 样式走 shared 的 TOOLTIP_CSS（renderer.js 注入，与浏览器端同一份）
+    // 样式走 shared 的 TOOLTIP_CSS（renderer.js 注入）。
     this.tip = document.createElement('div');
     this.tip.className = S.TOOLTIP_CLASS;
     this.tip.setAttribute('aria-hidden', 'true');
@@ -211,7 +223,11 @@ class PetSprite {
     this.position();
     if (CONFIG.overlay && window.petBridge?.onFullscreenVisibility) {
       window.petBridge.onFullscreenVisibility((visibility) => {
-        this.el.style.visibility = visibility && visibility[this.pet.id] === true ? 'hidden' : 'visible';
+        this.setFullscreenHidden(visibility && visibility[this.pet.id] === true);
+        if (this.fullscreenHidden) {
+          this.setInteractive(false);
+          this.setTip(false);
+        }
       });
     }
 
@@ -308,6 +324,19 @@ class PetSprite {
   }
 
   dispose() {
+    this.disposed = true;
+    this.pending = null;
+    this.gen++;
+    for (const timer of this.videoReleaseTimers.values()) window.clearTimeout(timer);
+    this.videoReleaseTimers.clear();
+    for (const video of [this.videoA, this.videoB]) {
+      if (!video) continue;
+      video.onended = null;
+      video.onerror = null;
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+    }
     this.ac.abort();
     this.inputRegionMutation.disconnect();
     this.inputRegionResize.disconnect();
@@ -324,6 +353,7 @@ class PetSprite {
     this.stopDragFollow();
     this.stopSquash();
     this.stopMove();
+    window.petBridge?.moveTargets?.forget?.(this.pet.id);
     window.__dshPetLiveStates?.delete(this.pet.id);
     this.el.remove();
   }
@@ -331,7 +361,7 @@ class PetSprite {
   // 更新包围盒左上角（视口相对坐标）并同步原生窗口形状/碰撞站场。
   // 单窗口模式下只改 sprite 的 DOM 位置；上报外扩矩形供原生 setShape 保留提示、气泡空间。
   // 跨进程坐标统一 ×scale 回到屏幕物理像素（§3.5 IPC 收口）。
-  sendBounds(px, py) {
+  sendBounds(px, py, positionClaim = false) {
     this.pos = { x: Math.round(px), y: Math.round(py) };
     window.__dshPetDebug.dragPos = { x: this.pos.x, y: this.pos.y };
     window.__dshPetLiveStates?.set(this.pet.id, {
@@ -370,6 +400,8 @@ class PetSprite {
         toScreen(this.pos.y + this.hitRect.y),
         toScreen(this.hitRect.w),
         toScreen(this.hitRect.h),
+        this.dragState.dragging || !!this.throwState,
+        positionClaim,
       );
     }
     if (CONFIG.overlay) {
@@ -497,9 +529,141 @@ class PetSprite {
     });
   }
 
+  cancelVideoRelease(video) {
+    const timer = this.videoReleaseTimers.get(video);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      this.videoReleaseTimers.delete(video);
+    }
+  }
+
+  setFullscreenHidden(hidden) {
+    if (this.fullscreenHidden === hidden || this.disposed) return;
+    this.fullscreenHidden = hidden;
+    this.el.classList.toggle('fullscreen-hidden', hidden);
+    if (hidden) {
+      const front = this.front === 0 ? this.videoA : this.videoB;
+      this.fullscreenResume = {
+        video: front,
+        currentTime: front?.currentTime || 0,
+        shouldPlay: !!front && !front.paused && !front.ended,
+      };
+      // A fully hidden pet should not keep decoding either crossfade buffer.
+      for (const video of [this.videoA, this.videoB]) {
+        if (!video) continue;
+        video.autoplay = false;
+        video.pause();
+      }
+      // Do not unload sources or clear the current frame; keep resume cheap and flicker-free.
+      for (const timer of this.videoReleaseTimers.values()) window.clearTimeout(timer);
+      this.videoReleaseTimers.clear();
+      if (this.moveRef !== null) cancelAnimationFrame(this.moveRef);
+      this.moveRef = null;
+      return;
+    }
+    this.resumeFromFullscreen();
+  }
+
+  resumeFromFullscreen() {
+    const saved = this.fullscreenResume;
+    const deferred = this.fullscreenDeferredAnimation;
+    this.fullscreenResume = null;
+    this.fullscreenDeferredAnimation = null;
+    for (const video of [this.videoA, this.videoB]) {
+      if (video) video.autoplay = true;
+    }
+
+    const front = this.front === 0 ? this.videoA : this.videoB;
+    const desired = deferred || { anim: this.anim, once: this.once, playbackId: null };
+    const frontMatches =
+      front &&
+      front.dataset.dshPetAnimation === desired.anim &&
+      front.dataset.dshPetOnce === String(desired.once);
+
+    if (this.pendingMove && frontMatches && this.pendingMove.animationName === desired.anim) {
+      this.resolveVisualFrameAfterPaint(front);
+      this.startMoveDrive(front);
+      return;
+    }
+    if (this.pendingMove && this.pendingMove.animationName !== desired.anim) this.pendingMove = null;
+
+    // A hidden-state animation request must play as a fresh request when restored, even if
+    // its asset happens to match the frame that was visible before fullscreen.
+    if (deferred && !this.pendingMove) {
+      this.switchTo(desired.anim, desired.once, desired.playbackId || undefined);
+      return;
+    }
+
+    if (!frontMatches) {
+      this.switchTo(desired.anim, desired.once, desired.playbackId || undefined);
+      return;
+    }
+
+    front.loop = !desired.once;
+    front.onended = desired.once ? () => this.handleEnded() : null;
+    this.resolveVisualFrameAfterPaint(front);
+    if (this.moveDriving && this.moveStep && this.moveRef === null) {
+      this.moveRef = requestAnimationFrame(this.moveStep);
+    }
+    const shouldPlay = !!deferred || !!saved?.shouldPlay || this.moveDriving;
+    if (!shouldPlay) return;
+    if (Number.isFinite(saved?.currentTime) && saved.video === front && front.paused) {
+      try {
+        front.currentTime = saved.currentTime;
+      } catch {}
+    }
+    front
+      .play()
+      .then(() => {
+        if (deferred?.playbackId) {
+          this.playback = deferred.playbackId;
+          this.reportPlayback(deferred.playbackId, 'playing');
+        }
+      })
+      .catch(() => {
+        if (!deferred?.playbackId) return;
+        if (this.playback === deferred.playbackId) this.playback = null;
+        this.reportPlayback(deferred.playbackId, 'failed', 'play-rejected');
+      });
+    if (this.pendingSquash) {
+      this.pendingSquash = false;
+      this.startSquash(front);
+    }
+  }
+
+  releaseInactiveVideo(video) {
+    if (this.fullscreenHidden) {
+      video.pause();
+      return;
+    }
+    this.cancelVideoRelease(video);
+    const timer = window.setTimeout(() => {
+      this.videoReleaseTimers.delete(video);
+      const front = this.front === 0 ? this.videoA : this.videoB;
+      if (
+        this.disposed ||
+        video === front ||
+        video.classList.contains('is-front') ||
+        this.pending?.target === video
+      )
+        return;
+      video.onended = null;
+      video.onerror = null;
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+    }, 260); // 0.18s opacity crossfade + a short release margin.
+    this.videoReleaseTimers.set(video, timer);
+  }
+
   // 双缓冲切换（与浏览器同一套：前台 opacity 切换 + 降级视频清 handler 并停播，防残留 ended 雪崩）
   switchTo(next, nextOnce, playbackId) {
     if (!next) return;
+    if (this.fullscreenHidden) {
+      this.fullscreenDeferredAnimation = { anim: next, once: nextOnce, playbackId: playbackId || null };
+      if (playbackId) this.playback = playbackId;
+      return;
+    }
     const pending = this.pending;
     if (pending && pending.anim === next && pending.once === nextOnce) {
       // 防重命中（单动画点击时目标=当前动画，不重播）：仍消费 Q 弹标记，压当前前台视频，
@@ -517,11 +681,14 @@ class PetSprite {
       return;
     }
     const gen = ++this.gen;
-    this.pending = { anim: next, once: nextOnce, gen };
     const target = this.front === 0 ? this.videoB : this.videoA;
     const el = target;
     if (!el) return;
+    this.cancelVideoRelease(el);
+    this.pending = { anim: next, once: nextOnce, gen, target: el };
     el.src = this.assetBase + encodeURIComponent(next) + (S.ANIMATION_EXT || '.webm');
+    el.dataset.dshPetAnimation = next;
+    el.dataset.dshPetOnce = String(nextOnce);
     el.loop = !nextOnce;
     el.muted = true;
     el.autoplay = true;
@@ -537,6 +704,7 @@ class PetSprite {
         this.pendingMove = null;
       }
       console.warn('[dsh-pet] 素材加载失败 pet=' + this.pet.id + ' anim=' + next + '：' + why + '（已释放本次切换）');
+      this.releaseInactiveVideo(el);
       // 播放回执：这一段点播没能播起来 → 如实回 failed（而不是让调用方干等到 timeout）
       if (playbackId) {
         if (this.playback === playbackId) this.playback = null;
@@ -560,6 +728,7 @@ class PetSprite {
         old.classList.remove('is-front');
         old.onended = null;
         old.pause();
+        this.releaseInactiveVideo(old);
         // 被换下去的那一段若属第三方点播且没播完 → 如实回 cancelled。
         // （"被新点播顶掉"由 host 在受理时直接标记，这里补的是**非点播**打断：
         //   点击 / 拖拽 / 碎碎念 / 余额 / 工作状态 / 空闲回收。）
@@ -571,12 +740,19 @@ class PetSprite {
       this.pending = null;
       this.playback = playbackId || null;
       el.style.transform = this.facing === 'right' ? 'scaleX(-1)' : '';
-      if (this.pendingMove) {
-        this.startMoveDrive(el);
-      } else {
+      if (this.fullscreenHidden) {
+        el.autoplay = false;
+        el.pause();
+        this.fullscreenResume = { video: el, currentTime: el.currentTime || 0, shouldPlay: true };
+      } else if (this.pendingMove) this.startMoveDrive(el);
+      else {
+        if (this.canRelocate()) {
+          el.loop = false;
+          el.onended = () => this.handleEnded();
+        }
         el.play()
           .then(() => {
-            // 只有 play() 兑现才代表确实开始出画；loadeddata 仅表示可解码。
+            // 只有 play() 兑现才代表确实开始出画（loadeddata 只代表可解码）。
             if (playbackId) this.reportPlayback(playbackId, 'playing');
           })
           .catch(() => {
@@ -585,9 +761,9 @@ class PetSprite {
             this.reportPlayback(playbackId, 'failed', 'play-rejected');
           });
       }
-      this.resolveVisualFrameAfterPaint(el);
+      if (!this.fullscreenHidden) this.resolveVisualFrameAfterPaint(el);
       // 点击 Q 弹：等新动画就位后才压（压的是新点击动画的首帧，与浏览器一致）
-      if (this.pendingSquash) {
+      if (this.pendingSquash && !this.fullscreenHidden) {
         this.pendingSquash = false;
         this.startSquash(el);
       }
@@ -630,14 +806,20 @@ class PetSprite {
     const roll = Math.random();
     // 宠物固定（pets[].fixedEnabled）：掷骰时把「转向 / 移动」两档权重按 0 算（与浏览器同一份
     // 决策）——随机链不再让宠物自己翻朝向或走开。右键菜单点播与 /anim 接口不走这里，不受影响。
-    const k = S.rollKind(roll, animationWeights, { fixed: this.pet.fixedEnabled });
+    const forceMove = this.canRelocate();
+    if (forceMove)
+      console.info(
+        '[dsh-pet-move] ' +
+          JSON.stringify({ event: 'forced-move', petId: this.pet.id, reason: 'overlap-yield' }),
+      );
+    const k = forceMove ? 'move' : S.rollKind(roll, animationWeights, { fixed: this.pet.fixedEnabled });
     let next;
     if (k === 'idle') {
       next = S.pick(animations.idle, this.anim);
     } else if (k === 'turn') {
       next = S.pick(animations.turn, this.anim);
     } else if (k === 'move') {
-      const moved = this.tryMove();
+      const moved = this.tryMove(undefined, undefined, { relocate: forceMove });
       if (moved === false) {
         const act = S.pickCategoryAction(animations.categories, animations.idle, this.facing, this.anim);
         next = act.name;
@@ -664,6 +846,31 @@ class PetSprite {
       this.reportPlayback(done, 'ended');
     }
     if (this.dragState.active) return;
+    if (this.moveDriving) {
+      // ended can arrive before the final rAF: commit the exact endpoint before releasing it.
+      if (this.moveDestination) {
+        const { rx, ry } = this.moveDestination;
+        this.sendBounds(rx * VIEW.w - this.halfW, ry * VIEW.h - this.halfH);
+        this.customPos = { rx, ry };
+      }
+      if (this.moveRef !== null) cancelAnimationFrame(this.moveRef);
+      this.moveRef = null;
+      this.moveStep = null;
+      this.moveDriving = false;
+      this.moveDestination = null;
+      this.moveToken++;
+      const el = this.front === 0 ? this.videoA : this.videoB;
+      if (el) {
+        el.onended = null;
+        el.onerror = null;
+      }
+      this.finishMoveTarget('completed');
+      if (this.resumeWorkStatusAnim()) return;
+    }
+    if (this.canRelocate()) {
+      this.playIdle();
+      return;
+    }
     const { animations } = { animations: this.animations };
     // 事件动画播完：回 idle（与 drag/clicks 同分支，不进随机链）；气泡由定时器自动消失，与动画解耦
     const isEvent = S.isEventAnim(animations.events, this.anim);
@@ -752,10 +959,98 @@ class PetSprite {
     return true;
   }
 
+  updateMoveTargets(targets) {
+    this.moveTargets = targets;
+    const own = targets.find((target) => target.petId === this.pet.id);
+    this.needsRelocation = own?.needsMove === true;
+    if (own) this.expectedFinalPosition = { x: own.x, y: own.y, size: own.size };
+    // Let a normal looping clip finish its current cycle so O can reach the next decision.
+    // Working animations retain their lifecycle; relocation waits until work is released.
+    if (this.canRelocate()) {
+      const el = this.front === 0 ? this.videoA : this.videoB;
+      if (el?.loop) {
+        el.loop = false;
+        el.onended = () => this.handleEnded();
+      }
+    }
+  }
+
+  canRelocate() {
+    const working = this.workState && this.workState !== 'success' && this.workState !== 'error';
+    return (
+      this.needsRelocation &&
+      !working &&
+      !this.inputBusy() &&
+      !this.fullscreenHidden &&
+      !this.pendingMove &&
+      !this.moveDriving &&
+      this.throwRef === null &&
+      this.posFollow === null
+    );
+  }
+
+  beginMoveTarget(x, y, kind = 'claim', reason = kind === 'yield' ? 'overlap-yield' : 'movement') {
+    const moveId = String((window.__dshPetMoveSequence = (window.__dshPetMoveSequence || 0) + 1));
+    this.moveTargetId = moveId;
+    this.expectedFinalPosition = { x: toScreen(x), y: toScreen(y), size: toScreen(this.size) };
+    // A yielding move changes its endpoint but keeps O until the broker confirms it is clear.
+    if (kind !== 'yield') this.needsRelocation = false;
+    window.petBridge?.moveTargets?.begin?.(this.pet.id, moveId, this.expectedFinalPosition, kind, reason);
+  }
+
+  finishMoveTarget(reason) {
+    if (!this.moveTargetId) return;
+    const moveId = this.moveTargetId;
+    this.moveTargetId = null;
+    const actual = {
+      x: toScreen(this.pos.x + this.halfW),
+      y: toScreen(this.pos.y + this.halfH),
+      size: toScreen(this.size),
+    };
+    this.expectedFinalPosition = actual;
+    window.petBridge?.moveTargets?.end?.(this.pet.id, moveId, actual, reason);
+  }
+
+  endpointBodyRect(point) {
+    const height = (point.size * 9) / 16;
+    return S.bodyPixelBox({
+      x: point.x - point.size / 2,
+      y: point.y - height / 2,
+      size: point.size,
+      bottomPad: (height * (S.CANVAS_H - S.FEET_Y)) / S.CANVAS_H,
+    });
+  }
+
+  endpointClearance(candidate) {
+    const ownBody = this.endpointBodyRect({
+      x: toScreen(candidate.targetRatio * VIEW.w),
+      y: toScreen(candidate.targetYRatio * VIEW.h),
+      size: toScreen(this.size),
+    });
+    let clearance = Infinity;
+    for (const other of this.moveTargets) {
+      if (other.petId === this.pet.id || other.suspended) continue;
+      const peerBody = this.endpointBodyRect(other);
+      const gapX = Math.max(peerBody.left - ownBody.right, ownBody.left - peerBody.right, 0);
+      const gapY = Math.max(peerBody.top - ownBody.bottom, ownBody.top - peerBody.bottom, 0);
+      const pairClearance =
+        gapX > 0 || gapY > 0
+          ? Math.hypot(gapX, gapY)
+          : -Math.min(
+              ownBody.right - peerBody.left,
+              peerBody.right - ownBody.left,
+              ownBody.bottom - peerBody.top,
+              peerBody.bottom - ownBody.top,
+            );
+      clearance = Math.min(clearance, pairClearance);
+    }
+    return clearance;
+  }
+
   // ---- 漫游（rAF 驱动，动画首尾各 leadSec/tailSec 秒原地不动；几何在 shared/planMove） ----
   // preferredName 传入时固定使用该动画（右键菜单点播移动动画），否则与随机链一致随机选
-  tryMove(preferredName, playbackId) {
-    if (this.moveRef !== null || this.pendingMove || this.throwRef !== null) return true;
+  tryMove(preferredName, playbackId, options = {}) {
+    if (this.moveDriving || this.pendingMove || this.throwRef !== null || this.posFollow !== null) return true;
     const moves = this.animations.moves;
     const actions = moves.actions;
     const preferredDrag = !!preferredName && this.animations.drag.includes(preferredName);
@@ -768,22 +1063,128 @@ class PetSprite {
     if (!chosen) return false;
     const mp = Object.assign({}, moves.default, chosen.params || {});
     const facingDir = this.facing === 'right' ? 1 : -1;
-    const candidate = this.planMoveCandidate(mp, facingDir, preferredDrag ? 'vertical' : 'any');
-    if (!candidate) return false;
+    const manualMove = options.manualMove === true;
+    // A manual menu choice must keep its selected horizontal move animation. Try the
+    // current facing first, then planMoveCandidate tries the opposite facing if this
+    // direction would hit a screen boundary. Automatic moves may still choose either axis.
+    const mode = preferredDrag ? 'vertical' : manualMove ? 'horizontal' : 'any';
+    let candidate = null;
+    // TEMPORARY MOVE DIAGNOSTICS: candidate detail and plan records are for overlap testing.
+    let candidateDiagnostics = [];
+    if (options.relocate) {
+      // Sample a bounded, varied set of legal routes. Cover each route family, facing,
+      // vertical direction, angle and the configured distance range, then score only distinct
+      // screen-safe endpoints.
+      const headings = [];
+      const modes = mode === 'any' ? ['horizontal', 'vertical'] : [mode];
+      const angles = {
+        horizontal: [0, 12, 25, 40],
+        vertical: [75, 80, 85, 90],
+      };
+      const distanceRatios = [0, 0.5, 1];
+      for (const selectedMode of modes) {
+        for (const [angleIndex, angleDegrees] of (angles[selectedMode] || []).entries()) {
+          for (const dir of [facingDir, -facingDir]) {
+            for (const verticalDir of [-1, 1]) {
+              const directionIndex = dir === facingDir ? 0 : 1;
+              const verticalIndex = verticalDir === -1 ? 0 : 1;
+              const distanceRatio = distanceRatios[(angleIndex + directionIndex + verticalIndex) % distanceRatios.length];
+              headings.push({ mode: selectedMode, angleDegrees, dir, verticalDir, distanceRatio });
+            }
+          }
+        }
+      }
+
+      const seen = new Set();
+      candidateDiagnostics = [];
+      let bestClearance = -Infinity;
+      let bestIsFree = false;
+      for (const heading of headings.slice(0, 32)) {
+        const next = this.planMoveCandidate(mp, heading.dir, heading.mode, null, heading);
+        if (!next) continue;
+        const key = `${Math.round(toScreen(next.targetRatio * VIEW.w))},${Math.round(toScreen(next.targetYRatio * VIEW.h))}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const clearance = this.endpointClearance(next);
+        const isFree = clearance >= 0;
+        candidateDiagnostics.push({
+          x: Math.round(toScreen(next.targetRatio * VIEW.w)),
+          y: Math.round(toScreen(next.targetYRatio * VIEW.h)),
+          mode: heading.mode,
+          angleDegrees: heading.angleDegrees,
+          direction: heading.dir,
+          verticalDirection: heading.verticalDir,
+          distanceRatio: heading.distanceRatio,
+          clearancePx: Number.isFinite(clearance) ? Number(clearance.toFixed(3)) : null,
+          free: isFree,
+        });
+        if ((isFree && !bestIsFree) || (isFree === bestIsFree && clearance > bestClearance)) {
+          candidate = next;
+          bestClearance = clearance;
+          bestIsFree = isFree;
+        }
+      }
+      // TEMPORARY MOVE DIAGNOSTICS: remove the detailed candidate scoring record before release.
+      console.info(
+        '[dsh-pet-move] ' +
+          JSON.stringify({
+            event: 'relocation-plan',
+            petId: this.pet.id,
+            reason: 'overlap-yield',
+            candidates: seen.size,
+            foundFreeEndpoint: bestIsFree,
+            fallbackReason: bestIsFree ? null : candidate ? 'all-candidates-overlap' : 'no-legal-endpoint',
+            clearancePx: Number.isFinite(bestClearance) ? Number(bestClearance.toFixed(3)) : null,
+            origin: {
+              x: Math.round(toScreen(this.currentCenterX())),
+              y: Math.round(toScreen(this.currentCenterY())),
+            },
+            chosen: candidate
+              ? {
+                  x: Math.round(toScreen(candidate.targetRatio * VIEW.w)),
+                  y: Math.round(toScreen(candidate.targetYRatio * VIEW.h)),
+                  mode: candidate.isVertical ? 'vertical' : 'horizontal',
+                  direction: candidate.dir,
+                  clearancePx: Number.isFinite(bestClearance) ? Number(bestClearance.toFixed(3)) : null,
+                }
+              : null,
+            evaluated: candidateDiagnostics,
+          }),
+      );
+    } else {
+      candidate = this.planMoveCandidate(mp, facingDir, mode);
+    }
+    if (!candidate) {
+      // TEMPORARY MOVE DIAGNOSTICS: remove this failed-route record before release.
+      console.info(
+        '[dsh-pet-move] ' +
+          JSON.stringify({
+            event: 'move-plan-failed',
+            petId: this.pet.id,
+            reason: options.relocate ? 'no-legal-relocation-endpoint' : 'no-screen-safe-route',
+            moveKind: options.relocate ? 'yield' : 'claim',
+            manualMove,
+            mode,
+            facing: this.facing,
+            x: Math.round(toScreen(this.currentCenterX())),
+            y: Math.round(toScreen(this.currentCenterY())),
+            size: toScreen(this.size),
+            evaluated: candidateDiagnostics,
+          }),
+      );
+      return false;
+    }
     const moveAnimation = preferredDrag
       ? preferredName
       : candidate.isVertical && this.animations.drag.length
         ? S.pick(this.animations.drag)
         : chosen.name;
-    const previousAnimation = this.anim;
     this.pendingMove = {
       ...candidate,
-      moveParams: mp,
-      moveActionName: chosen.name,
-      lockAnimation: preferredDrag,
       animationName: moveAnimation,
-      previousAnimation,
       playbackId: playbackId || null,
+      relocate: options.relocate === true,
+      manualMove,
     };
     this.anim = moveAnimation;
     this.once = true;
@@ -791,21 +1192,47 @@ class PetSprite {
     return moveAnimation;
   }
 
-  planMoveCandidate(mp, preferredDir = this.facing === 'right' ? 1 : -1, mode = 'any') {
+  planMoveCandidate(mp, preferredDir = this.facing === 'right' ? 1 : -1, mode = 'any', origin = null, sample = null) {
     const W = VIEW.w;
     const H = VIEW.h;
     const distScale = this.size / S.PET_REF_WIDTH;
-    const cx = this.currentCenterX();
-    const cy = this.currentCenterY();
+    const cx = Number.isFinite(origin?.cx) ? origin.cx : this.currentCenterX();
+    const cy = Number.isFinite(origin?.cy) ? origin.cy : this.currentCenterY();
     let plan = null;
     let dir = preferredDir;
     const modes =
-      mode === 'any'
-        ? Math.random() < 0.5
-          ? ['vertical', 'horizontal']
-          : ['horizontal', 'vertical']
-        : [mode];
+      mode === 'any' ? (Math.random() < 0.5 ? ['vertical', 'horizontal'] : ['horizontal', 'vertical']) : [mode];
     const directions = [preferredDir, -preferredDir];
+    if (sample) {
+      const selectedMode = sample.mode || mode;
+      const distanceRatio = Number.isFinite(sample.distanceRatio) ? Math.max(0, Math.min(1, sample.distanceRatio)) : 0.5;
+      const minDist = mp.minDist * distScale;
+      const maxDist = mp.maxDist * distScale;
+      const distance = minDist + (maxDist - minDist) * distanceRatio;
+      const candidate = S.planMove({
+        cx,
+        cy,
+        W,
+        H,
+        dir: sample.dir || preferredDir,
+        angleDegrees: sample.angleDegrees,
+        verticalDir: sample.verticalDir,
+        minDist: distance,
+        maxDist: distance,
+        margin: mp.margin,
+        halfW: this.halfW,
+        halfH: this.halfH,
+        sideAllow: this.sideAllow,
+        areas: AREAS,
+      });
+      if (!candidate) return null;
+      const isVertical =
+        Math.abs(candidate.targetYRatio - candidate.startYRatio) >=
+        Math.abs(candidate.targetRatio - candidate.startRatio);
+      if ((selectedMode === 'vertical' && !isVertical) || (selectedMode === 'horizontal' && isVertical)) return null;
+      candidate.isVertical = isVertical;
+      return { ...candidate, dir: sample.dir || preferredDir, leadSec: mp.leadSec, tailSec: mp.tailSec };
+    }
     // Vertical motion is a deliberate near-vertical route (75°–90°); horizontal routes retain
     // the original 0°–45° range. Try both horizontal facings and both vertical signs before giving up.
     for (const selectedMode of modes) {
@@ -851,257 +1278,105 @@ class PetSprite {
 
   startMoveDrive(el) {
     const pm = this.pendingMove;
-    if (!pm || this.moveRef !== null) return;
+    if (!pm || this.moveDriving) return;
     this.pendingMove = null;
     const duration = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 10.09;
     const usesDragAnimation = this.animations.drag.includes(pm.animationName || this.anim);
     const leadSec = usesDragAnimation ? Math.min(pm.leadSec, duration * 0.15) : pm.leadSec;
     const tailSec = usesDragAnimation ? Math.min(pm.tailSec, duration * 0.15) : pm.tailSec;
-    const movePlan = { ...pm, leadSec, tailSec };
     const token = ++this.moveToken;
-    const W = VIEW.w;
-    const H = VIEW.h;
-    const waitEl = el === this.videoA ? this.videoB : this.videoA;
-    const waitFront = waitEl === this.videoA ? 0 : 1;
-    const moveFront = el === this.videoA ? 0 : 1;
-    const moveName = pm.animationName || this.anim;
-    const previousWasMove = this.animations.moves.actions.some((action) => action.name === pm.previousAnimation);
-    const idleFallback = S.pick(this.animations.idle, moveName) || this.animations.idle[0];
-    const waitName = previousWasMove ? idleFallback || moveName : pm.previousAnimation || idleFallback || moveName;
-
-    // Keep the previous non-movement clip visible while arbitration runs. Only show the
-    // selected move clip once a route is granted.
-    el.pause();
+    const { startRatio, startYRatio, targetRatio, targetYRatio } = pm;
+    const travelWindow = Math.max(0.1, duration - leadSec - tailSec);
+    this.moveDriving = true;
+    this.moveDestination = { rx: targetRatio, ry: targetYRatio };
+    const moveKind = pm.relocate ? 'yield' : 'claim';
+    const moveReason = pm.relocate ? 'overlap-yield' : pm.manualMove ? 'manual-movement' : 'automatic-movement';
+    this.beginMoveTarget(targetRatio * VIEW.w, targetYRatio * VIEW.h, moveKind, moveReason);
+    // TEMPORARY MOVE DIAGNOSTICS: remove this detailed route-start record before release.
+    console.info(
+      '[dsh-pet-move] ' +
+        JSON.stringify({
+          event: 'move-drive-start',
+          petId: this.pet.id,
+          moveId: this.moveTargetId,
+          reason: moveReason,
+          kind: moveKind,
+          animation: pm.animationName || this.anim,
+          mode: pm.isVertical ? 'vertical' : 'horizontal',
+          direction: pm.dir,
+          from: { x: Math.round(toScreen(startRatio * VIEW.w)), y: Math.round(toScreen(startYRatio * VIEW.h)) },
+          to: { x: Math.round(toScreen(targetRatio * VIEW.w)), y: Math.round(toScreen(targetYRatio * VIEW.h)) },
+          duration,
+        }),
+    );
+    this.anim = pm.animationName || this.anim;
+    this.once = true;
     el.loop = false;
-    el.onended = null;
-    waitEl.classList.add('is-front');
-    el.classList.remove('is-front');
-    this.front = waitFront;
-    this.anim = waitName;
-    this.once = false;
-    waitEl.loop = true;
-    waitEl.onended = null;
-    waitEl.style.transform = this.facing === 'right' ? 'scaleX(-1)' : '';
-    const moveWaitState = { moveEl: el, waitEl, moveName, waitName, waitReadyHandler: null };
-    this.moveWaitState = moveWaitState;
-    const startWaitAnimation = () => {
-      if (this.moveToken !== token || this.moveWaitState !== moveWaitState) return;
-      waitEl.loop = true;
-      try {
-        waitEl.currentTime = 0;
-      } catch {}
-      waitEl.play().catch(() => {});
+    el.onended = () => this.handleEnded();
+    el.onerror = () => {
+      if (this.moveToken !== token) return;
+      this.stopMove();
+      this.playIdle();
     };
-    if (previousWasMove && idleFallback) {
-      // Consecutive move rolls (especially the 100% test build) must not reuse the
-      // previous run clip as the waiting visual. Load a real idle clip into that buffer.
-      const waitSource = this.assetBase + encodeURIComponent(waitName) + (S.ANIMATION_EXT || '.webm');
-      moveWaitState.waitReadyHandler = () => {
-        waitEl.removeEventListener('loadeddata', moveWaitState.waitReadyHandler);
-        moveWaitState.waitReadyHandler = null;
-        startWaitAnimation();
-      };
-      waitEl.addEventListener('loadeddata', moveWaitState.waitReadyHandler, { once: true });
-      waitEl.onerror = () => {
-        waitEl.onerror = null;
-        console.warn('[dsh-pet] 待机动画加载失败 pet=' + this.pet.id + ' anim=' + waitName);
-      };
-      waitEl.src = waitSource;
-      waitEl.load();
-    } else {
-      startWaitAnimation();
-    }
-
-    const reserve = async (candidate) => {
-      if (!window.petBridge?.reserveMove) return { ok: true, reservationId: null };
-      return window.petBridge.reserveMove(this.pet.id, {
-        // pet:set-bounds reports the package-wide hull-relative position (no VIEW origin),
-        // so routes must use that same coordinate frame for multi-monitor layouts.
-        startX: toScreen(candidate.startRatio * W),
-        startY: toScreen(candidate.startYRatio * H),
-        targetX: toScreen(candidate.targetRatio * W),
-        targetY: toScreen(candidate.targetYRatio * H),
-        size: toScreen(this.size),
-        duration,
-        leadSec: candidate.leadSec,
-        tailSec: candidate.tailSec,
-      });
-    };
-    const beginDrive = (candidate, reservationId) => {
-      if (this.moveToken !== token) {
-        if (reservationId) window.petBridge?.releaseMove?.(this.pet.id, reservationId);
-        return;
-      }
-      if (moveWaitState.waitReadyHandler) {
-        waitEl.removeEventListener('loadeddata', moveWaitState.waitReadyHandler);
-        moveWaitState.waitReadyHandler = null;
-      }
-      waitEl.onerror = null;
-      waitEl.loop = false;
-      waitEl.onended = null;
-      waitEl.pause();
-      waitEl.classList.remove('is-front');
-      el.classList.add('is-front');
-      this.front = moveFront;
-      this.anim = moveName;
-      this.once = true;
-      this.moveWaitState = null;
-      this.moveReservationId = reservationId;
-      this.moveWaiting = false;
-      // The route reservation begins now, so start the movement clip at its first frame.
-      el.loop = false;
-      el.onended = () => this.handleEnded();
-      try {
-        el.currentTime = 0;
-      } catch {}
-      if (!candidate.isVertical) this.facing = candidate.dir > 0 ? 'right' : 'left';
-      el.style.transform = this.facing === 'right' ? 'scaleX(-1)' : '';
-      const { startRatio, startYRatio, targetRatio, targetYRatio, leadSec, tailSec } = candidate;
-      const travelWindow = Math.max(0.1, duration - leadSec - tailSec);
-      el.play()
-        .then(() => {
-          if (pm.playbackId) this.reportPlayback(pm.playbackId, 'playing');
-        })
-        .catch(() => {
-          if (!pm.playbackId) return;
+    if (!pm.isVertical) this.facing = pm.dir > 0 ? 'right' : 'left';
+    el.style.transform = this.facing === 'right' ? 'scaleX(-1)' : '';
+    try {
+      el.currentTime = 0;
+    } catch {}
+    el.play()
+      .then(() => {
+        if (this.moveToken === token && pm.playbackId) this.reportPlayback(pm.playbackId, 'playing');
+      })
+      .catch(() => {
+        if (this.moveToken !== token) return;
+        if (pm.playbackId) {
           if (this.playback === pm.playbackId) this.playback = null;
           this.reportPlayback(pm.playbackId, 'failed', 'play-rejected');
-        });
-      const step = () => {
-        if (this.moveToken !== token) return;
-        const t = el.currentTime || 0;
-        const progress = t <= leadSec ? 0 : t >= duration - tailSec ? 1 : (t - leadSec) / travelWindow;
-        const ratioX = startRatio + (targetRatio - startRatio) * progress;
-        const ratioY = startYRatio + (targetYRatio - startYRatio) * progress;
-        this.sendBounds(ratioX * W - this.halfW, ratioY * H - this.halfH);
-        if (t < duration - tailSec) {
-          this.moveRef = requestAnimationFrame(step);
-        } else {
-          this.moveRef = null;
-          this.customPos = { rx: targetRatio, ry: targetYRatio };
         }
-      };
-      this.moveRef = requestAnimationFrame(step);
-    };
-    const tryReserve = async (candidate) => {
+        this.stopMove();
+        this.playIdle();
+      });
+    const step = () => {
       if (this.moveToken !== token) return;
-      if (!candidate) {
-        abandonMove('没有可用路线');
+      if (this.fullscreenHidden) {
+        this.moveRef = null;
         return;
       }
-      let result = null;
-      try {
-        result = await reserve(candidate);
-        if (this.moveToken !== token) {
-          if (result?.reservationId) window.petBridge?.releaseMove?.(result.reservationId);
-          return;
-        }
-        if (result?.ok) {
-          beginDrive(candidate, result.reservationId || null);
-          return;
-        }
-      } catch (error) {
-        console.warn('[dsh-pet] 移动路线仲裁失败，稍后重试:', String(error?.message || error));
+      const t = el.currentTime || 0;
+      const progress = t <= leadSec ? 0 : t >= duration - tailSec ? 1 : (t - leadSec) / travelWindow;
+      const ratioX = startRatio + (targetRatio - startRatio) * progress;
+      const ratioY = startYRatio + (targetYRatio - startYRatio) * progress;
+      this.sendBounds(ratioX * VIEW.w - this.halfW, ratioY * VIEW.h - this.halfH);
+      if (progress < 1) this.moveRef = requestAnimationFrame(step);
+      else {
+        this.moveRef = null;
+        this.moveStep = null;
+        this.customPos = { rx: targetRatio, ry: targetYRatio };
       }
-      const elapsed = performance.now() - waitStartedAt;
-      if (elapsed >= 3000) {
-        abandonMove('等待路线超过 3 秒');
-        return;
-      }
-      const serverDelay = Number(result?.retryAfterMs) || 240;
-      const backoff = Math.min(700, serverDelay + retries * 90);
-      const delay = Math.round(backoff + Math.random() * 220);
-      retries += 1;
-      window.setTimeout(() => {
-        if (this.moveToken !== token) return;
-        const nextMode = pm.lockAnimation || retries % 2 === 1 ? 'vertical' : 'horizontal';
-        const nextDir = candidate.dir > 0 ? -1 : 1;
-        let next = this.planMoveCandidate(pm.moveParams, nextDir, nextMode);
-        if (!next && !pm.lockAnimation)
-          next = this.planMoveCandidate(pm.moveParams, nextDir, nextMode === 'vertical' ? 'horizontal' : 'vertical');
-        if (!next && !pm.lockAnimation) next = this.planMoveCandidate(pm.moveParams, -nextDir, 'any');
-        if (!next) next = candidate;
-        next.animationName = pm.lockAnimation
-          ? pm.animationName
-          : next.isVertical && this.animations.drag.length
-            ? S.pick(this.animations.drag)
-            : pm.moveActionName;
-        const nextUsesDragAnimation = this.animations.drag.includes(next.animationName);
-        next.leadSec = nextUsesDragAnimation ? Math.min(pm.leadSec, duration * 0.15) : pm.leadSec;
-        next.tailSec = nextUsesDragAnimation ? Math.min(pm.tailSec, duration * 0.15) : pm.tailSec;
-        if (next.animationName !== moveName) {
-          // The route family changed (vertical <-> horizontal): load its matching animation, then
-          // continue arbitration with the original 3-second deadline and retry count.
-          this.stopMove();
-          this.pendingMove = {
-            ...next,
-            leadSec: pm.leadSec,
-            tailSec: pm.tailSec,
-            moveParams: pm.moveParams,
-            moveActionName: pm.moveActionName,
-            lockAnimation: pm.lockAnimation,
-            animationName: next.animationName,
-            previousAnimation: pm.previousAnimation,
-            playbackId: pm.playbackId,
-            arbitrationStartedAt: waitStartedAt,
-            retries,
-          };
-          this.anim = next.animationName;
-          this.once = true;
-          this.switchTo(next.animationName, true, pm.playbackId);
-          return;
-        }
-        tryReserve(next);
-      }, delay);
     };
-    const abandonMove = (reason) => {
-      if (this.moveToken !== token) return;
-      console.info('[dsh-pet] ' + reason + '，放弃本次移动并恢复动作循环');
-      if (pm.playbackId) {
-        if (this.playback === pm.playbackId) this.playback = null;
-        this.reportPlayback(pm.playbackId, 'failed', 'route-unavailable');
-      }
-      this.stopMove();
-      const fallback = S.pick(this.animations.idle, moveName) || this.animations.idle[0];
-      if (fallback) this.playOnce(fallback);
-      else this.playIdle();
-    };
-    const waitStartedAt = pm.arbitrationStartedAt || performance.now();
-    let retries = Number(pm.retries) || 0;
-    // Keep a non-movement animation visible while routes are arbitrated.
-    this.moveWaiting = true;
-    tryReserve(movePlan);
+    this.moveStep = step;
+    this.moveRef = requestAnimationFrame(step);
   }
 
   stopMove() {
     this.pendingMove = null;
     this.moveToken++;
-    if (this.moveWaitState) {
-      this.moveWaitState.moveEl.loop = false;
-      this.moveWaitState.moveEl.onended = null;
-      if (this.moveWaitState.waitReadyHandler) {
-        this.moveWaitState.waitEl.removeEventListener('loadeddata', this.moveWaitState.waitReadyHandler);
-      }
-      this.moveWaitState.waitEl.onerror = null;
-      this.moveWaitState.waitEl.loop = false;
-      this.moveWaitState.waitEl.onended = null;
-      this.moveWaitState = null;
-    } else if (this.moveWaiting) {
+    if (this.moveDriving) {
+      this.customPos = { rx: (this.pos.x + this.halfW) / VIEW.w, ry: (this.pos.y + this.halfH) / VIEW.h };
       const el = this.front === 0 ? this.videoA : this.videoB;
-      if (el) el.loop = false;
-      this.moveWaiting = false;
+      if (el) {
+        el.onended = null;
+        el.onerror = null;
+        el.loop = false;
+        el.pause();
+      }
     }
-    this.moveWaiting = false;
-    if (this.moveReservationId) {
-      window.petBridge?.releaseMove?.(this.moveReservationId);
-      this.moveReservationId = null;
-    }
-    if (this.moveRef !== null) {
-      cancelAnimationFrame(this.moveRef);
-      this.moveRef = null;
-    }
-    // 位置指令的弹簧也是一种"自主移动"：任何停走路的地方都该把它一并停掉，否则两套运动系统会
-    // 同时改窗口位置（用户拖拽 / 抛掷 / 事件动画 / 菜单点播都会走到这）。
+    this.moveDriving = false;
+    this.moveDestination = null;
+    this.moveStep = null;
+    this.finishMoveTarget('interrupted');
+    if (this.moveRef !== null) cancelAnimationFrame(this.moveRef);
+    this.moveRef = null;
     this.stopPosFollow();
   }
 
@@ -1146,12 +1421,14 @@ class PetSprite {
    *  同时清速度状态 throwState——否则「抓住后温柔放下」会残留最后一次飞行速度，
    *  静止的宠物点一下就误判为飞行中。点击积分用的飞行动态由 onPointerDown 提前记录。 */
   stopThrow() {
+    const wasFlying = !!this.throwState;
     this.throwToken++;
     if (this.throwRef !== null) {
       cancelAnimationFrame(this.throwRef);
       this.throwRef = null;
     }
     this.throwState = null;
+    if (wasFlying) this.sendBounds(this.pos.x, this.pos.y);
   }
 
   /** 抛掷驱动：重力 + 边缘反弹 + 落地摩擦，落定后写入 customPos */
@@ -1290,6 +1567,7 @@ class PetSprite {
       if (res.atRest) {
         this.throwRef = null;
         this.throwState = null;
+        this.sendBounds(this.pos.x, this.pos.y);
         this.customPos = { rx: (this.pos.x + this.halfW) / VIEW.w, ry: (this.pos.y + this.halfH) / VIEW.h };
         window.__dshPetDebug.lastDragRelease = { x: this.pos.x, y: this.pos.y };
         console.info(
@@ -1333,7 +1611,7 @@ class PetSprite {
    * `mode` 三选一——`instant` 一帧到位；`spring` 走拖拽那套过阻尼弹簧（S.springStep）；
    * `line` 在 `duration` 毫秒里**直线**走完（`duration <= 0` 等同 instant）。
    * 用户正按着宠物（`dragState.active` 含点击与拖拽）时**整拍丢弃**——手指底下的东西不该跑；
-   * 丢弃是静默的（接口早已回过 ok，与浏览器端同一契约）。
+   * 丢弃是静默的（接口早已回过 ok）。
    * 归一化空间 = **全部显示器工作区并集的外接矩形**；落点会被夹到 AREAS 并集（空洞不可达）。
    */
   moveToCenter(rx, ry, mode, duration) {
@@ -1345,7 +1623,7 @@ class PetSprite {
     // （原文"松手无任何边界夹取"），不夹的话落进空洞的坐标会把宠物放进看不见的地方。
     // 注意：鼠标拖拽到不了那里**不是因为代码在拦**，而是光标物理上出不去屏幕——所以位置接口
     // 必须自己补这道守卫。判据与 relayout() 完全一致：把**身体中心**夹到 AREAS 并集。
-    // 浏览器端 0~1 就是视口、没有空洞，那边不走本函数。
+    // 视口坐标范围没有显示器空洞时不需要此函数。
     const c = S.clampPointToRegion(AREAS, rx * VIEW.w, ry * VIEW.h);
     // 夹取后的**比例**才是要写进 customPos 的值：position() 会按它重算窗口位置，
     // 存原始 rx/ry 等于把刚做的夹取撤销掉。
@@ -1353,9 +1631,11 @@ class PetSprite {
     const fy = c.y / VIEW.h;
     const px = c.x - this.halfW;
     const py = c.y - this.halfH;
+    this.beginMoveTarget(c.x, c.y, 'claim', 'position-command');
     if (mode === 'instant' || (mode === 'line' && duration <= 0)) {
       this.sendBounds(px, py);
       this.customPos = { rx: fx, ry: fy };
+      this.finishMoveTarget('completed');
       return;
     }
     const token = ++this.posFollowToken;
@@ -1372,6 +1652,7 @@ class PetSprite {
           this.posFollow = null;
           this.sendBounds(px, py);
           this.customPos = { rx: fx, ry: fy };
+          this.finishMoveTarget('completed');
           return;
         }
         this.sendBounds(fromX + (px - fromX) * p, fromY + (py - fromY) * p);
@@ -1400,6 +1681,7 @@ class PetSprite {
         this.posFollow = null;
         this.sendBounds(px, py);
         this.customPos = { rx: fx, ry: fy };
+        this.finishMoveTarget('completed');
         return;
       }
       this.posFollow = requestAnimationFrame(step);
@@ -1417,7 +1699,7 @@ class PetSprite {
     this.startThrow(this.pos.x, this.pos.y, v.vx, v.vy);
   }
 
-  /** 被撞回调（跨窗碰撞 broker 转发）：停当前动作，从落点以新初速抛出去（全复用现有物理） */
+  // ---- 位置 / 抛掷指令（POST /position、POST /throw；与浏览器 pet.ts 同构）----
   onDeskHit(vx, vy) {
     this.stopMove();
     this.stopDragFollow();
@@ -1726,7 +2008,9 @@ class PetSprite {
     queueMicrotask(() => {
       overlayInteractiveUpdatePending = false;
       const aggregate = sprites.some(
-        (sprite) => sprite.pointerOnBody || sprite.dragState.active || sprite.menuOpen || sprite.chatOpen,
+        (sprite) =>
+          !sprite.fullscreenHidden &&
+          (sprite.pointerOnBody || sprite.dragState.active || sprite.menuOpen || sprite.chatOpen),
       );
       window.petBridge?.setInteractive(aggregate);
     });
@@ -1748,7 +2032,7 @@ class PetSprite {
 
   /**
    * 悬浮提示渲染：文本 = 宠物显示名（host 已保证 name = rawName || id，不会空）；
-   * 位置 = 光标右下（装不下自动翻边），摆位判据与浏览器端共用 shared 的 tooltipPlacement。
+   * 位置 = 光标右下（装不下自动翻边），摆位判据使用 shared 的 tooltipPlacement。
    *
    * 坐标要绕一次：光标存的是**视口坐标**（this.tipCursor），而提示是 position:fixed、
    * DOM 坐标相对**窗口**，所以这里减掉窗口原点（= 宠物包围盒左上角 − 四周余量）。
@@ -1897,11 +2181,10 @@ class PetSprite {
       { label: '碎碎念', action: 'whisper' },
       { label: '对话', action: 'chat' },
       { label: '回到初始位置', action: 'home' },
-      // 显示位置（仅网页/仅桌面/两者/都不）：改这只宠物的 display 配置 + 宿主重载生效。
-      // 与浏览器端注入的是**同一份**子菜单（shared 的 displayMenuBranch），两端文案/取值不会漂移。
+      // 显示位置（仅桌面/不显示）：改这只宠物的 display 配置 + 宿主重载生效。
       // 为什么不就地关窗/开窗：桌面宠物共用一个 Electron 进程，窗口是进程启动时按 DSH_PET_PETS
       // 一次性建的——就地增删窗口既改不了磁盘配置（下次启动又回来）也改不了窗口数量。
-      S.displayMenuBranch({ standalone: STANDALONE }),
+      S.displayMenuBranch(),
     );
     const tree = tools.concat(S.buildMenuTree(this.animations));
     // 维护操作固定放在「动作」分支之后，退出项只存在于独立版。
@@ -1921,7 +2204,7 @@ class PetSprite {
       y: e.clientY,
       // 只允许在「窗口 ∩ 工作区」内显示：宠物贴边时外扩余量伸出屏幕，菜单走进那里会被 OS 裁掉（#41）
       clamp: this.visibleClampRect(),
-      onAction: (leaf) => this.onMenuAction(leaf),
+      onAction: (leaf) => this.onMenuAction(leaf, { fromContextMenu: true }),
       // 菜单被点外/Esc 关闭（非菜单项路径）：同样复位可交互标记，恢复命中区判定
       onClose: () => {
         this.menuOpen = false;
@@ -1934,7 +2217,7 @@ class PetSprite {
     this.syncInputRegions(); // mountContextMenu 完成布局后才能读取菜单矩形
   }
 
-  onMenuAction(leaf) {
+  onMenuAction(leaf, options = {}) {
     this.closeMenu();
     if (!leaf || typeof leaf !== 'object') return;
     if (leaf.action === 'open-settings') {
@@ -1982,12 +2265,14 @@ class PetSprite {
     }
     // 点播移动动画：走真实移动（与随机游走同一套：边界检查 / 随机距离 / leadSec·tailSec / dir），
     // 仅"选哪个动画"由菜单决定；挪不动（false）退化纯播放
-    if (
-      this.animations.moves.actions.some((a) => a.name === leaf.anim) ||
-      this.animations.drag.includes(leaf.anim)
-    ) {
-      const moved = this.tryMove(leaf.anim, playbackId);
+    // Stop position following as well as autonomous movement before a new interaction takes over.
+    if (this.animations.moves.actions.some((a) => a.name === leaf.anim) || this.animations.drag.includes(leaf.anim)) {
+      const moved = this.tryMove(leaf.anim, playbackId, {
+        manualMove: options.fromContextMenu === true,
+      });
       if (moved === false) this.playOnce(leaf.anim, playbackId);
+      // moved === true = 已有移动/抛掷在进行中（tryMove 提前返回，**根本没换源**）：
+      // 本段点播不会真的播起来 → 如实回 failed/busy，而不是让调用方干等到 timeout
       else if (moved === true && playbackId) this.reportPlayback(playbackId, 'failed', 'busy');
       return;
     }
@@ -2010,7 +2295,7 @@ class PetSprite {
   // （展示走 showBalanceNow/showBalanceNotice 同一路径）。
   // 注意这里不再直接拉余额：数据只有一个出口（S），菜单只负责"让它刷新"。
   // **不做 balanceEnabled 门控**（菜单项也无条件显示）：手动请求不受开关限制——开关只关自动轮询与档位动画，
-  // 关掉余额的宠物被点一次菜单也该看到数据（与浏览器端一致）。
+  // 关掉余额的宠物被点一次菜单也该看到数据。
   showBalanceFromMenu() {
     S.postAction(BALANCE_URL + '?pet=' + encodeURIComponent(this.pet.id))
       .then((ok) => {
@@ -2093,12 +2378,12 @@ class PetSprite {
     });
   }
 
-  // 「显示位置」菜单：改**这一只**宠物的 display（仅网页/仅桌面/两者/都不）—— 写它自己的配置，
+  // 「显示位置」菜单：改**这一只**宠物的 display（仅桌面/不显示）——写它自己的配置，
   // 再由宿主重载生效。取值直接来自菜单项（shared 的 displayMenuBranch），渲染端不做任何推导：
   // 当前状态以配置为准，推导只会多一处可能与真相不符的猜测（旧实现的 both→web 就是这种猜测）。
   // 为什么不在渲染端就地关窗/开窗：桌面宠物共用一个 Electron 进程，窗口是进程启动时按 DSH_PET_PETS
   // 一次性建的——就地增删窗口既改不了磁盘配置（宿主下次重载它又回来），也改不了窗口数量。
-  // 与 reloadDesktop 同一处境：选"仅网页/都不"时本进程就会在重载中被换掉，响应可能永远不回
+  // 与 reloadDesktop 同一处境：选"不显示"时本进程就会在重载中被换掉，响应可能永远不回
   // （宿主杀进程时回调地址已失效），故不 await、不重试，失败只记日志。
   setPetDisplay(display) {
     if (!display) return;
@@ -2114,7 +2399,7 @@ class PetSprite {
   renderBubble() {
     // 气泡单槽：同一时刻只显示一个（优先级：终态任务 > 碎碎念/对话 > 余额 > 非终态任务）。
     // 为什么终态任务不让位：完成/失败气泡只活 10s，被事件顶掉就彻底看不到了；非终态任务气泡
-    // 常驻（不设自动收起），让位 10s 零损失。与浏览器 src/client/pet.ts 的单槽优先级同一套。
+    // 常驻（不设自动收起），让位 10s 零损失；优先级由桌面端单槽规则统一处理。
     // 工作气泡与碎碎念同款弹窗样式：宽度自适应 + 自动换行（is-whisper：正常 white-space、宽随内容）
     // 配图标记交给 CSS：带图时取消 min-width（样式在 shared 的 MEME_BUBBLE_CSS，两端同一份）。
     // 图片 URL 与视频同规则：传 BASE 前缀（桌面是 file:// 页面，必须绝对地址）

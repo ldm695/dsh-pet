@@ -2,8 +2,8 @@
 // animations / animationWeights / pets）。运行时（浏览器 PetCard / 桌面 sprite /
 // 设置页）直接使用这套结构，不额外造转换后的类型。
 //
-// 本目录（src/shared）是浏览器 bundle 与桌面 shared-core（构建产物）共用的
-// 纯逻辑层：无 React / DOM 依赖，两边各有一层薄壳做渲染与输入绑定。
+// 本目录（src/shared）为 Windows EXE 的 Electron renderer 与桌面 shared-core
+// 共用的纯逻辑层：无 React / DOM 依赖，渲染与输入绑定由 Electron renderer 负责。
 
 /** 支持的角落 */
 export type Corner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
@@ -17,11 +17,7 @@ export interface Rect {
 }
 
 /**
- * 宠物的显示位置（四个值，必填）：
- * - web     = 只显示在浏览器 overlay
- * - desktop = 只显示在桌面模式（Electron 透明窗）
- * - both    = 两者都显示
- * - none    = 都不显示（保留配置但不参与显示）
+ * 桌宠显示位置。旧配置中的 `web` 和 `both` 会在 host 入口处迁移为 `none` / `desktop`。
  */
 export type PetDisplay = 'web' | 'desktop' | 'both' | 'none';
 
@@ -109,7 +105,7 @@ export interface Pet {
    *  （余额/碎碎念/工作状态）、点击回应与拖拽一律照常——用户主动触发的不受此限制。
    *  缺失默认 false（保持原行为：会自己走、会自己翻） */
   fixedEnabled: boolean;
-  /** 显示位置（web/desktop/both/none，必填）：缺失即配置错误，代码不做兜底 */
+  /** 显示位置（desktop/none，必填）：缺失即配置错误，代码不做兜底 */
   display: PetDisplay;
   position: { corner: Corner; marginX: number; marginY: number };
   animations?: Animations;
@@ -182,7 +178,7 @@ export interface FontConfig {
 
 /** config.jsonc 全集——运行时直接使用（ANIM 即本类型） */
 export interface ClientConfig {
-  /** 系统通知总开关：true=对话完成/生成失败/输出截断/权限申请/用户选择时弹出系统通知；缺失即配置错误 */
+  /** DSH 通知总开关：控制 DSH 工作流事件与桌宠对话回复的系统通知；缺失即配置错误 */
   notificationsEnabled: boolean;
   /** 碎碎念配图开关：true=碎碎念每次从表情包池随机抽 1 张连同文本显示（碎碎念无上下文，故随机） */
   whisperImageEnabled: boolean;

@@ -31,38 +31,38 @@
  *
  * 本模块是 host 自包含实现（不 import src/shared —— DSH 单文件加载约束）；
  * 浏览器/桌面侧的对应纯逻辑（拉取、拍平、比对）在 src/shared/state.ts。
+ * `../shared/state-contract` 仅提供类型声明，全部通过 `import type` 引用，不会进入运行时 bundle。
  */
 
-/** 一个叶子：计数器 + 载荷（data 为 null = 还没有数据） */
-export interface StateLeaf {
-  counter: number;
-  data: unknown;
-}
+import type {
+  PetLeafName as SharedPetLeafName,
+  StateLeaf,
+  StateSectionName,
+  StateStoreSnapshot,
+} from '../shared/state-contract';
+
+export type { StateLeaf } from '../shared/state-contract';
 
 /** 全局段（所有端共享一份）。
  *  `config` 是**纯信号叶子**：`data` 恒为 `{}`，只看 `counter`——它变了就说明配置被写过，
  *  消费端据此重拉 `GET /config`（配置本体太大，不能塞进每秒一次的 /state）。
  *  当前只有 `POST /pet-display` 写它：那是唯一一个**不是发起页面自己**的配置改动
- *  （桌面端右键改显示位置），浏览器端只能靠这个信号知道。
+ *  （桌面端右键改显示位置），渲染端通过版本号获知变化。
  *  保存 / 同步配置（PUT / POST /config）**不写**——它们的调用方自己就拿到了成品聚合。 */
-export type SectionName = 'balance' | 'workStatus' | 'notify' | 'config';
+export type SectionName = StateSectionName;
 
 /** 每宠物段（say = 要说的话；anim = 要播的动画名；position = 要挪到的位置；throw = 要给的初速度）。
  *  后两个是**指令**（host → 前端），与 say/anim 同族：前端读到即执行，不往它们写任何东西。 */
-export type PetLeafName = 'say' | 'anim' | 'position' | 'throw';
+export type PetLeafName = SharedPetLeafName;
 
 /** S 的完整形态（GET /state 的响应体）。
  *  `counter` = 整份 S 的版本号，就是"最后一次写入的编号"（见类里的 `last`）。
  *  它是**顶层的**、不是叶子：调用方拿它当 `?since=` 回传，用来表达"我手里这份是哪个版本"。 */
-export interface PollState {
-  counter: number;
-  sections: Record<SectionName, StateLeaf>;
-  pets: Record<string, Record<PetLeafName, StateLeaf>>;
-}
+export type PollState = StateStoreSnapshot;
 
 /**
  * `?timeout=` 上限（ms）：挂起等待的封顶时长，防止调用方把连接挂死。
- * 与 ./playback 的 `MAX_PLAYBACK_WAIT_MS` **同值同因**：DSH WebServer 是否对长期持有的响应
+ * 与 ./playback 的 `MAX_PLAYBACK_WAIT_MS` **同值同因**：本机 HTTP 服务是否对长期持有的响应
  * 设了空闲超时**尚未核实**，先压在 10s。核实后两处一起调。
  */
 export const MAX_STATE_WAIT_MS = 10 * 1000;
@@ -160,7 +160,7 @@ export class PollStateStore {
   }
 
   /**
-   * 当前 S（GET /state 的响应体）。
+   * 当前状态存储快照（HTTP 层会补充传输能力标记）。
    * 返回的 sections 是浅拷贝、pets 是新建对象——叶子对象本身共享，但写入永远整体替换，
    * 所以消费端不会读到写了一半的叶子。
    */

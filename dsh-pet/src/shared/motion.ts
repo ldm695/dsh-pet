@@ -1,6 +1,6 @@
 // 移动几何与角落定位：纯计算（无 DOM / ref），可独立单测。
 // 坐标语义：移动规划归一化为视口比例（ratio），px 换算由调用方（rAF 驱动 / customPos）完成；
-// 角落定位返回宠物根节点左上角的像素坐标（浏览器 overlay 用 CSS 同语义，桌面模式用它摆放 sprite）。
+// 角落定位返回宠物根节点左上角的像素坐标，桌面模式用它摆放 sprite。
 import { randomBetween } from './pickers';
 import { rectAtPoint } from './displays';
 import type { Corner, Rect } from './types';
@@ -20,7 +20,7 @@ export interface MovePlan {
  *
  *  areas 传入时（桌面多显示器）边界改判**工作区并集**而不是视口外接矩形：落点的身体两侧
  *  各留 margin 后仍须落在某块屏上。缝隙两侧都有屏 ⇒ 可自由走过去（允许骑缝）；外接矩形里的
- *  空洞没有屏 ⇒ 走不进去。不传时按 W/H 单矩形判定，浏览器 overlay 行为逐位不变。 */
+ *  空洞没有屏 ⇒ 走不进去。不传时按 W/H 单矩形判定。 */
 export const planMove = (o: {
   cx: number;
   cy: number;
@@ -107,7 +107,7 @@ export const planMove = (o: {
 
 /**
  * 角落 + 边距 → 宠物根节点左上角像素坐标。
- * 与浏览器 overlay 的 CSS 角落语义一致：
+ * 按统一的角落定位语义计算：
  *   top-left     = left:marginX, top:marginY
  *   top-right    = right:marginX, top:marginY
  *   bottom-left  = left:marginX, bottom:marginY
@@ -116,7 +116,7 @@ export const planMove = (o: {
  *
  * area 传入时角落取**那块屏**而不是视口外接矩形。多显示器不规则布局下外接矩形的角落可能
  * 压根不属于任何显示器（实测右倒 T 型双屏：top-left 落在主屏上方的空洞里，配了该角落的宠物
- * 开机即隐身），所以桌面端必须传主屏工作区。不传时按 W/H，浏览器 overlay 行为不变。
+ * 开机即隐身），所以桌面端必须传主屏工作区。不传时按 W/H 单矩形计算。
  */
 export const anchorPixel = (o: {
   corner: Corner;
