@@ -6,7 +6,7 @@
  */
 export type StateSectionName = 'balance' | 'workStatus' | 'notify' | 'config';
 
-export type PetLeafName = 'say' | 'anim' | 'position' | 'throw';
+export type PetLeafName = 'say' | 'anim' | 'position' | 'throw' | 'lock';
 
 /** A versioned state leaf. `data: null` means the leaf has not been written. */
 export interface StateLeaf<T = unknown> {

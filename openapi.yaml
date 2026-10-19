@@ -243,6 +243,7 @@ paths:
           指定模型生成失败时会**自动回落到当前对话的模型**重试一次。
       parameters:
         - $ref: "#/components/parameters/PetIdQuery"
+        - $ref: "#/components/parameters/SurfaceQuery"
       responses:
         "200":
           description: |
@@ -276,11 +277,8 @@ paths:
         - `text` 必填，`trim()` 后不得为空；
         - **不设长度限制，也不限频**：投喂是显式的调用方行为，内容与频率都由调用方自己负责，
           宿主不做静默丢弃、截断或排队；
-        - `pet` 必须是一只真实存在的桌宠；缺省时落到当前桌宠，仍为空则兜底 `main`；
-        - `image` 只接受**该桌宠条目表情包池内**的名称（即该条目 `memes` 里、且在其表情包目录链
-          —— `pet/<素材根>-memes/`（独占）或 `memes/` → 包内 `assets/memes/` ——里真实存在的键）。
-          传入外部 URL 或池外名称一律拒绝——前端因此永远不会去加载任意外部地址
-          （与对话选图共用同一份校验）；
+        - `pet` 必须显式指定为当前配置中存在的桌宠 id；缺省或不存在时返回 `pet-required` / `unknown-pet`；
+        - `image` 与 `url` 二选一：`image` 只接受该桌宠条目表情包池内真实存在的名称；`url` 接受完整 HTTP/HTTPS 地址，宿主不代理或预取；
         - `duration` 可选，气泡显示时长（毫秒）。缺省 `10000`；**`0` 是合法值**，字面意思
           「不显示」（请求照常受理，只是不渲染）；负数 / `NaN` / `Infinity` / 非数字 → `bad-request`。
           **不设上限**——和内容、频率一样，由调用方自己负责；
@@ -300,13 +298,13 @@ paths:
       parameters:
         - name: pet
           in: query
-          required: false
+          required: true
           description: |
-            目标桌宠 id。**缺省时落到当前桌宠**（宿主内部按已选/首个有效桌宠解析），
-            仍无法确定时兜底 `main`。指定的 id 不存在 → `ok: false` + `reason: unknown-pet`。
+            目标桌宠 id。必须指定一个当前配置中存在的 id；不会回退到列表第一只宠物。
           schema:
             type: string
           example: main
+        - $ref: "#/components/parameters/SurfaceQuery"
       requestBody:
         required: true
         content:
@@ -323,8 +321,13 @@ paths:
                   description: |
                     可选配图**名称**（配置 `memes` 的键 = 图文件名去扩展名，不含路径）。
                     必须在该桌宠条目的 `memes` 里、且在其表情包目录链里真实存在，否则 `ok: false` +
-                    `reason: unknown-image`。不接受 URL。
+                    `reason: unknown-image`。
                   example: 可爱
+                url:
+                  type: string
+                  format: uri
+                  pattern: '^https?://'
+                  description: 外部配图完整 URL；与 `image` 互斥，仅接受 HTTP/HTTPS，宿主不代理或预取。
                 duration:
                   type: number
                   minimum: 0
@@ -404,6 +407,7 @@ paths:
         **无请求体。** 动作端点，只回 `{ ok }`；要确认效果请读 `/state` 的 `pets.<id>.say`。
       parameters:
         - $ref: "#/components/parameters/PetIdQuery"
+        - $ref: "#/components/parameters/SurfaceQuery"
       responses:
         "200":
           description: |
@@ -429,15 +433,13 @@ paths:
         （桌面 `sprite.onMenuAction`），所以镜像修正（文字类朝右时
         先强制朝左）、移动类走真实位移、其余播一遍这些语义天然一致。
 
-        名字写进 `pets.<id>.anim`，消费端在 1 秒内轮询发现 `counter` 变化后换源播放。
-        **动画名即素材文件名**（`/dsh-pet-7340/thumb/<素材根>/<名字>.webm`），所以名字必须是
-        该宠物 `animations` 配置里菜单能点到的名字之一——播放端对不存在的名字没有兜底
-        （404 → 加载失败 → 表现为"点了没反应"），因此由宿主在写入前拦下。
+        写入 `pets.<id>.anim` 后，消费端在状态变化时开始播放。
+        调用方必须提供池内的 `name` 或远程 `url`，二者只能选择一个；`facing` 可选。
 
         **校验**（任何一条不通过都返回 HTTP 200 + `ok: false`）：
 
-        - `name` 必填，`trim()` 后不得为空，且必须在该宠物的动画池内；
-        - `pet` 必须是一只真实存在的桌宠；缺省时落到当前桌宠，仍为空则兜底 `main`。
+        - `name` 与 `url` 必须且只能提供一个；`name` 必须在该宠物的动画池内，`url` 只接受 HTTP/HTTPS；
+        - `pet` 必须是一只真实存在的桌宠；
 
         **多宠物：动画池是按「条目」分的，不是全局一份**
 
@@ -459,30 +461,21 @@ paths:
       parameters:
         - name: pet
           in: query
-          required: false
+          required: true
           description: |
-            目标桌宠 id。缺省时落到当前桌宠；仍无法确定时兜底 `main`。
+            目标桌宠 id，必须是当前配置中存在的桌宠。
             指定的 id 不存在 → `ok: false` + `reason: unknown-pet`。
-            **多宠物时建议显式传**——缺省落到的是"当前桌宠"，未必是你要点播的那只；
             而名字必须在**这只宠物所属条目**的动画池内（见上）。
           schema:
             type: string
           example: main
+        - $ref: "#/components/parameters/SurfaceQuery"
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [name]
-              properties:
-                name:
-                  type: string
-                  description: |
-                    要播放的动画名。必须是该宠物 `animations` 配置里菜单可点到的名字
-                    （`idle` / `turn` / `drag` / `clicks` / `moves.actions` / `categories` /
-                    `events` 这七类池子的并集），否则 `ok: false` + `reason: unknown-animation`。
-                  example: 东张西望
+              $ref: "#/components/schemas/Anim"
             examples:
               turn:
                 summary: 播一段转向动画
@@ -492,6 +485,11 @@ paths:
                 summary: 播一段移动动画（会真的走过去，与菜单一致）
                 value:
                   name: 螃蟹走路
+              remote:
+                summary: 播放外部托管的动画并指定朝向
+                value:
+                  url: https://example.com/animation.webm
+                  facing: right
       responses:
         "200":
           description: |
@@ -516,6 +514,93 @@ paths:
                   - $ref: "#/components/schemas/FailureResponse"
         "400":
           description: '请求体不是合法 JSON（`{ "error": "invalid JSON body" }`）'
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /dsh-pet-7340/lock:
+    post:
+      tags: [Action]
+      operationId: acquirePetLock
+      summary: 申请或续期单只桌宠的独占控制锁
+      description: |
+        锁定期间停止该桌宠的自动动画和自动事件；显式动作可通过 `lock` 参数继续控制。
+        不带 `lockId` 时申请新锁，带当前 `lockId` 时续期。默认时长 2 分钟，范围 1 秒至 30 分钟。
+        用户点击或拖动桌宠、隐藏桌宠或关闭宿主时会释放锁。锁保存在宿主内存中，宿主重启后失效。
+      parameters:
+        - $ref: "#/components/parameters/PetIdQuery"
+        - $ref: "#/components/parameters/SurfaceQuery"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lockId:
+                  type: string
+                  description: 省略时申请新锁；提供当前锁编号时续期。
+                ttl:
+                  type: number
+                  minimum: 1000
+                  maximum: 1800000
+                  description: 锁时长（毫秒），默认 120000。
+      responses:
+        "200":
+          description: |
+            锁已取得/续期，或以 `ok: false` 返回业务失败。
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/LockResponse"
+                  - $ref: "#/components/schemas/FailureResponse"
+        "400":
+          description: 请求体不是合法 JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /dsh-pet-7340/lock/release:
+    post:
+      tags: [Action]
+      operationId: releasePetLock
+      summary: 释放桌宠独占控制锁
+      description: |
+        持锁者提交 `lockId` 释放；桌面渲染端在用户接管时提交 `{ "force": true }`。
+        释放请求不需要 `surface`，以便宠物被隐藏后仍能清锁。当前无锁时幂等返回成功。
+      parameters:
+        - $ref: "#/components/parameters/PetIdQuery"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lockId:
+                  type: string
+                force:
+                  type: boolean
+                  const: true
+      responses:
+        "200":
+          description: |
+            锁已释放，或以 `ok: false` 返回业务失败。
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/OkResponse"
+                  - $ref: "#/components/schemas/FailureResponse"
+        "400":
+          description: 请求体不是合法 JSON
           content:
             application/json:
               schema:
@@ -571,14 +656,14 @@ paths:
       parameters:
         - name: pet
           in: query
-          required: false
+          required: true
           description: |
-            目标桌宠 id。缺省时落到当前桌宠；仍无法确定时兜底 `main`。
+            目标桌宠 id，必须是当前配置中存在的桌宠。
             指定的 id 不存在 → `ok: false` + `reason: unknown-pet`。
-            **多宠物时建议显式传**——缺省落到的是"当前桌宠"，未必是你要挪的那只。
           schema:
             type: string
           example: main
+        - $ref: "#/components/parameters/SurfaceQuery"
       requestBody:
         required: true
         content:
@@ -696,13 +781,14 @@ paths:
       parameters:
         - name: pet
           in: query
-          required: false
+          required: true
           description: |
-            目标桌宠 id。缺省时落到当前桌宠；仍无法确定时兜底 `main`。
+            目标桌宠 id，必须是当前配置中存在的桌宠。
             指定的 id 不存在 → `ok: false` + `reason: unknown-pet`。
           schema:
             type: string
           example: main
+        - $ref: "#/components/parameters/SurfaceQuery"
       requestBody:
         required: true
         content:
@@ -1006,6 +1092,7 @@ paths:
         - 记忆只存**正文**：配图属展示层，不进上下文（否则下次请求会把标记当历史读回去）。
       parameters:
         - $ref: "#/components/parameters/PetIdQuery"
+        - $ref: "#/components/parameters/SurfaceQuery"
       requestBody:
         required: true
         content:
@@ -1591,6 +1678,18 @@ components:
         type: string
       example: main
 
+    SurfaceQuery:
+      name: surface
+      in: query
+      required: true
+      description: |
+        调用方期望的显示端。该 Fork 的桌宠仅支持 Windows 桌面显示；`desktop` 与 `any` 可匹配可见桌宠，
+        `web` / `both` 会因实际显示模式不匹配而返回 `pet-not-displayed`。释放锁及读取对话记录不需要此参数。
+      schema:
+        type: string
+        enum: [web, desktop, both, any]
+      example: desktop
+
     AssetFile:
       name: file
       in: path
@@ -1626,6 +1725,24 @@ components:
           const: true
       description: 动作已完成。数据请从 `GET /state` 读取。
 
+    LockResponse:
+      type: object
+      required: [ok, pet, lockId, expiresAt, renewed]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        pet:
+          type: string
+        lockId:
+          type: string
+          description: 后续受锁动作所需的租约凭证。
+        expiresAt:
+          type: integer
+          format: int64
+        renewed:
+          type: boolean
+
     FailureResponse:
       type: object
       required: [ok, reason]
@@ -1638,8 +1755,9 @@ components:
           description: |
             失败原因分类。`bad-request` 参数不合法（空文本/超长）、`provider-missing` 没有可用
             的对话服务商、`generate-error` 生成或 IO 失败、`unknown-pet` 指定的桌宠不存在、
-            `unknown-image` 配图不在包内表情包池内。
-          enum: [bad-request, provider-missing, generate-error, unknown-pet, unknown-image, unknown-animation]
+            `unknown-image` 配图不在包内表情包池内、`pet-not-displayed` 显示端不匹配，
+            `lock-required` / `lock-lost` / `locked` 独占锁状态不允许当前操作。
+          enum: [bad-request, provider-missing, generate-error, pet-required, unknown-pet, unknown-image, unknown-animation, pet-not-displayed, lock-required, lock-lost, locked]
         message:
           type: string
           description: 人类可读的补充说明（可选）
@@ -1685,7 +1803,7 @@ components:
           description: 每只宠物各自一份；键是宠物 id（**可含点号，勿切分**）
           additionalProperties:
             type: object
-            required: [say, anim, position, throw]
+            required: [say, anim, position, throw, lock]
             properties:
               say:
                 $ref: "#/components/schemas/SayLeaf"
@@ -1695,6 +1813,8 @@ components:
                 $ref: "#/components/schemas/PositionLeaf"
               throw:
                 $ref: "#/components/schemas/ThrowLeaf"
+              lock:
+                $ref: "#/components/schemas/LockLeaf"
       examples:
         typical:
           summary: 一只有余额与碎碎念的宠物
@@ -1748,6 +1868,9 @@ components:
                     y: 0.35
                     mode: spring
                 throw:
+                  counter: 0
+                  data: null
+                lock:
                   counter: 0
                   data: null
 
@@ -2032,12 +2155,29 @@ components:
 
     Anim:
       type: object
-      required: [name]
+      description: |
+        `name` 与 `url` 必须且只能提供一个；`facing` 可选。
+      oneOf:
+        - required: [name]
+          not:
+            required: [url]
+        - required: [url]
+          not:
+            required: [name]
       properties:
         name:
           type: string
           description: 要播放的动画名（等于 `animations` 配置里菜单可点到的某个名字）
           example: 东张西望
+        url:
+          type: string
+          format: uri
+          pattern: '^https?://'
+          description: 远程 WebM/MP4 动画地址，仅接受完整的 HTTP/HTTPS URL。
+        facing:
+          type: string
+          enum: [left, right]
+          description: 可选朝向；`right` 镜像视频，省略时保持当前朝向。
 
     PositionLeaf:
       type: object
@@ -2136,6 +2276,10 @@ components:
             仅在配置开启了 `whisperImageEnabled` / `chatImageEnabled` 且命中池内图片时出现。
             桌面 Helper 按素材根拼成 `/dsh-pet-7340/pic/memes/<素材根>/<名>.png`
             取图，素材根 = 该宠物的条目 key（`assetRoot`）。
+        url:
+          type: string
+          format: uri
+          description: 外部配图完整 URL；与 `image` 互斥。
         duration:
           type: number
           minimum: 0
@@ -2151,6 +2295,31 @@ components:
             显式 `false` = 只弹气泡，不查动画池、不换源。
             同样只有 `POST /broadcast` 会写；碎碎念与对话回复不写。
           example: true
+
+    LockLeaf:
+      type: object
+      required: [counter, data]
+      properties:
+        counter:
+          $ref: "#/components/schemas/Counter"
+        data:
+          oneOf:
+            - type: object
+              required: [locked, expiresAt]
+              properties:
+                locked:
+                  type: boolean
+                  const: true
+                expiresAt:
+                  type: integer
+                  format: int64
+            - type: object
+              required: [locked]
+              properties:
+                locked:
+                  type: boolean
+                  const: false
+            - type: "null"
 
     SayClear:
       type: object
@@ -2303,6 +2472,7 @@ components:
           type: boolean
         confineToScreen:
           type: boolean
+          description: 多屏移动限制：开启后，漫游与抛掷均限制在动作开始时所在屏幕。
         chatMemoryRounds:
           type: integer
           minimum: 0

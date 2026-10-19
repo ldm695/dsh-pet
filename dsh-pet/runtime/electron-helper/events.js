@@ -22,6 +22,8 @@ PetSprite.prototype.onWorkTick = function onWorkTick(snapshot, tick, animateWork
   this.workState = animateWorkStatus ? state : null;
   const stateChanged = this.prevWorkState !== state;
   this.prevWorkState = state;
+  // 锁期间消费掉自动状态变化但不播放；解锁时 resumeWorkStatusAnim 会依据最新工作状态恢复。
+  if (this.frozen) return;
   logWorkStatusDiagnostic('pet-input', {
     petId: this.pet.id,
     tick,
@@ -162,6 +164,7 @@ PetSprite.prototype.onBalanceTick = function onBalanceTick(state, tick, manual, 
   if (targetPetId && this.pet.id !== targetPetId) return; // 手动菜单请求只播在被点击的桌宠上
   if (tick === 0 || tick === this.prevTick) return;
   this.prevTick = tick;
+  if (this.frozen && !manual) return; // 锁期间忽略自动余额更新，用户手动查询仍然有效
   this.showBalanceNow(state, manual);
 };
 
@@ -171,6 +174,7 @@ PetSprite.prototype.onBalanceTick = function onBalanceTick(state, tick, manual, 
 // 门控：自动轮询要求 balanceEnabled；**手动请求无条件弹**（用户问了就该有答复，包括"服务商不支持"这件事）。
 PetSprite.prototype.showBalanceNotice = function showBalanceNotice(state, manual) {
   if (!this.pet.balanceEnabled && !manual) return; // 自动轮询受开关门控；手动无条件通过
+  if (this.frozen && !manual) return; // 锁期间不让自动余额提示覆盖联动
   if (!state || state.ok) return;
   this.bubbleOn = true;
   this.balanceWrap = true; // 文字说明可能多行：renderBubble 据此套用紧凑变体（字号缩到 0.75、宽度下限更窄）
@@ -197,6 +201,7 @@ PetSprite.prototype.clearWhisper = function clearWhisper() {
   this.whisperOn = false;
   this.whisperView = null;
   this.whisperImage = '';
+  this.whisperImageUrl = '';
   this.renderBubble();
 };
 
@@ -208,7 +213,7 @@ PetSprite.prototype.clearWhisper = function clearWhisper() {
 //     于是配置里缺 events.whisper 时，只弹气泡这条路照样走得通。
 //   - duration === 0 表示"这一条不显示"：**不动当前已在显示的气泡**
 //     （要收起它请用 POST /bubble/clear，两件事不重叠）。
-PetSprite.prototype.showWhisper = function showWhisper(text, image, duration, anim) {
+PetSprite.prototype.showWhisper = function showWhisper(text, image, url, duration, anim) {
   let name = null;
   if (anim !== false) {
     const pool = this.animations.events?.whisper;
@@ -239,6 +244,7 @@ PetSprite.prototype.showWhisper = function showWhisper(text, image, duration, an
   this.whisperOn = true;
   this.whisperView = S.whisperBubbleView({ ok: true, text, ts: 0 });
   this.whisperImage = typeof image === 'string' ? image : '';
+  this.whisperImageUrl = typeof url === 'string' ? url : '';
   this.renderBubble();
   // 气泡定时消失（与动画解耦，与余额同一语义；重复触发先清旧定时器）
   if (this.whisperTimer !== null) window.clearTimeout(this.whisperTimer);
@@ -360,7 +366,7 @@ function applySayLeaf(petId, leaf) {
       }
     }
     if (said.kind === 'clear') s.clearWhisper();
-    else s.showWhisper(said.text, said.image, said.duration, said.anim);
+    else s.showWhisper(said.text, said.image, said.url, said.duration, said.anim);
   }
 }
 
@@ -495,11 +501,22 @@ function applyNotifyLeaf(leaf) {
 function applyAnimLeaf(petId, leaf) {
   const hit = S.readAnim(leaf);
   if (!hit) return;
-  // 回执编号**直接从叶子取**：shared-core 是构建产物（它的 readAnim 只回 name），
-  // 绕开它就不必重建桌面共享核心也能拿到 playbackId（events.js 是入库源文件）。
-  const playbackId = leaf.data && typeof leaf.data.playbackId === 'string' ? leaf.data.playbackId : undefined;
   for (const s of sprites) {
-    if (s.pet.id === petId) s.onMenuAction({ label: hit.name, anim: hit.name, playbackId });
+    if (s.pet.id !== petId) continue;
+    const explicitFacing = hit.facing !== undefined;
+    if (explicitFacing) s.facing = hit.facing;
+    if (hit.url !== undefined) s.playUrlOnce(hit.url, hit.playbackId);
+    else if (hit.name !== undefined) {
+      s.onMenuAction({ label: hit.name, anim: hit.name, playbackId: hit.playbackId }, explicitFacing);
+    }
+  }
+}
+
+function applyLockLeaf(petId, leaf) {
+  const hit = S.readLock(leaf);
+  if (!hit) return;
+  for (const s of sprites) {
+    if (s.pet.id === petId) s.setLock(hit);
   }
 }
 
@@ -538,6 +555,10 @@ async function pollStateOnce() {
     if (stateLongPoll) stateSince = s.counter;
     if (stateBaseline === null) {
       stateBaseline = S.flattenCounters(s); // 首拉：只记基线，不渲染（避免启动/重载时重放旧气泡）
+      // 锁是持续租约而非一次性动作；Helper 单独重启时也要恢复宿主中仍有效的锁。
+      for (const [petId, leaves] of Object.entries(s.pets || {})) {
+        if (leaves && leaves.lock && S.readLock(leaves.lock)?.locked) applyLockLeaf(petId, leaves.lock);
+      }
       return true;
     }
     for (const change of S.takeChanged(s, stateBaseline)) {
@@ -557,6 +578,8 @@ async function pollStateOnce() {
       } else if (change.path.startsWith('pets.') && change.path.endsWith('.throw')) {
         // 抛掷指令：同上
         applyThrowLeaf(change.path.slice('pets.'.length, -'.throw'.length), change.leaf);
+      } else if (change.path.startsWith('pets.') && change.path.endsWith('.lock')) {
+        applyLockLeaf(change.path.slice('pets.'.length, -'.lock'.length), change.leaf);
       }
     }
     return true;

@@ -152,7 +152,7 @@ export class PollStateStore {
   writePet(petId: string, leaf: PetLeafName, data: unknown): void {
     let entry = this.pets.get(petId);
     if (!entry) {
-      entry = { say: emptyLeaf(), anim: emptyLeaf(), position: emptyLeaf(), throw: emptyLeaf() };
+      entry = { say: emptyLeaf(), anim: emptyLeaf(), position: emptyLeaf(), throw: emptyLeaf(), lock: emptyLeaf() };
       this.pets.set(petId, entry);
     }
     entry[leaf] = { counter: this.next(), data };

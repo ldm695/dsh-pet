@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import type { ConfigPaths } from './config';
 import {
+  flattenPetList,
   findPetInstance,
   PET_DISPLAY_SET,
   readAllConfig,
@@ -27,6 +28,7 @@ export interface ConfigRouteDependencies {
   writeConfigChanged: () => void;
   reloadDesktop: () => void;
   mapResponseConfig: (config: ConfigRecord) => unknown;
+  releasePetLock?: (petId: string) => void;
 }
 
 function errorMessage(error: unknown): string {
@@ -75,7 +77,16 @@ export function createConfigRoute(
               obj: { error: 'user config is unparsable', needConfirm: true, userFile: deps.userConfigPath },
             };
           }
+          const previousDisplay = new Map(
+            flattenPetList(deps.readAll()).map((pet) => [String(pet.id ?? ''), String(pet.display ?? '')]),
+          );
           await writeConfig(deps.userConfigPath, deps.userRoot, JSON.stringify(clean, null, 2));
+          const nextDisplay = new Map(
+            flattenPetList(deps.readAll()).map((pet) => [String(pet.id ?? ''), String(pet.display ?? '')]),
+          );
+          for (const [petId, previous] of previousDisplay) {
+            if (previous !== 'none' && nextDisplay.get(petId) !== 'desktop') deps.releasePetLock?.(petId);
+          }
           deps.reloadDesktop();
           return { kind: 'json', status: 200, obj: deps.mapResponseConfig(deps.readAll()) };
         } catch {
@@ -167,6 +178,7 @@ export function createConfigRoute(
       } catch (error) {
         return { kind: 'json', status: 500, obj: { error: errorMessage(error) } };
       }
+      if (nextDisplay === 'none') for (const id of ids) deps.releasePetLock?.(id);
       deps.writeConfigChanged();
       deps.reloadDesktop();
       return { kind: 'json', status: 200, obj: deps.readAll() };
@@ -217,6 +229,7 @@ export function createConfigRoute(
       } catch (error) {
         return { kind: 'json', status: 500, obj: { error: errorMessage(error) } };
       }
+      if (nextDisplay === 'none') deps.releasePetLock?.(petId);
       deps.writeConfigChanged();
       deps.reloadDesktop();
       return { kind: 'json', status: 200, obj: deps.readAll() };

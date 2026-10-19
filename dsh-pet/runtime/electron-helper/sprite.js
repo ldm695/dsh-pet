@@ -84,6 +84,9 @@ class PetSprite {
     // 为什么要单独一个字段：this.anim 只是动画名，右键菜单点播与第三方 /anim 可以播同名动画，
     // 光看名字分不出"这一段该不该上报回执"。
     this.playback = null;
+    // 占用锁：锁生效时冻结随机动画和自动事件；用户输入可立即接管。
+    this.frozen = false;
+    this.lockTimer = null;
     this.facing = 'left';
     // 交互/移动
     this.dragState = { active: false, dragging: false, sx: 0, sy: 0, petX: 0, petY: 0 };
@@ -157,6 +160,7 @@ class PetSprite {
     this.whisperText = '';
     // 配图名称（配置 memes 的键；whisperImageEnabled 开启时由 host 随机抽定，随文本一起来）
     this.whisperImage = '';
+    this.whisperImageUrl = '';
     // 工作状态联动（DSH 会话状态）：容器统一轮询 /state 并按共享分配器把 Agent 状态交给本宠物。
     // 气泡单槽优先级 终态任务 > whisper > balance > 非终态任务（见 renderBubble）；
     // workStatusEnabled 未启用时完全免疫（与浏览器一致）
@@ -657,7 +661,7 @@ class PetSprite {
   }
 
   // 双缓冲切换（与浏览器同一套：前台 opacity 切换 + 降级视频清 handler 并停播，防残留 ended 雪崩）
-  switchTo(next, nextOnce, playbackId) {
+  switchTo(next, nextOnce, playbackId, url) {
     if (!next) return;
     if (this.fullscreenHidden) {
       this.fullscreenDeferredAnimation = { anim: next, once: nextOnce, playbackId: playbackId || null };
@@ -686,7 +690,7 @@ class PetSprite {
     if (!el) return;
     this.cancelVideoRelease(el);
     this.pending = { anim: next, once: nextOnce, gen, target: el };
-    el.src = this.assetBase + encodeURIComponent(next) + (S.ANIMATION_EXT || '.webm');
+    el.src = url || this.assetBase + encodeURIComponent(next) + (S.ANIMATION_EXT || '.webm');
     el.dataset.dshPetAnimation = next;
     el.dataset.dshPetOnce = String(nextOnce);
     el.loop = !nextOnce;
@@ -772,10 +776,53 @@ class PetSprite {
     if (el.readyState >= 2) onReady();
   }
 
-  playOnce(name, playbackId) {
+  playOnce(name, playbackId, url) {
     this.anim = name;
     this.once = true;
-    this.switchTo(name, true, playbackId);
+    this.switchTo(name, true, playbackId, url);
+  }
+
+  playUrlOnce(url, playbackId) {
+    this.stopMove();
+    this.playOnce(url, playbackId, url);
+  }
+
+  applyFreeze(next) {
+    if (this.frozen === next) return;
+    this.frozen = next;
+    const el = this.front === 0 ? this.videoA : this.videoB;
+    const stamp = '[dsh-pet] ' + new Date().toTimeString().slice(0, 8) + ' pet=' + this.pet.id;
+    if (next) {
+      this.stopMove();
+      if (el) el.pause();
+      const interrupted = this.playback;
+      if (interrupted) {
+        this.playback = null;
+        this.reportPlayback(interrupted, 'cancelled', 'frozen');
+      }
+      console.log(stamp + ' 占用锁生效：冻结');
+      return;
+    }
+    console.log(stamp + ' 占用锁解除：恢复');
+    if (this.resumeWorkStatusAnim()) return;
+    if (this.animations.idle.length) this.playOnce(S.pick(this.animations.idle, this.anim));
+  }
+
+  setLock(state) {
+    if (this.lockTimer !== null) {
+      window.clearTimeout(this.lockTimer);
+      this.lockTimer = null;
+    }
+    const expiresAt = state && state.locked === true ? state.expiresAt : 0;
+    this.applyFreeze(expiresAt > Date.now());
+    if (expiresAt <= Date.now()) return;
+    this.lockTimer = window.setTimeout(
+      () => {
+        this.lockTimer = null;
+        this.applyFreeze(false);
+      },
+      Math.max(0, expiresAt - Date.now()),
+    );
   }
 
   resolveVisualFrameAfterPaint(el) {
@@ -801,6 +848,7 @@ class PetSprite {
 
   // 动画链（与浏览器 pickNext 语义一致，纯逻辑在 shared）
   playIdle() {
+    if (this.frozen) return;
     this.stopMove();
     const { animations, animationWeights } = { animations: this.animations, animationWeights: this.weights };
     const roll = Math.random();
@@ -846,6 +894,7 @@ class PetSprite {
       this.reportPlayback(done, 'ended');
     }
     if (this.dragState.active) return;
+    if (this.frozen) return;
     if (this.moveDriving) {
       // ended can arrive before the final rAF: commit the exact endpoint before releasing it.
       if (this.moveDestination) {
@@ -935,6 +984,7 @@ class PetSprite {
   // 互动/事件动画播完后恢复 workStatus 档位循环：非终态 → 按当前状态档位重选动画（多候选档内
   // 随机并避开当前段）；终态/空闲 → false 不接管，调用方走原逻辑（回 idle / 随机池，与浏览器一致）。
   resumeWorkStatusAnim() {
+    if (this.frozen) return false;
     const state = this.workState;
     if (!state || state === 'success' || state === 'error') return false;
     const pool = this.animations.events?.workStatus;
@@ -1198,6 +1248,8 @@ class PetSprite {
     const distScale = this.size / S.PET_REF_WIDTH;
     const cx = Number.isFinite(origin?.cx) ? origin.cx : this.currentCenterX();
     const cy = Number.isFinite(origin?.cy) ? origin.cy : this.currentCenterY();
+    const wanderArea = this.confineToScreen ? S.resolveRect(AREAS, cx, cy) : null;
+    const moveAreas = wanderArea ? [wanderArea] : AREAS;
     let plan = null;
     let dir = preferredDir;
     const modes =
@@ -1223,7 +1275,7 @@ class PetSprite {
         halfW: this.halfW,
         halfH: this.halfH,
         sideAllow: this.sideAllow,
-        areas: AREAS,
+        areas: moveAreas,
       });
       if (!candidate) return null;
       const isVertical =
@@ -1254,7 +1306,7 @@ class PetSprite {
             halfH: this.halfH,
             sideAllow: this.sideAllow,
             // 落点按显示器并集判定：能骑缝跨屏走，但走不进外接矩形里的空洞
-            areas: AREAS,
+            areas: moveAreas,
           });
           if (!candidate) continue;
           const isVertical =
@@ -1746,6 +1798,17 @@ class PetSprite {
   onPointerDown(e) {
     // 只认左键：右键进入拖拽判定会与右键菜单打架（右键不拖拽，两端一致）
     if (e.button !== 0) return;
+    // 用户输入优先：点击或拖动一只被第三方占用的桌宠时立即本地解冻，并通知宿主撤锁。
+    if (this.frozen) {
+      if (this.lockTimer !== null) {
+        window.clearTimeout(this.lockTimer);
+        this.lockTimer = null;
+      }
+      this.applyFreeze(false);
+      S.postAction(BASE + '/lock/release?pet=' + encodeURIComponent(this.pet.id), { force: true }).then((ok) => {
+        if (!ok) console.warn('[dsh-pet] 用户接管上报未送达 pet=' + this.pet.id);
+      });
+    }
     // 抓取速度日志：stopThrow 之前读，否则飞行速度就没了；静止时记录 0（与浏览器同构）
     const grabState = this.throwState;
     console.log(
@@ -2257,10 +2320,11 @@ class PetSprite {
       return;
     }
     if (!leaf.anim) return;
+    const explicitFacing = options === true || options.explicitFacing === true;
     // 回执归属：这一段动画若来自第三方点播，编号要跟着换源一起走（自播动画传 null）
     const playbackId = typeof leaf.playbackId === 'string' && leaf.playbackId ? leaf.playbackId : null;
     // 文字类（noMirror）朝右站姿是镜像的：点播前强制朝左，避免文字镜像（与浏览器随机链"朝右不选文字"同语义）
-    if (S.isNoMirrorAnimation(this.animations.categories, leaf.anim) && this.facing === 'right') {
+    if (!explicitFacing && S.isNoMirrorAnimation(this.animations.categories, leaf.anim) && this.facing === 'right') {
       this.facing = 'left';
     }
     // 点播移动动画：走真实移动（与随机游走同一套：边界检查 / 随机距离 / leadSec·tailSec / dir），
@@ -2310,7 +2374,7 @@ class PetSprite {
   // 动作不回文本——文本只有一个出口（S），随"版本号变化"唤醒的那一拍长轮询到达并展示。
   // 手动触发不受 whisperEnabled 限制——该字段只关自动周期，手动永远可用。
   showWhisperFromMenu() {
-    S.postAction(WHISPER_URL + '?pet=' + encodeURIComponent(this.pet.id))
+    S.postAction(WHISPER_URL + '?pet=' + encodeURIComponent(this.pet.id) + '&surface=desktop')
       .then((ok) => {
         if (!ok) console.warn('[dsh-pet] 菜单碎碎念：生成动作未成功 pet=' + this.pet.id);
       })
@@ -2334,6 +2398,7 @@ class PetSprite {
     const m = S.mountChatDialog({
       petId: this.pet.id,
       baseUrl: BASE + '/chat',
+      surface: 'desktop',
       x: Math.max(4, this.hit.getBoundingClientRect().right + 6),
       y: Math.max(4, this.hit.getBoundingClientRect().top + 6),
       // 弹窗同菜单：只允许在「窗口 ∩ 工作区」内显示，贴边时不被屏幕裁掉（#41）
@@ -2410,7 +2475,12 @@ class PetSprite {
     const workTerminal = this.workState === 'success' || this.workState === 'error';
     const slot =
       workTerminal && workOn ? 'work' : whisperOn ? 'whisper' : balanceOn ? 'balance' : workOn ? 'work' : 'none';
-    const whisperImg = slot === 'whisper' ? S.createMemeImage(this.whisperImage, BASE, this.assetRoot) : null;
+    const whisperImg =
+      slot === 'whisper'
+        ? this.whisperImageUrl
+          ? S.createMemeImageFromUrl(this.whisperImageUrl)
+          : S.createMemeImage(this.whisperImage, BASE, this.assetRoot)
+        : null;
     if (slot === 'none') {
       // 三者都没有可显示的内容：隐藏（不占位，也就不会挡住任何一层）。保留当前尺寸/配图样式，
       // 直到 opacity 淡出结束；否则工作/碎碎念气泡会在淡出瞬间移除 is-whisper，字号立刻放大。

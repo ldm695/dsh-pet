@@ -1,8 +1,9 @@
-import type { ChatMemoryMessage } from './chat';
 import type { RouteRequest, RouteResult } from './route-contract';
+import { requirePet, validatePetSurface, type ConfigSnapshot } from './route-validation';
 
 export interface ChatRouteDependencies {
-  readHistory: (petId: string) => Promise<{ messages: ChatMemoryMessage[]; rounds: number }>;
+  readConfig: () => ConfigSnapshot;
+  readHistory: (petId: string) => Promise<{ messages: unknown[]; rounds: number }>;
   chatWithPet: (petId: string, text: string) => Promise<unknown>;
 }
 
@@ -15,36 +16,45 @@ export function createChatRoute(
   deps: ChatRouteDependencies,
 ): (request: RouteRequest) => Promise<RouteResult | undefined> {
   return async ({ rest, method, body, query }) => {
-    if (rest === 'chat') {
-      const petId = String(query?.get('pet') ?? '');
-      try {
-        if (method === 'GET') {
-          const { messages, rounds } = await deps.readHistory(petId);
-          return { kind: 'json', status: 200, obj: { ok: true, messages, rounds } };
-        }
-        if (method === 'POST') {
-          const parsed = (JSON.parse(body ?? 'null') as Record<string, unknown> | null) ?? {};
-          const text = typeof parsed.text === 'string' ? parsed.text.trim() : '';
-          if (!text)
-            return { kind: 'json', status: 200, obj: { ok: false, reason: 'bad-request', message: '消息为空' } };
-          if (text.length > 2000) {
-            return {
-              kind: 'json',
-              status: 200,
-              obj: { ok: false, reason: 'bad-request', message: '消息过长（限 2000 字）' },
-            };
-          }
-          return { kind: 'json', status: 200, obj: await deps.chatWithPet(petId, text) };
-        }
-        return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-      } catch (error) {
-        return {
-          kind: 'json',
-          status: 200,
-          obj: { ok: false, reason: 'generate-error', message: errorMessage(error) },
-        };
-      }
+    if (rest !== 'chat') return undefined;
+    if (method !== 'GET' && method !== 'POST') {
+      return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
     }
-    return undefined;
+
+    try {
+      let payload: Record<string, unknown> = {};
+      if (method === 'POST') {
+        try {
+          const parsed = JSON.parse(body ?? 'null');
+          payload = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+        } catch {
+          return { kind: 'json', status: 400, obj: { error: 'invalid JSON body' } };
+        }
+        const text = typeof payload.text === 'string' ? payload.text.trim() : '';
+        if (!text) {
+          return { kind: 'json', status: 200, obj: { ok: false, reason: 'bad-request', message: '消息为空' } };
+        }
+        if (text.length > 2000) {
+          return { kind: 'json', status: 200, obj: { ok: false, reason: 'bad-request', message: '消息过长（限 2000 字）' } };
+        }
+      }
+
+      const who = requirePet(deps.readConfig(), query?.get('pet'));
+      if (!who.ok) return who.result;
+      if (method === 'GET') {
+        const { messages, rounds } = await deps.readHistory(who.petId);
+        return { kind: 'json', status: 200, obj: { ok: true, messages, rounds } };
+      }
+
+      const surfaceError = validatePetSurface(who.pet, who.petId, query ?? new URLSearchParams());
+      if (surfaceError) return surfaceError;
+      return { kind: 'json', status: 200, obj: await deps.chatWithPet(who.petId, String(payload.text).trim()) };
+    } catch (error) {
+      return {
+        kind: 'json',
+        status: 200,
+        obj: { ok: false, reason: 'generate-error', message: errorMessage(error) },
+      };
+    }
   };
 }

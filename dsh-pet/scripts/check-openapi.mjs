@@ -23,6 +23,7 @@ const HOST_ROUTE_SRCS = [
     'readonly-route.ts',
     'config-route.ts',
     'action-route.ts',
+    'lock-route.ts',
     'state-route.ts',
     'playback-route.ts',
     'chat-route.ts',
@@ -101,6 +102,11 @@ ok.push(`${Object.keys(doc.paths).length} 条路径 / ${ops} 个操作`);
 // 所以两边都归一化成「一级段」（config/meta → config）再比对，否则会误报。
 const routeSources = HOST_ROUTE_SRCS.map((path) => readFileSync(path, 'utf8')).join('\n');
 const implemented = new Set([...routeSources.matchAll(/rest === '([^']+)'/g)].map((m) => m[1].split('/')[0]));
+// Some focused handlers use the inverse guard (`if (rest !== 'chat') return undefined`)
+// to decline routes they do not own. Count those explicit route names as implemented too.
+for (const match of routeSources.matchAll(/if\s*\(rest !== '([^']+)'\)\s*return undefined/g)) {
+  implemented.add(match[1].split('/')[0]);
+}
 for (const s of ['font', 'pic', 'thumb']) implemented.add(s);
 const documented = new Set();
 for (const p of Object.keys(doc.paths)) {

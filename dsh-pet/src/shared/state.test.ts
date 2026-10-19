@@ -168,10 +168,26 @@ describe('readBalance —— 余额叶子 → 客户端视图', () => {
   });
 });
 
-describe('readAnim —— 点播动画叶子（名字 + 回执编号）', () => {
+describe('readAnim —— 点播动画叶子（名字或地址 + 回执编号）', () => {
   test('名字与 playbackId 都取到（渲染端据此在四个时机上报真实状态）', () => {
     const hit = readAnim({ counter: 1, data: { name: '拉侧栏-拉拽', playbackId: 'pb-abc-1' } });
-    assert.deepEqual(hit, { name: '拉侧栏-拉拽', playbackId: 'pb-abc-1' });
+    assert.deepEqual(hit, { name: '拉侧栏-拉拽', url: undefined, playbackId: 'pb-abc-1', facing: undefined });
+  });
+
+  test('url 形态（issue #122 第 1 条）：地址取到、name 缺席', () => {
+    const hit = readAnim({ counter: 1, data: { url: 'https://cdn.example.com/拉侧栏.webm' } });
+    assert.deepEqual(hit, {
+      name: undefined,
+      url: 'https://cdn.example.com/拉侧栏.webm',
+      playbackId: undefined,
+      facing: undefined,
+    });
+  });
+
+  test('url 形态一样带 playbackId（两条路的回执语义相同）', () => {
+    const hit = readAnim({ counter: 1, data: { url: 'http://127.0.0.1:8080/a/x.webm', playbackId: 'pb-1' } });
+    assert.equal(hit?.url, 'http://127.0.0.1:8080/a/x.webm');
+    assert.equal(hit?.playbackId, 'pb-1');
   });
 
   test('老 host 不写 playbackId → undefined（按"无回执"处理，不是非法数据）', () => {
@@ -186,11 +202,39 @@ describe('readAnim —— 点播动画叶子（名字 + 回执编号）', () => 
     assert.equal(readAnim({ counter: 1, data: { name: 'A', playbackId: null } })?.name, 'A');
   });
 
+  test('两个都给时两个都取到（host 判定层保证不会这么写；消费端以 url 优先）', () => {
+    const hit = readAnim({ counter: 1, data: { name: 'A', url: 'https://x/y.webm' } });
+    assert.equal(hit?.name, 'A');
+    assert.equal(hit?.url, 'https://x/y.webm');
+  });
+
   test('脏数据 → null（消费端跳过这一拍）', () => {
     assert.equal(readAnim({ counter: 1, data: null }), null);
     assert.equal(readAnim({ counter: 1, data: 'nope' }), null);
+    // 两个都缺席 = 形状非法：宿主写端保证恰好一个，读取端不替它猜
     assert.equal(readAnim({ counter: 1, data: { name: '' } }), null);
     assert.equal(readAnim({ counter: 1, data: { name: 42 } }), null);
+    assert.equal(readAnim({ counter: 1, data: { url: '' } }), null);
+    assert.equal(readAnim({ counter: 1, data: { url: 42 } }), null);
+    assert.equal(readAnim({ counter: 1, data: { playbackId: 'pb-1' } }), null, '只有回执编号不算一条指令');
+  });
+
+  test('facing（POST /anim 的朝向参数）：合法值取到，name / url 两种形态都适用', () => {
+    assert.equal(readAnim({ counter: 1, data: { name: '东张西望', facing: 'right' } })?.facing, 'right');
+    assert.equal(readAnim({ counter: 1, data: { url: 'https://x/y.webm', facing: 'left' } })?.facing, 'left');
+  });
+
+  test('facing 缺省 → undefined（= **不动朝向**，不是回落 left）', () => {
+    assert.equal(readAnim({ counter: 1, data: { name: 'A' } })?.facing, undefined);
+    assert.equal(readAnim({ counter: 1, data: { name: 'A', facing: null } })?.facing, undefined);
+  });
+
+  test('facing 形状非法 → 归一成 undefined，且不影响这条指令本身', () => {
+    for (const bad of ['LEFT', 'Right', 'up', '', '   ', 42, true, {}]) {
+      const hit = readAnim({ counter: 1, data: { name: 'A', facing: bad } });
+      assert.equal(hit?.facing, undefined, JSON.stringify(bad) + ' 不应被当成朝向');
+      assert.equal(hit?.name, 'A', '脏 facing 不该让整条指令作废（照样播，只是不动朝向）');
+    }
   });
 });
 
@@ -206,9 +250,32 @@ describe('readSay —— 说话叶子（弹气泡 / 清空 两种形态）', () 
       kind: 'say',
       text: '主人今天也要加油哦～',
       image: '可爱',
+      url: undefined,
       duration: undefined,
       anim: undefined,
     });
+  });
+
+  test('配图的 url 形态（issue #122 第 1 条）：地址取到、image 缺席', () => {
+    const hit = say({ text: 'x', url: 'https://cdn.example.com/拒绝.png' });
+    assert.equal(hit?.url, 'https://cdn.example.com/拒绝.png');
+    assert.equal(hit?.image, undefined);
+  });
+
+  test('配图两种形态并列、由字段名区分：两个都给时两个都取到（host 判定层保证不会这么写）', () => {
+    const hit = say({ text: 'x', image: '可爱', url: 'https://cdn.example.com/拒绝.png' });
+    assert.equal(hit?.image, '可爱');
+    assert.equal(hit?.url, 'https://cdn.example.com/拒绝.png');
+  });
+
+  test('url 脏值当"没给"（非字符串不毁掉整拍），文本照常显示', () => {
+    for (const v of [42, {}, null, undefined]) {
+      assert.equal(say({ text: 'x', url: v })?.url, undefined, `url=${JSON.stringify(v)} 应归一成 undefined`);
+    }
+    // 空串与 image 同口径：**原样透传**——读取器只做类型收窄，不做 trim / 非空判定
+    //（非空由宿主写端保证）。消费端拿到空串会走纯文本路径，无副作用。
+    assert.equal(say({ text: 'x', url: '' })?.url, '');
+    assert.equal(say({ text: 'x', url: 42 })?.text, 'x');
   });
 
   test('duration / anim 原样带出（含 0 与 false 这两个"有含义的假值"）', () => {

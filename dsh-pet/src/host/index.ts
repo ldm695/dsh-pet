@@ -80,6 +80,7 @@ import { createAssetRoute } from './asset-route';
 import { createReadonlyRoute, type ReadonlyRouteLlm } from './readonly-route';
 import { createConfigRoute, createHostConfigRouteDependencies } from './config-route';
 import { createActionRoute } from './action-route';
+import { createLockRoute } from './lock-route';
 import { createStateRoute } from './state-route';
 import { createPlaybackRoute } from './playback-route';
 import { createChatRoute } from './chat-route';
@@ -91,6 +92,7 @@ import { generateChat, type ChatMemoryMessage } from './chat';
 import { configuredModel } from './model-selection';
 import { limitPool, pickMeme, readMemePool } from './memes';
 import { PlaybackStore } from './playback';
+import { LockStore } from './lock';
 import {
   findPetInstance,
   flattenPetList,
@@ -286,6 +288,7 @@ export function apply(ctx: any): void {
   // 轮询统一状态（S）：前端 1s 轮询的**唯一**数据源（余额 / 工作状态 / 通知 / 宠物说话）。
   // 所有写入走 state.writeSection / writePet（由它统一更新 counter），见 ./state 的说明。
   const state = new PollStateStore();
+  const locks = new LockStore({ onChange: (petId, data) => state.writePet(petId, 'lock', data) });
   // 播放记录表（issue #122 第 3 项「播放与完成回执」）：**由渲染端上报驱动**的状态机 + 等待者。
   // 与 S 无关：播放记录是 per-caller 资源（只有发起那次点播的调用方关心、有生命周期、数量随
   // 第三方调用方增长），塞进 1s 全局广播会让每个窗口为每个功能付流量。见 ./playback 的说明。
@@ -940,8 +943,8 @@ export function apply(ctx: any): void {
     }),
     resolveAppIcon: () => resolveExisting(PACKAGE_ROOT_ASSETS, 'dsh-pet-icon-16.png'),
   });
-  const configRoute = createConfigRoute(
-    createHostConfigRouteDependencies(
+  const configRoute = createConfigRoute({
+    ...createHostConfigRouteDependencies(
       configPaths,
       userRoot,
       userConfigPath,
@@ -950,16 +953,18 @@ export function apply(ctx: any): void {
       () => void syncDesktop(),
       standaloneMoveTestConfig,
     ),
-  );
+    releasePetLock: (petId) => locks.release({ petId, force: true }),
+  });
   const actionRoute = createActionRoute({
     readConfig: () => readAllConfig(configPaths),
-    activePetId: resolveActivePetId,
     refreshBalance,
     publishWhisper,
     memeDirs: memeDirsFor,
     writePet: (petId, leaf, data) => state.writePet(petId, leaf, data),
     createPlayback: (petId, animationName) => playback.create(petId, animationName),
+    locks,
   });
+  const lockRoute = createLockRoute({ readConfig: () => readAllConfig(configPaths), locks });
   const isStandalone = (): boolean => process.env.DSH_PET_STANDALONE === '1';
   const stateRoute = createStateRoute({
     state,
@@ -968,6 +973,7 @@ export function apply(ctx: any): void {
   });
   const playbackRoute = createPlaybackRoute({ playback });
   const chatRoute = createChatRoute({
+    readConfig: () => readAllConfig(configPaths),
     readHistory: async (petId) => {
       const cfg = readAllConfig(configPaths);
       const mem = await readMemory();
@@ -1001,6 +1007,8 @@ export function apply(ctx: any): void {
     if (readonlyResult !== undefined) return readonlyResult;
     const configResult = await configRoute(routeRequest);
     if (configResult !== undefined) return configResult;
+    const lockResult = await lockRoute(routeRequest);
+    if (lockResult !== undefined) return lockResult;
     const actionResult = await actionRoute(routeRequest);
     if (actionResult !== undefined) return actionResult;
 
@@ -1264,8 +1272,9 @@ export function apply(ctx: any): void {
             dueAt += periodMs;
             if (dueAt <= now) dueAt = now + periodMs;
             nextWhisperAt.set(petId, dueAt);
+            // 占用锁期间跳过自动碎碎念；显式菜单请求仍可执行。
             // 不 await：生成要几秒，别把调度拍拖住（每只宠物独立生成，互不阻塞）
-            void publishWhisper(petId).catch(() => {});
+            if (!locks.locked(petId)) void publishWhisper(petId).catch(() => {});
           }
           nextDelayMs = Math.min(nextDelayMs, dueAt - now);
         }
@@ -1382,6 +1391,7 @@ export function apply(ctx: any): void {
   // （回执的与 /state 长轮询的都不结束的话，插件重载会留下一批悬挂的响应，各自要等到超时才收尾）
   ctx.effect(() => () => {
     disposed = true;
+    locks.releaseAll();
     playback.cancelAll();
     state.cancelAll();
     stopHelper('dsh-host-stop');
