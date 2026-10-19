@@ -24,8 +24,13 @@ import {
   readBalance,
   readSay,
   readAnim,
+  readPosition,
+  readThrow,
   readWorkStatus,
   takeChanged,
+  type PollState,
+  type PositionMode,
+  type SayCue,
 } from '../shared/state';
 import { WORK_STATUS_INDEX, type WorkStatusSnapshot } from '../shared/work-status';
 import { makeBalanceBubble, makeWhisperBubble } from './bubble';
@@ -51,10 +56,6 @@ import { fontStackOf, resolveFontPx } from '../shared/fonts';
 import { petBridge } from './settings';
 import { notifyFromFrame } from './notify';
 
-/** 容器注册的「立刻拉一拍 /state」钩子：前端动作（右键菜单 / 对话弹窗）完成后调用——
- *  数据只从 S 来（动作端点不回数据），但叫醒一拍就能 0 延迟看到结果，不用等下一个 1s。
- *  未注册（容器还没挂）时是空操作，调用方不需要判空。 */
-export const statePoller: { now: () => void } = { now: () => {} };
 // 拖拽抛掷物理（弹簧跟手 + 甩抛 + 重力反弹）：两端共用同一份纯计算（src/shared/physics.ts）
 import {
   estimateReleaseVelocity,
@@ -69,6 +70,7 @@ import {
   SQ_SQUASH,
   squashScale,
   landingSquash,
+  throwVelocity,
   type DragSample,
   type PetCollisionSlot,
   type ThrowState,
@@ -92,6 +94,15 @@ const THUMB_EXT = ANIMATION_EXT;
 
 /** 余额气泡展示时长（ms）：定时自动消失，与动画生命周期解耦 */
 const BUBBLE_DURATION_MS = 10 * 1000;
+
+/** /state 长轮询的挂起时长（ms）：宿主在"版本没变"时最多挂这么久。
+ *  1s 是**前端自己定的下限**——空闲时请求率因此与改造前完全一致（1 req/s），
+ *  而叶子一变宿主立刻返回，前端不必再等满一拍。 */
+const STATE_WAIT_MS = 1000;
+
+/** 老宿主 / 请求失败时的轮询间隔（ms）。老宿主不认识 since/timeout，会**立刻**返回全量，
+ *  不退避就是忙等；网络失败同理。 */
+const STATE_FALLBACK_MS = 1000;
 
 /** 内联 CSS —— 注入一次（官方插件标准做法） */
 const css = [
@@ -157,6 +168,10 @@ export function makePetUI(rt: {
     sayTick,
     animCue,
     animCueTick,
+    posCue,
+    posCueTick,
+    throwCue,
+    throwCueTick,
     arena,
   }: {
     cfg: RuntimePet;
@@ -168,13 +183,23 @@ export function makePetUI(rt: {
     balanceManual: boolean;
     workStatus: WorkStatusSnapshot | null;
     workStatusTick: number;
-    /** 本宠物的「说一句话」（碎碎念/命令气泡/对话回复三合一；容器从 S 分发下来） */
-    say?: { text: string; image?: string; seq: number };
+    /** 本宠物的「说话指令」（碎碎念/命令气泡/对话回复/清空，容器从 S 分发下来）。
+     *  `kind: 'clear'` = 收起气泡（POST /bubble/clear）；其余 = 弹一个气泡。 */
+    say?: SayCue & { seq: number };
     sayTick: number;
     /** 本宠物的「点播动画」指令（其他插件经 POST /anim 写进 S；容器从 S 分发下来）。
      *  注意与组件内既有的 `anim`（**当前正在播的**动画名）区分：这个只是"要播什么"的指令。 */
-    animCue?: { name: string; seq: number };
+    animCue?: { name: string; seq: number; playbackId?: string };
     animCueTick: number;
+    /** 本宠物的「位置」指令（其他插件经 POST /position 写进 S；容器从 S 分发下来）。
+     *  `x`/`y` 是宠物**中心**的归一化坐标（0~1，host 写入前已夹取）；
+     *  `mode` 决定走哪条路，`duration` 只有 `line` 模式才有意义（其余模式恒为 0）。 */
+    posCue?: { x: number; y: number; mode: PositionMode; duration: number; seq: number };
+    posCueTick: number;
+    /** 本宠物的「抛掷」指令（其他插件经 POST /throw 写进 S；容器从 S 分发下来）。
+     *  `angle` 单位度（`0` = 正右，逆时针为正）；`power` 是力度倍率。 */
+    throwCue?: { angle: number; power: number; seq: number };
+    throwCueTick: number;
     arena: ReactNS.MutableRefObject<{ slots: Record<string, PetCollisionSlot> }>;
   }) {
     // ---- 尺寸（由配置传入；容器/设置页更新后即时跟随）----
@@ -236,6 +261,13 @@ export function makePetUI(rt: {
     const videoBRef = useRef<HTMLVideoElement | null>(null);
     const frontRef = useRef(0);
     const pendingRef = useRef<null | { anim: string; once: boolean; gen: number }>(null);
+    // 播放回执（issue #122 第 3 项）：待归属的第三方点播编号**随 anim 一起经 state 下发**。
+    // 为什么用 state 而不是 ref：目标动画与当前动画相同时客户端有防重语义（不换源），
+    // ref 会把这个编号留下、串到后续某次自播动画的换源上；state 变化本身会驱动 effect 再跑一趟，
+    // 那一趟正好落进防重分支，于是"本来就在播"也能被如实回成 playing。
+    const [cuePlayback, setCuePlayback] = useState<string | null>(null);
+    /** 当前正在播的第三方点播编号（null = 自播动画，不上报）；播完 / 失败 / 被打断后清空 */
+    const playingPlaybackRef = useRef<string | null>(null);
     const genRef = useRef(0);
     const dragRef = useRef({
       active: false,
@@ -277,7 +309,28 @@ export function makePetUI(rt: {
     const mountedRef = useRef(false);
     const inflightRef = useRef<AbortController[]>([]);
 
-    const switchTo = (next: string, nextOnce: boolean) => {
+    /**
+     * 播放回执上报（issue #122 第 3 项）：把这一段点播的**真实**状态告诉 host。
+     *
+     * 只对第三方点播（带 playbackId）上报；自播动画（随机链 / 点击 / 拖拽 / 碎碎念 / 余额…）不报。
+     * 为什么必须有这一层：host 只知道"受理了"，不知道播没播完——动画在浏览器里播，只有这里知道真相。
+     * 失败静默（postAction 从不抛）+ 一条 warn：回执是附加能力，绝不能因为它把播放本身搞挂。
+     */
+    const reportPlayback = (playbackId: string, status: string, reason?: string): void => {
+      void postAction(
+        '/dsh-pet-7340/playback/' + encodeURIComponent(playbackId) + '/report',
+        reason === undefined ? { status } : { status, reason },
+      ).then((ok: boolean) => {
+        if (!ok) {
+          console.warn('[dsh-pet] 播放回执未送达 pet=' + cfg.id + ' id=' + playbackId + ' status=' + status);
+        }
+      });
+    };
+
+    const switchTo = (next: string, nextOnce: boolean, cuePlaybackId: string | null) => {
+      // 一次性消费：立刻清掉待归属编号（清空会再跑一趟本 effect，那一趟 cuePlaybackId 为 null，
+      // 落进下面的防重分支，无副作用）
+      if (cuePlaybackId !== null) setCuePlayback(null);
       if (!next) return;
       const pending = pendingRef.current;
       if (pending && pending.anim === next && pending.once === nextOnce) {
@@ -287,6 +340,12 @@ export function makePetUI(rt: {
           pendingSquashRef.current = false;
           const front = frontRef.current === 0 ? videoARef : videoBRef;
           if (front.current) startSquash(front.current);
+        }
+        // 这次点播的目标**本来就在播**（没有换源，但确实在播）→ 如实回 playing，
+        // 否则调用方只能干等到 timeout（host 对终态幂等，重复上报无害）
+        if (cuePlaybackId !== null) {
+          playingPlaybackRef.current = cuePlaybackId;
+          reportPlayback(cuePlaybackId, 'playing');
         }
         return;
       }
@@ -320,6 +379,9 @@ export function makePetUI(rt: {
       el.autoplay = true;
       el.playsInline = true;
       el.onended = nextOnce ? handleEnded : null;
+      // 元素级失败（解码 / 格式不支持）：既有实现**完全没有检测**（只表现为"点了没反应"），
+      // 这里补一条回执——只上报，不改播放控制（换源时与 onended 一起清掉，见 onReady）
+      el.onerror = cuePlaybackId === null ? null : () => reportPlayback(cuePlaybackId, 'failed', 'decode-error');
       // 素材加载走 fetch+blob：一次拿全整文件，绕开 video 流式加载在 DSH WebServer 上偶发的
       // stalled/连接竞争（用户环境实测：慢点 5 次全部 stall、动画永不切换）。10s 超时兜底。
       // cache 用默认策略：服务端 cache-control 是 max-age=3600（src/host/index.ts:140），有效期内
@@ -355,6 +417,11 @@ export function makePetUI(rt: {
           if (!mountedRef.current) return; // 卸载后的 abort：静默
           if (pendingRef.current?.gen !== gen) return; // 已被更新的切换覆盖
           pendingRef.current = null; // 释放挂起的 pending：后续点击不再被困在防重/覆盖循环里
+          // 素材没拿到 → 这一段点播不可能播起来，如实回 failed（而不是让调用方干等）
+          if (cuePlaybackId !== null) {
+            if (playingPlaybackRef.current === cuePlaybackId) playingPlaybackRef.current = null;
+            reportPlayback(cuePlaybackId, 'failed', 'asset-load');
+          }
           console.warn(
             '[dsh-pet] 素材加载失败 pet=' +
               cfg.id +
@@ -375,12 +442,31 @@ export function makePetUI(rt: {
           // 拆雷：降级为背景的视频继续播完会触发它身上残留的 onended → handleEnded，
           // 掐断当前前台动画（历史上表现为随机急速跳转/雪崩）。清 handler + 停播彻底消除。
           old.current.onended = null;
+          old.current.onerror = null;
           old.current.pause();
+          // 被换下去的那一段若属第三方点播且没播完 → 如实回 cancelled。
+          // （"被新点播顶掉"由 host 在受理时直接标记，这里补的是**非点播**打断：
+          //   点击 / 拖拽 / 碎碎念 / 余额 / 工作状态 / 空闲回收。）
+          const outgoing = playingPlaybackRef.current;
+          if (outgoing !== null && outgoing !== cuePlaybackId) {
+            reportPlayback(outgoing, 'cancelled', 'superseded');
+          }
         }
         frontRef.current = frontRef.current === 0 ? 1 : 0;
         pendingRef.current = null;
+        playingPlaybackRef.current = cuePlaybackId;
         el.style.transform = facingRef.current === 'right' ? 'scaleX(-1)' : '';
-        el.play().catch(() => {});
+        el.play()
+          .then(() => {
+            // 只有 play() 兑现才代表"确实开始出画"（loadeddata 只代表可解码）
+            if (cuePlaybackId !== null) reportPlayback(cuePlaybackId, 'playing');
+          })
+          .catch(() => {
+            // 自动播放被拒 / 元素不可播：既有实现静默吞掉 → 现在如实回 failed（不改播放控制）
+            if (cuePlaybackId === null) return;
+            if (playingPlaybackRef.current === cuePlaybackId) playingPlaybackRef.current = null;
+            reportPlayback(cuePlaybackId, 'failed', 'play-rejected');
+          });
         // 点击 Q 弹：等新动画就位后才压（压的是新点击动画的首帧，与桌面一致）
         if (pendingSquashRef.current) {
           pendingSquashRef.current = false;
@@ -393,9 +479,9 @@ export function makePetUI(rt: {
 
     // ---- 状态驱动播放 ----
     useEffect(() => {
-      switchTo(anim, once);
+      switchTo(anim, once, cuePlayback);
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [anim, once, seq]);
+    }, [anim, once, seq, cuePlayback]);
     useEffect(() => {
       mountedRef.current = true;
       const bu = blobUrlRef.current;
@@ -670,8 +756,8 @@ export function makePetUI(rt: {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [workStatusTick, workStatus?.state, workStatus?.sourceName, workStatus?.task]);
 
-    // 说话（碎碎念周期 / 命令气泡 / 对话回复**三合一**）：容器统一轮询 /state 后，把属于本宠物的
-    // pets.<id>.say 分发下来；seq 变化即播说话动画 + 弹气泡（10s）。
+    // 说话（碎碎念周期 / 命令气泡 / 对话回复 / 清空**四合一**）：容器统一轮询 /state 后，把属于
+    // 本宠物的 pets.<id>.say 分发下来；seq 变化即执行——`clear` 形态收起气泡，其余弹气泡。
     // 改造前这里是两条独立轮询（/whisper 周期 + /broadcast 1s）、host 侧也是两个缓存；
     // 现在只有一个数据源（S），"首拉记基线"由容器统一处理。
     // 不受 whisperEnabled 门控：那个字段只关自动周期，命令/对话的手动语义永远可用。
@@ -679,7 +765,11 @@ export function makePetUI(rt: {
     useEffect(() => {
       if (!say || say.seq === prevSaySeqRef.current) return;
       prevSaySeqRef.current = say.seq;
-      triggerWhisper(say.text, say.image);
+      if (say.kind === 'clear') {
+        clearWhisperBubble();
+        return;
+      }
+      triggerWhisper(say.text, say.image, say.duration, say.anim);
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [sayTick]);
 
@@ -690,40 +780,85 @@ export function makePetUI(rt: {
     useEffect(() => {
       if (!animCue || animCue.seq === prevAnimSeqRef.current) return;
       prevAnimSeqRef.current = animCue.seq;
-      handleMenuAction({ label: animCue.name, anim: animCue.name });
+      handleMenuAction({ label: animCue.name, anim: animCue.name }, animCue.playbackId);
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [animCueTick]);
 
-    // 碎碎念触发（本宠物）：随机抽 events.whisper 动画 + 弹文本气泡（10s 消失，与动画解耦）
-    // image：host 侧随机抽定的配图名称（未开配图/池为空则 undefined）——与文本同一次触发一起来
-    const triggerWhisper = (text: string, image?: string) => {
-      const pool = petAnims.events?.whisper;
-      if (!pool || pool.length === 0) {
-        console.error('[dsh-pet] 配置缺少 animations.events.whisper，无法播放碎碎念动画');
-        return;
+    // 位置指令（其他插件经 POST /position 写进 S）：容器统一轮询后把属于本宠物的
+    // pets.<id>.position 分发下来；seq 变化即执行。用户正按着宠物时整拍丢弃（见 applyPositionCue）。
+    const prevPosSeqRef = useRef(0);
+    useEffect(() => {
+      if (!posCue || posCue.seq === prevPosSeqRef.current) return;
+      prevPosSeqRef.current = posCue.seq;
+      applyPositionCue(posCue.x, posCue.y, posCue.mode, posCue.duration);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [posCueTick]);
+
+    // 抛掷指令（其他插件经 POST /throw 写进 S）：同上，seq 变化即执行。
+    const prevThrowSeqRef = useRef(0);
+    useEffect(() => {
+      if (!throwCue || throwCue.seq === prevThrowSeqRef.current) return;
+      prevThrowSeqRef.current = throwCue.seq;
+      applyThrowCue(throwCue.angle, throwCue.power);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [throwCueTick]);
+
+    /** 收起说话气泡（`POST /bubble/clear` 的落点）。
+     *  **只动气泡**：正在播的动画、余额气泡、工作状态气泡都不碰——气泡与动作是两把锁、
+     *  分别释放（issue #122 第 5 条）。顺带清掉文本/配图，免得残留内容在下次渲染时闪一下。 */
+    const clearWhisperBubble = () => {
+      if (whisperBubbleTimerRef.current !== null) window.clearTimeout(whisperBubbleTimerRef.current);
+      whisperBubbleTimerRef.current = null;
+      setWhisperBubbleOn(false);
+      setWhisperText(null);
+      setWhisperImage(undefined);
+    };
+
+    // 碎碎念触发（本宠物）：随机抽 events.whisper 动画 + 弹文本气泡（与动画解耦）。
+    // image：host 侧随机抽定的配图名称（未开配图/池为空则 undefined）——与文本同一次触发一起来。
+    // duration / anim：`POST /broadcast` 的两个新参数（issue #122 第 5 条）。两者**互相独立**：
+    //   - `anim === false` 时整段跳过动画联动——不查池、不换源，也不 stopMove()
+    //     （stopMove 属于"开始播这段动画"的一部分，不是弹气泡的副作用）。
+    //     于是配置里缺 events.whisper 时，只弹气泡这条路照样走得通。
+    //   - `duration === 0` 表示"这一条不显示"：**不动当前已在显示的气泡**
+    //     （要收起它请用 POST /bubble/clear，两件事不重叠）。
+    const triggerWhisper = (text: string, image?: string, duration?: number, anim?: boolean) => {
+      let name: string | null = null;
+      if (anim !== false) {
+        const pool = petAnims.events?.whisper;
+        if (!pool || pool.length === 0) {
+          console.error('[dsh-pet] 配置缺少 animations.events.whisper，无法播放碎碎念动画');
+          return;
+        }
+        // 整池随机抽 1 槽（避开当前正播动画，避免连续重复）；槽位若为数组候选再档内随机
+        name = pickSlot(pick(pool, animRef.current), animRef.current);
       }
-      // 整池随机抽 1 槽（避开当前正播动画，避免连续重复）；槽位若为数组候选再档内随机
-      const name = pickSlot(pick(pool, animRef.current), animRef.current);
       console.log(
         '[dsh-pet] ' +
           new Date().toTimeString().slice(0, 8) +
           ' whisper pet=' +
           cfg.id +
-          ' -> [' +
-          name +
-          '] 「' +
+          (name === null ? ' （不联动动画）' : ' -> [' + name + ']') +
+          ' 「' +
           text +
           '」',
       );
-      stopMove();
+      // 先起动画：它与气泡时长是两个独立参数（duration=0 时动画照播、只是不弹泡）
+      if (name !== null) {
+        stopMove();
+        setOnce(true);
+        setAnim(name);
+      }
+      if (duration === 0) return;
       setWhisperText(text);
       setWhisperImage(image);
       setWhisperBubbleOn(true);
-      // 气泡 10s 定时消失（与动画解耦；重复触发先清旧定时器）
+      // 气泡定时消失（与动画解耦；重复触发先清旧定时器）
       if (whisperBubbleTimerRef.current !== null) window.clearTimeout(whisperBubbleTimerRef.current);
-      whisperBubbleTimerRef.current = window.setTimeout(() => setWhisperBubbleOn(false), BUBBLE_DURATION_MS);
-      setOnce(true);
-      setAnim(name);
+      whisperBubbleTimerRef.current = window.setTimeout(
+        () => setWhisperBubbleOn(false),
+        duration ?? BUBBLE_DURATION_MS,
+      );
     };
     useEffect(() => {
       const onResize = () => setCustomPos((prev) => (prev ? { ...prev } : prev));
@@ -811,6 +946,13 @@ export function makePetUI(rt: {
       // 只认前台视频触发的 ended：后台（被降级停播）视频即便有残留事件也一律丢弃，防止掐断当前动画
       const evEl = e && (e.currentTarget as HTMLVideoElement | null);
       if (evEl && !evEl.classList.contains('is-front')) return;
+      // 播放回执：前台视频真的播完了 → 如实回 ended。放在拖拽守卫**之前**：
+      // "播完了"是既成事实，拖拽守卫管的是动画链怎么推进，不该影响回执的准确性。
+      const donePlayback = playingPlaybackRef.current;
+      if (donePlayback !== null) {
+        playingPlaybackRef.current = null; // 先清再上报：后续链式换源不该把它当成"被打断"
+        reportPlayback(donePlayback, 'ended');
+      }
       const animations = petAnims;
       if (dragRef.current.active) return;
       // 事件动画播完：回 idle（与 drag/clicks 同分支，不进入随机链）；气泡由定时器自动消失，与动画解耦
@@ -1054,6 +1196,9 @@ export function makePetUI(rt: {
         cancelAnimationFrame(moveRef.current);
         moveRef.current = null;
       }
+      // 位置指令的弹簧也是一种"自主移动"：任何停走路的地方都该把它一并停掉，否则两套运动系统会
+      // 同时改 DOM 位置（用户拖拽 / 抛掷 / 事件动画 / 菜单点播都会走到这）。
+      stopPosFollow();
     };
 
     // ---- 拖拽抛掷物理（与桌面 renderer.js 同构；纯计算在 shared/physics.ts）----
@@ -1189,6 +1334,110 @@ export function makePetUI(rt: {
     /** 被撞回调（宠物间碰撞）：被其它飞行中宠物撞到 → 停当前动作，从落点以新初速抛出去（全复用现有物理） */
     const startThrowLatestRef = useRef<(px: number, py: number, vx: number, vy: number) => void>(() => {});
     startThrowLatestRef.current = startThrow;
+
+    // ---- 位置 / 抛掷指令（其他插件经 POST /position、POST /throw 写进 S）----
+    // 两条都是**指令**，与上面的 animCue 同族：容器统一轮询后按宠物 id 分发，seq 变化即执行。
+    // 这里不新写运动学——位置按 mode 走三条既有路径（instant / spring / line），抛掷复用 startThrow。
+    /** 位置指令的跟随 rAF（spring 与 line 共用同一个句柄）。与拖拽跟手分开：拖拽没有终点
+     *  （指针一直喂目标），这条有终点，收敛/到点后必须自己收掉，否则 rAF 永远转下去。 */
+    const posFollowRef = useRef<number | null>(null);
+    const posFollowTokenRef = useRef(0);
+
+    const stopPosFollow = () => {
+      posFollowTokenRef.current++;
+      if (posFollowRef.current !== null) {
+        cancelAnimationFrame(posFollowRef.current);
+        posFollowRef.current = null;
+      }
+    };
+
+    /**
+     * 执行一条位置指令：把宠物**中心**挪到归一化坐标 (rx, ry)。
+     * `mode` 三选一——`instant` 一帧到位并提交 customPos；`spring` 走拖拽那套过阻尼弹簧；
+     * `line` 在 `duration` 毫秒里**直线**走完（`duration <= 0` 等同 instant）。
+     * 用户正按着宠物（`active` 含点击与拖拽）时**整拍丢弃**——手指底下的东西不该跑；
+     * 这与动画链的守卫同一语义（见 handleEnded）。丢弃是静默的：接口早已回过 ok。
+     */
+    const applyPositionCue = (rx: number, ry: number, mode: PositionMode, duration: number) => {
+      if (dragRef.current.active) return; // 用户交互优先
+      stopThrow(); // 先显式接管：停掉飞行与走路（stopMove 顺带停掉上一次的位置跟随）
+      stopMove();
+      // 中心 → 包围盒左上角 px（与下面提交 customPos 时的换算互逆）
+      const px = rx * window.innerWidth - halfW;
+      const py = ry * window.innerHeight - halfH;
+      const rootEl = rootRef.current;
+      if (!rootEl || mode === 'instant' || (mode === 'line' && duration <= 0)) {
+        boxPxRef.current = { x: px, y: py };
+        setCustomPos({ rx, ry });
+        return;
+      }
+      const token = ++posFollowTokenRef.current;
+      /** 落笔：写 ref + 四个 style（弹簧与直线两条路共用；原先是各写一遍） */
+      const paint = (x: number, y: number) => {
+        boxPxRef.current = { x, y };
+        rootEl.style.left = x + 'px';
+        rootEl.style.top = y + 'px';
+        rootEl.style.right = 'auto';
+        rootEl.style.bottom = 'auto';
+      };
+      if (mode === 'line') {
+        // 直线补间：在**像素空间**插值——按归一化比例插值会把斜线走歪（视口非正方时两轴缩放不同）
+        const from = boxPxRef.current ?? { x: px, y: py };
+        const t0 = performance.now();
+        const step = () => {
+          if (posFollowTokenRef.current !== token) return;
+          const p = Math.min((performance.now() - t0) / duration, 1);
+          if (p >= 1) {
+            // 精确落位：终点不留残余偏差（弹簧那条靠收敛阈值收尾，这条靠 p 到 1）
+            paint(px, py);
+            posFollowRef.current = null;
+            setCustomPos({ rx, ry });
+            return;
+          }
+          paint(from.x + (px - from.x) * p, from.y + (py - from.y) * p);
+          posFollowRef.current = requestAnimationFrame(step);
+        };
+        posFollowRef.current = requestAnimationFrame(step);
+        return;
+      }
+      // spring：过阻尼弹簧跟随——没有行程时间，靠收敛判定自己收尾
+      let last = performance.now();
+      const vel = { vx: 0, vy: 0 };
+      const step = () => {
+        if (posFollowTokenRef.current !== token) return;
+        const now = performance.now();
+        const dt = Math.min((now - last) / 1000, 1 / 30);
+        last = now;
+        let x = boxPxRef.current?.x ?? px;
+        let y = boxPxRef.current?.y ?? py;
+        vel.vx = springStep(vel.vx, x, px, dt, cfg.physics.throwPower);
+        vel.vy = springStep(vel.vy, y, py, dt, cfg.physics.throwPower);
+        x += vel.vx * dt;
+        y += vel.vy * dt;
+        paint(x, y);
+        // 收敛判定：足够近且足够慢 → 精确落位并提交。拖拽跟手靠指针松手结束，这条得自己判。
+        if (Math.abs(px - x) < 0.5 && Math.abs(py - y) < 0.5 && Math.abs(vel.vx) < 1 && Math.abs(vel.vy) < 1) {
+          paint(px, py);
+          posFollowRef.current = null;
+          setCustomPos({ rx, ry });
+          return;
+        }
+        posFollowRef.current = requestAnimationFrame(step);
+      };
+      posFollowRef.current = requestAnimationFrame(step);
+    };
+
+    /**
+     * 执行一条抛掷指令：角度（度，`0` = 正右，逆时针为正）+ 力度倍率 → 初速度，交给 startThrow。
+     * 下游（重力 / 反弹 / 地面摩擦 / 落地 Q 弹 / 宠物间碰撞 / 落定提交位置）全是**既有行为**，
+     * 本接口不引入任何新物理。不设死区：接口是明确命令，power 再小也照抛。
+     */
+    const applyThrowCue = (angleDeg: number, power: number) => {
+      if (dragRef.current.active) return; // 用户交互优先
+      const { vx, vy } = throwVelocity(angleDeg, power);
+      const box = boxPxRef.current ?? { x: currentCenterX() - halfW, y: currentCenterY() - halfH };
+      startThrow(box.x, box.y, vx, vy);
+    };
     const onPetHit = (vx: number, vy: number) => {
       stopMove();
       stopDragFollow();
@@ -1507,29 +1756,27 @@ export function makePetUI(rt: {
     // 注意：菜单是独立浮层，只在宠物命中区拦截右键（preventDefault + stopPropagation），
     // 绝不进入/改动 DSH 页面自己的菜单。浏览器端工具项 = 查看余额 / 碎碎念 / 对话 / 回到初始位置
     // （无「打开网站」——宠物就在网页里；无「重载配置」——刷新页面即可）。
-    const handleMenuAction = (leaf: MenuLeaf) => {
+    const handleMenuAction = (leaf: MenuLeaf, playbackId?: string) => {
       if (leaf.action === 'show-balance') {
-        // 查看余额（与桌面菜单同一套语义）：POST 动作端点让 host 立即刷新一次并写入 S（manual 标记随数据一起写），
-        // 随即**立刻跑一拍 /state** 拿结果展示——0 延迟，不必等下一个轮询周期。
+        // 查看余额（与桌面菜单同一套语义）：POST 动作端点让 host 立即刷新一次并写入 S（manual 标记随数据一起写）。
+        // 结果**这里什么都不用做**：写叶子会让版本号变，挂着的长轮询那一拍立刻返回并展示（0 延迟）。
         // 动作端点不回数据：余额只有一个出口（/state 的 sections.balance），与碎碎念同一条契约。
         console.info('[dsh-pet] 菜单查看余额 pet=' + cfg.id);
         postAction('/dsh-pet-7340/balance')
           .then((ok: boolean) => {
             if (!ok) console.warn('[dsh-pet] 余额刷新动作未成功 pet=' + cfg.id);
-            statePoller.now();
           })
           .catch((e: unknown) => console.warn('[dsh-pet] 余额刷新异常', e));
         return;
       }
       if (leaf.action === 'whisper') {
         // 手动碎碎念：POST 动作端点让 host 立即新生成一句（写进 S）。
-        // 动作**不回文本**——收到 ok 后叫醒一拍 /state，文本随下一拍到达并弹气泡（0 延迟）。
+        // 动作**不回文本**——文本随"版本号变化"唤醒的那一拍长轮询到达并弹气泡（0 延迟）。
         // 手动触发不受 whisperEnabled 限制——该字段只关自动周期，手动永远可用。
         console.info('[dsh-pet] 菜单触发碎碎念 pet=' + cfg.id);
         postAction('/dsh-pet-7340/whisper?pet=' + encodeURIComponent(cfg.id))
           .then((ok: boolean) => {
             if (!ok) console.warn('[dsh-pet] 碎碎念手动触发失败 pet=' + cfg.id);
-            statePoller.now();
           })
           .catch((e: unknown) => console.warn('[dsh-pet] 碎碎念手动触发异常', e));
         return;
@@ -1548,9 +1795,8 @@ export function makePetUI(rt: {
           x: hitRect ? hitRect.right + 6 : window.innerWidth - 256,
           y: hitRect ? hitRect.top + 6 : 8,
           onSent: () => {
-            // 发送成功：回复已写进 S，叫醒一拍 /state 让气泡 0 延迟出现（不必等下一个 1s）
+            // 发送成功：回复已写进 S → 版本号变 → 挂着的长轮询立刻返回并弹气泡（0 延迟）
             console.info('[dsh-pet] 对话已发送 pet=' + cfg.id);
-            statePoller.now();
           },
           onClose: () => {
             chatRef.current = null;
@@ -1587,6 +1833,9 @@ export function makePetUI(rt: {
         return;
       }
       if (!leaf.anim) return;
+      // 回执归属：这一段动画若来自第三方点播，编号要跟着这次换源一起下发（自播动画传 null，
+      // 顺带把上一次的编号清掉，避免陈旧编号串到自播动画上）
+      const cuePlaybackId = playbackId ?? null;
       // 文字类（noMirror）朝右站姿是镜像的：点播前强制朝左，避免文字镜像（与随机链"朝右不选文字"同语义）
       if (isNoMirrorAnimation(petAnims.categories, leaf.anim) && facingRef.current === 'right') {
         setFacing('left');
@@ -1601,12 +1850,18 @@ export function makePetUI(rt: {
           stopMove();
           setOnce(true);
           setAnim(leaf.anim);
+          setCuePlayback(cuePlaybackId);
+        } else if (cuePlaybackId !== null) {
+          // 移动系统接管：这条路径**不换视频源**（宠物走真实位移），本段点播不会真的播起来。
+          // 如实回 failed/busy，而不是让调用方干等到 timeout。
+          reportPlayback(cuePlaybackId, 'failed', 'busy');
         }
         return;
       }
       stopMove();
       setOnce(true);
       setAnim(leaf.anim);
+      setCuePlayback(cuePlaybackId);
     };
     const handleContextMenu = (e: ReactNS.MouseEvent<HTMLDivElement>) => {
       // 工具项（查看余额 / 碎碎念 / 对话 / 回到初始位置，与桌面端同一套）+ 动作树（动作→分类→具体动画）。
@@ -1960,74 +2215,116 @@ export function makePetUI(rt: {
     // 为什么不再按"有没有启用某功能"决定要不要轮询：说话（命令触发）与宠物开关无关，
     // 今天每只宠物的 /broadcast 轮询本来就不受开关门控——统一后至少不比现在多。
     const [sayTick, setSayTick] = useState(0);
-    const sayRef = useRef<Record<string, { text: string; image?: string; seq: number }>>({});
+    const sayRef = useRef<Record<string, SayCue & { seq: number }>>({});
     const [animCueTick, setAnimCueTick] = useState(0);
-    const animCueRef = useRef<Record<string, { name: string; seq: number }>>({});
+    const animCueRef = useRef<Record<string, { name: string; seq: number; playbackId?: string }>>({});
+    const [posCueTick, setPosCueTick] = useState(0);
+    const posCueRef = useRef<
+      Record<string, { x: number; y: number; mode: PositionMode; duration: number; seq: number }>
+    >({});
+    const [throwCueTick, setThrowCueTick] = useState(0);
+    const throwCueRef = useRef<Record<string, { angle: number; power: number; seq: number }>>({});
     useEffect(() => {
       if (!ready) return;
       let alive = true;
       let baseline: Record<string, number> | null = null;
-      // 配置版本基线：与叶子同一套约定——首拉只记基线，之后与上一拍不同才动作
-      let configBaseline: string | undefined;
-      const poll = async () => {
-        try {
-          const s = await fetchState();
-          if (!alive || !s) return;
-          // 配置被别处改过（桌面端右键改 display / 另一个标签页保存 / 用户手改配置文件）→ 重拉配置重拍平。
-          // 这是「桌面端改了、浏览器端要刷新才可见」的解药：宿主把配置 mtime 挂在 /state 上，1s 内自动跟随。
-          if (configBaseline === undefined) {
-            configBaseline = s.configVersion;
-          } else if (s.configVersion !== undefined && s.configVersion !== configBaseline) {
-            configBaseline = s.configVersion;
+      // 长轮询：since = 我手里这份 S 的版本号（undefined = 首拉，不带参数 → 立刻拿全量）
+      let since: number | undefined;
+      // 宿主支持长轮询吗？响应带 counter = 支持；不带 = **老宿主**——它不认识 since/timeout，
+      // 会立刻返回全量，这时必须退回固定间隔轮询，否则就成忙等了。
+      let longPoll = true;
+      /** 应用一份 S：首拉只记基线，之后按 counter 变化逐个分发 */
+      const applyState = (s: PollState) => {
+        if (baseline === null) {
+          baseline = flattenCounters(s); // 首拉：只记基线，不渲染
+          return;
+        }
+        for (const { path, leaf } of takeChanged(s, baseline)) {
+          if (leaf.data === null) continue;
+          if (path === 'sections.config') {
+            // 配置被别处改过 → 重拉配置重拍平。**唯一的写方是 POST /pet-display**
+            // （桌面端右键改显示位置）——那个改动不是本页面发起的，只能靠这个信号知道。
+            // 叶子 data 恒为 {}（纯信号），配置本体太大不能塞进 /state，所以这里再拉一次。
+            // 长轮询下这个信号一到就醒，比改造前的 1s 更快。
             petBridge.reload(); // 内部 GET /config（该响应已带 no-cache）→ applyMerged → visiblePets 重算
-          }
-          if (baseline === null) {
-            baseline = flattenCounters(s); // 首拉：只记基线，不渲染
-            return;
-          }
-          for (const { path, leaf } of takeChanged(s, baseline)) {
-            if (leaf.data === null) continue;
-            if (path === 'sections.balance') {
-              const hit = readBalance(leaf);
-              if (hit) applyBalanceRef.current(hit.state, hit.manual);
-            } else if (path === 'sections.workStatus') {
-              const snap = readWorkStatus(leaf);
-              if (snap) applyWorkStatusSnapshot(snap);
-            } else if (path === 'sections.notify') {
-              // 系统通知（单槽：同一秒多条只留最后一条，由 host 决定）→ 弹 toast（内部有开关/聚焦/权限门）
-              notifyFromFrame(leaf.data);
-            } else if (path.startsWith('pets.') && path.endsWith('.say')) {
-              // 说话叶子：路径形如 pets.<id>.say。宠物 id **允许含点号**，所以按前缀/后缀切片，
-              // 绝不 split('.')（那会把 id 切碎、派发给不存在的宠物）。
-              const petId = path.slice('pets.'.length, -'.say'.length);
-              const said = readSay(leaf);
-              if (said) {
-                sayRef.current[petId] = { ...said, seq: (sayRef.current[petId]?.seq ?? 0) + 1 };
-                setSayTick((t) => t + 1);
-              }
-            } else if (path.startsWith('pets.') && path.endsWith('.anim')) {
-              // 点播动画叶子：路径形如 pets.<id>.anim。同样按前缀/后缀切片，绝不 split('.')。
-              // 每次写入 counter 都递增，所以同一个动画连点两次也会分发两次（重播）。
-              const petId = path.slice('pets.'.length, -'.anim'.length);
-              const hit = readAnim(leaf);
-              if (hit) {
-                animCueRef.current[petId] = { name: hit.name, seq: (animCueRef.current[petId]?.seq ?? 0) + 1 };
-                setAnimCueTick((t) => t + 1);
-              }
+          } else if (path === 'sections.balance') {
+            const hit = readBalance(leaf);
+            if (hit) applyBalanceRef.current(hit.state, hit.manual);
+          } else if (path === 'sections.workStatus') {
+            const snap = readWorkStatus(leaf);
+            if (snap) applyWorkStatusSnapshot(snap);
+          } else if (path === 'sections.notify') {
+            // 系统通知（单槽：同一秒多条只留最后一条，由 host 决定）→ 弹 toast（内部有开关/聚焦/权限门）
+            notifyFromFrame(leaf.data);
+          } else if (path.startsWith('pets.') && path.endsWith('.say')) {
+            // 说话叶子：路径形如 pets.<id>.say。宠物 id **允许含点号**，所以按前缀/后缀切片，
+            // 绝不 split('.')（那会把 id 切碎、派发给不存在的宠物）。
+            const petId = path.slice('pets.'.length, -'.say'.length);
+            const said = readSay(leaf);
+            if (said) {
+              sayRef.current[petId] = { ...said, seq: (sayRef.current[petId]?.seq ?? 0) + 1 };
+              setSayTick((t) => t + 1);
+            }
+          } else if (path.startsWith('pets.') && path.endsWith('.anim')) {
+            // 点播动画叶子：路径形如 pets.<id>.anim。同样按前缀/后缀切片，绝不 split('.')。
+            // 每次写入 counter 都递增，所以同一个动画连点两次也会分发两次（重播）。
+            const petId = path.slice('pets.'.length, -'.anim'.length);
+            const hit = readAnim(leaf);
+            if (hit) {
+              animCueRef.current[petId] = {
+                name: hit.name,
+                playbackId: hit.playbackId,
+                seq: (animCueRef.current[petId]?.seq ?? 0) + 1,
+              };
+              setAnimCueTick((t) => t + 1);
+            }
+          } else if (path.startsWith('pets.') && path.endsWith('.position')) {
+            // 位置指令叶子：路径形如 pets.<id>.position（同样按前缀/后缀切片，绝不 split('.')）
+            const petId = path.slice('pets.'.length, -'.position'.length);
+            const hit = readPosition(leaf);
+            if (hit) {
+              posCueRef.current[petId] = { ...hit, seq: (posCueRef.current[petId]?.seq ?? 0) + 1 };
+              setPosCueTick((t) => t + 1);
+            }
+          } else if (path.startsWith('pets.') && path.endsWith('.throw')) {
+            // 抛掷指令叶子：路径形如 pets.<id>.throw
+            const petId = path.slice('pets.'.length, -'.throw'.length);
+            const hit = readThrow(leaf);
+            if (hit) {
+              throwCueRef.current[petId] = { ...hit, seq: (throwCueRef.current[petId]?.seq ?? 0) + 1 };
+              setThrowCueTick((t) => t + 1);
             }
           }
-        } catch {
-          /* 轻量轮询失败静默：下一拍再试 */
         }
       };
-      // 前端动作（右键菜单/对话弹窗）完成后叫醒一拍：数据只从 S 来，但结果可以 0 延迟可见
-      statePoller.now = () => void poll();
-      void poll();
-      const timer = window.setInterval(() => void poll(), 1000);
+      // 自调度循环：**请求 → 处理 → 立刻再请求**。宿主侧在没变化时挂起，所以这个循环
+      // 空闲时是 1 请求/秒（与改造前一致），有变化时立刻收到——不需要"前端动作后叫醒一拍"
+      // 那套了：动作端点都会写叶子 → 版本变 → 挂着的这一拍自己就返回了。
+      const loop = async () => {
+        while (alive) {
+          let s: PollState | null = null;
+          try {
+            s = await fetchState(
+              undefined,
+              longPoll && since !== undefined ? { since, timeoutMs: STATE_WAIT_MS } : undefined,
+            );
+          } catch {
+            /* 轻量轮询失败静默：下一拍再试 */
+          }
+          if (!alive) return;
+          if (s) {
+            longPoll = typeof s.counter === 'number';
+            if (longPoll) since = s.counter;
+            applyState(s);
+          }
+          // 长轮询命中（或首拉）→ 立刻再请求，宿主已经替我们等过了；
+          // 失败 / 老宿主 → 退避一个间隔（不退避就是忙等）。
+          if (!s || !longPoll) await new Promise((r) => setTimeout(r, STATE_FALLBACK_MS));
+        }
+      };
+      void loop();
       return () => {
         alive = false;
-        statePoller.now = () => {};
-        window.clearInterval(timer);
       };
     }, [ready]);
 
@@ -2046,6 +2343,10 @@ export function makePetUI(rt: {
             sayTick,
             animCue: animCueRef.current[p.id],
             animCueTick,
+            posCue: posCueRef.current[p.id],
+            posCueTick,
+            throwCue: throwCueRef.current[p.id],
+            throwCueTick,
             arena: arenaRef,
           }),
         )

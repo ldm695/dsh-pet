@@ -78,6 +78,10 @@ class PetSprite {
     });
     this.firstVisualFrameResolved = false;
     this.once = true;
+    // 播放回执（issue #122 第 3 项）：当前正在播的**第三方点播**编号（null = 自播动画，不上报）。
+    // 为什么要单独一个字段：this.anim 只是动画名，右键菜单点播与第三方 /anim 可以播同名动画，
+    // 光看名字分不出"这一段该不该上报回执"。
+    this.playback = null;
     this.facing = 'left';
     // 交互/移动
     this.dragState = { active: false, dragging: false, sx: 0, sy: 0, petX: 0, petY: 0 };
@@ -93,6 +97,10 @@ class PetSprite {
     this.dragFollowToken = 0;
     this.throwRef = null; // 抛掷 rAF handle
     this.throwToken = 0;
+    // 位置指令（POST /position）的跟随 rAF（spring 与 line 共用同一个句柄）：与拖拽跟手分开——
+    // 拖拽没有终点（指针一直喂目标），这条有终点，收敛/到点后必须自己收掉，否则 rAF 永远转下去
+    this.posFollow = null;
+    this.posFollowToken = 0;
     this.space = null; // 抛掷空间（逐屏 AABB）缓存；显示器变化时由 relayout() 置空重建
     // Q 弹挤压（点击回应 / 抛掷落地）：rAF + 待压标记（等新动画成为前台再压，压新首帧）
     this.squashRef = null;
@@ -474,8 +482,23 @@ class PetSprite {
     return this.pos.y + this.halfH;
   }
 
+  /**
+   * 播放回执上报（issue #122 第 3 项）：把这一段点播的**真实**状态告诉 host。
+   *
+   * 只对第三方点播（带 playbackId）上报；自播动画（随机链 / 点击 / 拖拽 / 碎碎念 / 余额…）不报。
+   * 为什么必须有这一层：host 只知道"受理了"，不知道播没播完——动画在这里播，只有这里知道真相。
+   * S.postAction 自带 body 序列化且从不抛异常；再加一层 then 只为留一条排障日志。
+   */
+  reportPlayback(playbackId, status, reason) {
+    if (!playbackId) return;
+    const body = reason ? { status, reason } : { status };
+    void S.postAction(BASE + '/playback/' + encodeURIComponent(playbackId) + '/report', body).then((ok) => {
+      if (!ok) console.warn('[dsh-pet] 播放回执未送达 pet=' + this.pet.id + ' id=' + playbackId + ' status=' + status);
+    });
+  }
+
   // 双缓冲切换（与浏览器同一套：前台 opacity 切换 + 降级视频清 handler 并停播，防残留 ended 雪崩）
-  switchTo(next, nextOnce) {
+  switchTo(next, nextOnce, playbackId) {
     if (!next) return;
     const pending = this.pending;
     if (pending && pending.anim === next && pending.once === nextOnce) {
@@ -484,6 +507,12 @@ class PetSprite {
       if (this.pendingSquash) {
         this.pendingSquash = false;
         this.startSquash(this.front === 0 ? this.videoA : this.videoB);
+      }
+      // 这次点播的目标**本来就在播**（没换源，但确实在播）→ 如实回 playing，
+      // 否则调用方只能干等到 timeout（host 对终态幂等，重复上报无害）
+      if (playbackId) {
+        this.playback = playbackId;
+        this.reportPlayback(playbackId, 'playing');
       }
       return;
     }
@@ -508,6 +537,11 @@ class PetSprite {
         this.pendingMove = null;
       }
       console.warn('[dsh-pet] 素材加载失败 pet=' + this.pet.id + ' anim=' + next + '：' + why + '（已释放本次切换）');
+      // 播放回执：这一段点播没能播起来 → 如实回 failed（而不是让调用方干等到 timeout）
+      if (playbackId) {
+        if (this.playback === playbackId) this.playback = null;
+        this.reportPlayback(playbackId, 'failed', why === 'video error' ? 'decode-error' : 'asset-load');
+      }
     };
     const loadTimer = window.setTimeout(() => loadGuard('10s 超时'), 10000);
     el.onerror = () => {
@@ -526,12 +560,31 @@ class PetSprite {
         old.classList.remove('is-front');
         old.onended = null;
         old.pause();
+        // 被换下去的那一段若属第三方点播且没播完 → 如实回 cancelled。
+        // （"被新点播顶掉"由 host 在受理时直接标记，这里补的是**非点播**打断：
+        //   点击 / 拖拽 / 碎碎念 / 余额 / 工作状态 / 空闲回收。）
+        if (this.playback && this.playback !== playbackId) {
+          this.reportPlayback(this.playback, 'cancelled', 'superseded');
+        }
       }
       this.front = this.front === 0 ? 1 : 0;
       this.pending = null;
+      this.playback = playbackId || null;
       el.style.transform = this.facing === 'right' ? 'scaleX(-1)' : '';
-      if (this.pendingMove) this.startMoveDrive(el);
-      else el.play().catch(() => {});
+      if (this.pendingMove) {
+        this.startMoveDrive(el);
+      } else {
+        el.play()
+          .then(() => {
+            // 只有 play() 兑现才代表确实开始出画；loadeddata 仅表示可解码。
+            if (playbackId) this.reportPlayback(playbackId, 'playing');
+          })
+          .catch(() => {
+            if (!playbackId) return;
+            if (this.playback === playbackId) this.playback = null;
+            this.reportPlayback(playbackId, 'failed', 'play-rejected');
+          });
+      }
       this.resolveVisualFrameAfterPaint(el);
       // 点击 Q 弹：等新动画就位后才压（压的是新点击动画的首帧，与浏览器一致）
       if (this.pendingSquash) {
@@ -543,10 +596,10 @@ class PetSprite {
     if (el.readyState >= 2) onReady();
   }
 
-  playOnce(name) {
+  playOnce(name, playbackId) {
     this.anim = name;
     this.once = true;
-    this.switchTo(name, true);
+    this.switchTo(name, true, playbackId);
   }
 
   resolveVisualFrameAfterPaint(el) {
@@ -603,6 +656,13 @@ class PetSprite {
   }
 
   handleEnded() {
+    // 播放回执：前台视频真的播完了 → 如实回 ended。放在拖拽守卫**之前**：
+    // "播完了"是既成事实，拖拽守卫管的是动画链怎么推进，不该影响回执的准确性。
+    if (this.playback) {
+      const done = this.playback;
+      this.playback = null; // 先清再上报：后续链式换源不该把它当成"被打断"
+      this.reportPlayback(done, 'ended');
+    }
     if (this.dragState.active) return;
     const { animations } = { animations: this.animations };
     // 事件动画播完：回 idle（与 drag/clicks 同分支，不进随机链）；气泡由定时器自动消失，与动画解耦
@@ -694,7 +754,7 @@ class PetSprite {
 
   // ---- 漫游（rAF 驱动，动画首尾各 leadSec/tailSec 秒原地不动；几何在 shared/planMove） ----
   // preferredName 传入时固定使用该动画（右键菜单点播移动动画），否则与随机链一致随机选
-  tryMove(preferredName) {
+  tryMove(preferredName, playbackId) {
     if (this.moveRef !== null || this.pendingMove || this.throwRef !== null) return true;
     const moves = this.animations.moves;
     const actions = moves.actions;
@@ -723,10 +783,11 @@ class PetSprite {
       lockAnimation: preferredDrag,
       animationName: moveAnimation,
       previousAnimation,
+      playbackId: playbackId || null,
     };
     this.anim = moveAnimation;
     this.once = true;
-    this.switchTo(moveAnimation, true);
+    this.switchTo(moveAnimation, true, playbackId);
     return moveAnimation;
   }
 
@@ -897,7 +958,15 @@ class PetSprite {
       el.style.transform = this.facing === 'right' ? 'scaleX(-1)' : '';
       const { startRatio, startYRatio, targetRatio, targetYRatio, leadSec, tailSec } = candidate;
       const travelWindow = Math.max(0.1, duration - leadSec - tailSec);
-      el.play().catch(() => {});
+      el.play()
+        .then(() => {
+          if (pm.playbackId) this.reportPlayback(pm.playbackId, 'playing');
+        })
+        .catch(() => {
+          if (!pm.playbackId) return;
+          if (this.playback === pm.playbackId) this.playback = null;
+          this.reportPlayback(pm.playbackId, 'failed', 'play-rejected');
+        });
       const step = () => {
         if (this.moveToken !== token) return;
         const t = el.currentTime || 0;
@@ -973,12 +1042,13 @@ class PetSprite {
             lockAnimation: pm.lockAnimation,
             animationName: next.animationName,
             previousAnimation: pm.previousAnimation,
+            playbackId: pm.playbackId,
             arbitrationStartedAt: waitStartedAt,
             retries,
           };
           this.anim = next.animationName;
           this.once = true;
-          this.switchTo(next.animationName, true);
+          this.switchTo(next.animationName, true, pm.playbackId);
           return;
         }
         tryReserve(next);
@@ -987,6 +1057,10 @@ class PetSprite {
     const abandonMove = (reason) => {
       if (this.moveToken !== token) return;
       console.info('[dsh-pet] ' + reason + '，放弃本次移动并恢复动作循环');
+      if (pm.playbackId) {
+        if (this.playback === pm.playbackId) this.playback = null;
+        this.reportPlayback(pm.playbackId, 'failed', 'route-unavailable');
+      }
       this.stopMove();
       const fallback = S.pick(this.animations.idle, moveName) || this.animations.idle[0];
       if (fallback) this.playOnce(fallback);
@@ -1026,6 +1100,9 @@ class PetSprite {
       cancelAnimationFrame(this.moveRef);
       this.moveRef = null;
     }
+    // 位置指令的弹簧也是一种"自主移动"：任何停走路的地方都该把它一并停掉，否则两套运动系统会
+    // 同时改窗口位置（用户拖拽 / 抛掷 / 事件动画 / 菜单点播都会走到这）。
+    this.stopPosFollow();
   }
 
   // ---- 拖拽抛掷物理（弹簧跟手 + 甩抛 + 重力反弹；与浏览器 pet.ts 同构）----
@@ -1241,6 +1318,103 @@ class PetSprite {
     if (this.resumeWorkStatusAnim()) return;
     console.warn('[dsh-pet] resuming animation after throw pet=' + this.pet.id);
     this.playIdle();
+  }
+  // ---- 位置 / 抛掷指令（POST /position、POST /throw；与浏览器 pet.ts 同构）----
+  stopPosFollow() {
+    this.posFollowToken++;
+    if (this.posFollow !== null) {
+      cancelAnimationFrame(this.posFollow);
+      this.posFollow = null;
+    }
+  }
+
+  /**
+   * 位置指令：把宠物**中心**挪到归一化坐标 (rx, ry)（与 this.customPos 同一套语义）。
+   * `mode` 三选一——`instant` 一帧到位；`spring` 走拖拽那套过阻尼弹簧（S.springStep）；
+   * `line` 在 `duration` 毫秒里**直线**走完（`duration <= 0` 等同 instant）。
+   * 用户正按着宠物（`dragState.active` 含点击与拖拽）时**整拍丢弃**——手指底下的东西不该跑；
+   * 丢弃是静默的（接口早已回过 ok，与浏览器端同一契约）。
+   * 归一化空间 = **全部显示器工作区并集的外接矩形**；落点会被夹到 AREAS 并集（空洞不可达）。
+   */
+  moveToCenter(rx, ry, mode, duration) {
+    if (this.dragState.active) return; // 用户交互优先
+    this.stopThrow(); // 先显式接管：停掉飞行与走路（stopMove 顺带停掉上一次的位置跟随）
+    this.stopMove();
+    // 归一化空间是**外接矩形**（VIEW = AREAS 的 hull），不规则布局里含大片不属于任何屏的空洞
+    // （实测右倒 T 双屏：hull 的 23.7% 是空洞）。而 position() 在 customPos 分支**零夹取**
+    // （原文"松手无任何边界夹取"），不夹的话落进空洞的坐标会把宠物放进看不见的地方。
+    // 注意：鼠标拖拽到不了那里**不是因为代码在拦**，而是光标物理上出不去屏幕——所以位置接口
+    // 必须自己补这道守卫。判据与 relayout() 完全一致：把**身体中心**夹到 AREAS 并集。
+    // 浏览器端 0~1 就是视口、没有空洞，那边不走本函数。
+    const c = S.clampPointToRegion(AREAS, rx * VIEW.w, ry * VIEW.h);
+    // 夹取后的**比例**才是要写进 customPos 的值：position() 会按它重算窗口位置，
+    // 存原始 rx/ry 等于把刚做的夹取撤销掉。
+    const fx = c.x / VIEW.w;
+    const fy = c.y / VIEW.h;
+    const px = c.x - this.halfW;
+    const py = c.y - this.halfH;
+    if (mode === 'instant' || (mode === 'line' && duration <= 0)) {
+      this.sendBounds(px, py);
+      this.customPos = { rx: fx, ry: fy };
+      return;
+    }
+    const token = ++this.posFollowToken;
+    if (mode === 'line') {
+      // 直线补间：在**像素空间**插值——按归一化比例插值会把斜线走歪（外接矩形不是正方形）
+      const fromX = this.pos.x;
+      const fromY = this.pos.y;
+      const t0 = performance.now();
+      const step = () => {
+        if (this.posFollowToken !== token) return;
+        const p = Math.min((performance.now() - t0) / duration, 1);
+        if (p >= 1) {
+          // 精确落位：终点不留残余偏差（弹簧那条靠收敛阈值收尾，这条靠 p 到 1）
+          this.posFollow = null;
+          this.sendBounds(px, py);
+          this.customPos = { rx: fx, ry: fy };
+          return;
+        }
+        this.sendBounds(fromX + (px - fromX) * p, fromY + (py - fromY) * p);
+        this.posFollow = requestAnimationFrame(step);
+      };
+      this.posFollow = requestAnimationFrame(step);
+      return;
+    }
+    // spring：过阻尼弹簧跟随——没有行程时间，靠收敛判定自己收尾
+    let last = performance.now();
+    const vel = { vx: 0, vy: 0 };
+    const step = () => {
+      if (this.posFollowToken !== token) return;
+      const now = performance.now();
+      const dt = Math.min((now - last) / 1000, 1 / 30);
+      last = now;
+      let x = this.pos.x;
+      let y = this.pos.y;
+      vel.vx = S.springStep(vel.vx, x, px, dt, this.physics.throwPower);
+      vel.vy = S.springStep(vel.vy, y, py, dt, this.physics.throwPower);
+      x += vel.vx * dt;
+      y += vel.vy * dt;
+      this.sendBounds(x, y);
+      // 收敛判定：足够近且足够慢 → 精确落位并提交。拖拽跟手靠指针松手结束，这条得自己判。
+      if (Math.abs(px - x) < 0.5 && Math.abs(py - y) < 0.5 && Math.abs(vel.vx) < 1 && Math.abs(vel.vy) < 1) {
+        this.posFollow = null;
+        this.sendBounds(px, py);
+        this.customPos = { rx: fx, ry: fy };
+        return;
+      }
+      this.posFollow = requestAnimationFrame(step);
+    };
+    this.posFollow = requestAnimationFrame(step);
+  }
+
+  /**
+   * 抛掷指令：角度（度，`0` = 正右，逆时针为正）+ 力度倍率 → 初速度，交给 startThrow。
+   * 下游（重力 / 反弹 / 地面摩擦 / 落地 Q 弹 / 宠物间碰撞 / 落定写 customPos）全是**既有行为**。
+   */
+  throwWith(angleDeg, power) {
+    if (this.dragState.active) return; // 用户交互优先
+    const v = S.throwVelocity(angleDeg, power);
+    this.startThrow(this.pos.x, this.pos.y, v.vx, v.vy);
   }
 
   /** 被撞回调（跨窗碰撞 broker 转发）：停当前动作，从落点以新初速抛出去（全复用现有物理） */
@@ -1800,6 +1974,8 @@ class PetSprite {
       return;
     }
     if (!leaf.anim) return;
+    // 回执归属：这一段动画若来自第三方点播，编号要跟着换源一起走（自播动画传 null）
+    const playbackId = typeof leaf.playbackId === 'string' && leaf.playbackId ? leaf.playbackId : null;
     // 文字类（noMirror）朝右站姿是镜像的：点播前强制朝左，避免文字镜像（与浏览器随机链"朝右不选文字"同语义）
     if (S.isNoMirrorAnimation(this.animations.categories, leaf.anim) && this.facing === 'right') {
       this.facing = 'left';
@@ -1810,10 +1986,12 @@ class PetSprite {
       this.animations.moves.actions.some((a) => a.name === leaf.anim) ||
       this.animations.drag.includes(leaf.anim)
     ) {
-      if (this.tryMove(leaf.anim) === false) this.playOnce(leaf.anim);
+      const moved = this.tryMove(leaf.anim, playbackId);
+      if (moved === false) this.playOnce(leaf.anim, playbackId);
+      else if (moved === true && playbackId) this.reportPlayback(playbackId, 'failed', 'busy');
       return;
     }
-    this.playOnce(leaf.anim);
+    this.playOnce(leaf.anim, playbackId);
   }
 
   closeMenu() {
@@ -1827,8 +2005,9 @@ class PetSprite {
     if (!this.inputBusy()) this.setInteractive(false);
   }
 
-  // 「查看余额」菜单：POST 动作让 host 刷新余额（写进 S），随即**立刻跑一拍 /state** 拿结果展示
-  // （0 延迟，不用等下一个 1s；展示走 showBalanceNow/showBalanceNotice 同一路径）。
+  // 「查看余额」菜单：POST 动作让 host 刷新余额（写进 S）。
+  // 结果**这里什么都不用做**：写叶子会让版本号变，挂着的长轮询那一拍立刻返回并展示
+  // （展示走 showBalanceNow/showBalanceNotice 同一路径）。
   // 注意这里不再直接拉余额：数据只有一个出口（S），菜单只负责"让它刷新"。
   // **不做 balanceEnabled 门控**（菜单项也无条件显示）：手动请求不受开关限制——开关只关自动轮询与档位动画，
   // 关掉余额的宠物被点一次菜单也该看到数据（与浏览器端一致）。
@@ -1836,21 +2015,19 @@ class PetSprite {
     S.postAction(BALANCE_URL + '?pet=' + encodeURIComponent(this.pet.id))
       .then((ok) => {
         if (!ok) console.warn('[dsh-pet] 菜单查看余额：刷新动作未成功');
-        pollStateNow(); // 立即拉一拍：结果 0 延迟可见（失败也会由 /state 里的 ok:false 弹文字说明）
       })
       .catch((e) => {
         console.error('[dsh-pet] 菜单查看余额异常', e);
       });
   }
 
-  // 「碎碎念」菜单：POST 动作让 host 立即新生成一句（写进 S），随即立刻跑一拍 /state 拿文本展示
-  // （0 延迟，不用等下一个 1s）。动作不回文本——文本只有一个出口（S）。
+  // 「碎碎念」菜单：POST 动作让 host 立即新生成一句（写进 S）。
+  // 动作不回文本——文本只有一个出口（S），随"版本号变化"唤醒的那一拍长轮询到达并展示。
   // 手动触发不受 whisperEnabled 限制——该字段只关自动周期，手动永远可用。
   showWhisperFromMenu() {
     S.postAction(WHISPER_URL + '?pet=' + encodeURIComponent(this.pet.id))
       .then((ok) => {
         if (!ok) console.warn('[dsh-pet] 菜单碎碎念：生成动作未成功 pet=' + this.pet.id);
-        pollStateNow(); // 立即拉一拍：文本随这一拍到达并展示
       })
       .catch((e) => {
         console.warn('[dsh-pet] 菜单碎碎念异常', e);
@@ -1877,9 +2054,8 @@ class PetSprite {
       // 弹窗同菜单：只允许在「窗口 ∩ 工作区」内显示，贴边时不被屏幕裁掉（#41）
       clamp: this.visibleClampRect(),
       onSent: () => {
-        // 发送成功：回复已写进 S，立刻跑一拍 /state 让气泡 0 延迟出现（不必等下一个 1s）
+        // 发送成功：回复已写进 S → 版本号变 → 挂着的长轮询立刻返回并弹气泡（0 延迟）
         console.info('[dsh-pet] 对话已发送 pet=' + this.pet.id);
-        pollStateNow();
       },
       onClose: () => {
         this.chatClose = null;

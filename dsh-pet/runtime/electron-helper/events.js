@@ -183,45 +183,69 @@ PetSprite.prototype.showBalanceNotice = function showBalanceNotice(state, manual
   }, BUBBLE_DURATION_MS);
 };
 
-// ---- 碎碎念 / 命令气泡 / 对话回复（**三合一**）：不再各自轮询 ----
+// ---- 碎碎念 / 命令气泡 / 对话回复 / 清空（**四合一**）：不再各自轮询 ----
 // 改造前这里是两个循环（startWhisperLoop 按 eventsRefreshSec.whisper 轮询 /whisper、
 // startBroadcastLoop 1s 轮询 /broadcast）。现在三者都写进 S 的 pets.<id>.say，由上面的
 // /state 统一轮询分发到对应宠物（见 applySayLeaf）——本窗口只装一只宠物，按 id 命中即可。
 
-// 碎碎念展示（本宠物）：随机抽 events.whisper 动画 + 弹文本气泡（10s 消失，与余额同一语义）
+// 收起说话气泡（POST /bubble/clear 的落点）。**只动气泡**：正在播的动画、余额气泡、
+// 工作状态气泡都不碰——气泡与动作是两把锁、分别释放（issue #122 第 5 条）。
+// 与浏览器端 clearWhisperBubble 同一语义。
+PetSprite.prototype.clearWhisper = function clearWhisper() {
+  if (this.whisperTimer !== null) window.clearTimeout(this.whisperTimer);
+  this.whisperTimer = null;
+  this.whisperOn = false;
+  this.whisperView = null;
+  this.whisperImage = '';
+  this.renderBubble();
+};
+
+// 碎碎念展示（本宠物）：随机抽 events.whisper 动画 + 弹文本气泡（与余额同一套定时语义）
 // image：host 随机抽定的配图名称（未开配图/池为空则空串，与浏览器端同一契约）
-PetSprite.prototype.showWhisper = function showWhisper(text, image) {
-  const pool = this.animations.events?.whisper;
-  if (!pool || pool.length === 0) {
-    console.error('[dsh-pet] 配置缺少 animations.events.whisper，无法播放碎碎念动画');
-    return;
+// duration / anim：POST /broadcast 的两个新参数（issue #122 第 5 条）。两者**互相独立**：
+//   - anim === false 时整段跳过动画联动——不查池、不换源，也不 stopMove()
+//     （stopMove 属于"开始播这段动画"的一部分，不是弹气泡的副作用）。
+//     于是配置里缺 events.whisper 时，只弹气泡这条路照样走得通。
+//   - duration === 0 表示"这一条不显示"：**不动当前已在显示的气泡**
+//     （要收起它请用 POST /bubble/clear，两件事不重叠）。
+PetSprite.prototype.showWhisper = function showWhisper(text, image, duration, anim) {
+  let name = null;
+  if (anim !== false) {
+    const pool = this.animations.events?.whisper;
+    if (!pool || pool.length === 0) {
+      console.error('[dsh-pet] 配置缺少 animations.events.whisper，无法播放碎碎念动画');
+      return;
+    }
+    // 整池随机抽 1 槽（避开当前正播动画，避免连续重复）；槽位若为数组候选再档内随机（与浏览器一致）
+    name = S.pickSlot(S.pick(pool, this.anim), this.anim);
   }
-  // 整池随机抽 1 槽（避开当前正播动画，避免连续重复）；槽位若为数组候选再档内随机（与浏览器一致）
-  const name = S.pickSlot(S.pick(pool, this.anim), this.anim);
   console.log(
     '[dsh-pet] ' +
       new Date().toTimeString().slice(0, 8) +
       ' whisper pet=' +
       this.pet.id +
-      ' -> [' +
-      name +
-      '] 「' +
+      (name === null ? ' （不联动动画）' : ' -> [' + name + ']') +
+      ' 「' +
       text +
       '」' +
       (image ? ' [' + image + ']' : ''),
   );
-  this.stopMove();
+  // 先起动画：它与气泡时长是两个独立参数（duration=0 时动画照播、只是不弹泡）
+  if (name !== null) {
+    this.stopMove();
+    this.playOnce(name);
+  }
+  if (duration === 0) return;
   this.whisperOn = true;
   this.whisperView = S.whisperBubbleView({ ok: true, text, ts: 0 });
   this.whisperImage = typeof image === 'string' ? image : '';
   this.renderBubble();
-  // 气泡 10s 定时消失（与动画解耦，与余额同一语义；重复触发先清旧定时器）
+  // 气泡定时消失（与动画解耦，与余额同一语义；重复触发先清旧定时器）
   if (this.whisperTimer !== null) window.clearTimeout(this.whisperTimer);
   this.whisperTimer = window.setTimeout(() => {
     this.whisperOn = false;
     this.renderBubble();
-  }, BUBBLE_DURATION_MS);
-  this.playOnce(name);
+  }, duration ?? BUBBLE_DURATION_MS);
 };
 
 // 余额展示（气泡 + 档位动画）：周期轮询与菜单点播共用同一展示路径，视觉/行为严格一致。
@@ -278,10 +302,14 @@ function applyBalanceNotice(state, explicit, targetPetId) {
   }
 }
 
-// ---------- 统一轮询（GET /state，1s）：与浏览器同一份数据来源与渲染入口 ----------
+// ---------- 统一轮询（GET /state，长轮询）：与浏览器同一份数据来源与渲染入口 ----------
 // 每个叶子 = { counter, data }：首拉只记基线（不渲染），之后 counter 变了才渲染。
 // 各功能逐个接入，旧的独立轮询循环随迁随删。
 let stateBaseline = null;
+/** 我手里这份 S 的版本号（undefined = 首拉，不带参数 → 立刻拿全量） */
+let stateSince;
+/** 宿主支持长轮询吗？响应带 counter = 支持；不带 = 老宿主（会立刻返回全量，必须退避） */
+let stateLongPoll = true;
 
 /** 余额叶子 → 展示（成功播档位动画 + 气泡；不可用按 shared 判定弹文字说明） */
 function applyBalanceLeaf(leaf) {
@@ -303,14 +331,14 @@ function applyBalanceLeaf(leaf) {
   }
 }
 
-/** 说话叶子 → 对应宠物播说话动画 + 气泡（碎碎念/命令气泡/对话回复三合一）。
+/** 说话叶子 → 对应宠物播说话动画 + 气泡（碎碎念/命令气泡/对话回复/清空四合一）。
+ *  `kind: 'clear'`（POST /bubble/clear）= 收起气泡；其余 = 弹一个气泡。
  *  petId 由路径解析出来（pets.<id>.say）；本窗口只装一只宠物，按 id 命中即可。 */
 function applySayLeaf(petId, leaf) {
   const said = S.readSay(leaf);
   if (!said) return;
   for (const s of sprites) {
     if (s.pet.id !== petId) continue;
-    s.showWhisper(said.text, said.image);
     const kind = leaf && leaf.data && leaf.data.kind;
     if (
       kind === 'chat' &&
@@ -331,6 +359,8 @@ function applySayLeaf(petId, leaf) {
         console.warn('[dsh-pet] 桌面通知发送失败：' + String(error));
       }
     }
+    if (said.kind === 'clear') s.clearWhisper();
+    else s.showWhisper(said.text, said.image, said.duration, said.anim);
   }
 }
 
@@ -505,19 +535,50 @@ function applyNotifyLeaf(leaf) {
 function applyAnimLeaf(petId, leaf) {
   const hit = S.readAnim(leaf);
   if (!hit) return;
+  // 回执编号**直接从叶子取**：shared-core 是构建产物（它的 readAnim 只回 name），
+  // 绕开它就不必重建桌面共享核心也能拿到 playbackId（events.js 是入库源文件）。
+  const playbackId = leaf.data && typeof leaf.data.playbackId === 'string' ? leaf.data.playbackId : undefined;
   for (const s of sprites) {
-    if (s.pet.id === petId) s.onMenuAction({ label: hit.name, anim: hit.name });
+    if (s.pet.id === petId) s.onMenuAction({ label: hit.name, anim: hit.name, playbackId });
   }
 }
 
-/** 跑一拍 /state（1s 定时与「前端动作后立刻刷新」共用同一份实现） */
+/** 位置指令叶子 → 对应宠物挪过去（其他插件经 POST /position 写进 S）。
+ *  复用 sprite.moveToCenter（instant / spring / line 三条路都在那儿），与 /anim 同一族：只分发，
+ *  不重写运动学。petId 由路径解析出来（pets.<id>.position）；本窗口只装一只宠物，按 id 命中即可。 */
+function applyPositionLeaf(petId, leaf) {
+  const hit = S.readPosition(leaf);
+  if (!hit) return;
+  for (const s of sprites) {
+    if (s.pet.id === petId) s.moveToCenter(hit.x, hit.y, hit.mode, hit.duration);
+  }
+}
+
+/** 抛掷指令叶子 → 对应宠物按给定角度/力度飞出去（其他插件经 POST /throw 写进 S）。
+ *  初速换算在 shared（S.throwVelocity），下游全是既有抛掷物理（重力/反弹/摩擦/落地 Q 弹）。 */
+function applyThrowLeaf(petId, leaf) {
+  const hit = S.readThrow(leaf);
+  if (!hit) return;
+  for (const s of sprites) {
+    if (s.pet.id === petId) s.throwWith(hit.angle, hit.power);
+  }
+}
+
+/** 跑一拍 /state。返回 true = "按长轮询命中"（宿主支持长轮询，可以立刻再请求） */
 async function pollStateOnce() {
   try {
-    const s = await S.fetchState(STATE_URL);
-    if (!s) return;
+    const s = await S.fetchState(
+      STATE_URL,
+      stateLongPoll && stateSince !== undefined ? { since: stateSince, timeoutMs: STATE_WAIT_MS } : undefined,
+    );
+    if (!s) return false;
+    // 响应带 counter = 宿主支持长轮询；不带 = 老宿主（不认识 since/timeout，会立刻返回全量），
+    // 这时必须退回固定间隔轮询，否则这个循环就是忙等。
+    stateLongPoll = typeof s.counter === 'number';
+    if (stateLongPoll) stateSince = s.counter;
     if (stateBaseline === null) {
       stateBaseline = S.flattenCounters(s); // 首拉：只记基线，不渲染（避免启动/重载时重放旧气泡）
-      return;
+      return true;
     }
     for (const change of S.takeChanged(s, stateBaseline)) {
       if (change.leaf.data === null) continue;
@@ -530,26 +591,32 @@ async function pollStateOnce() {
       } else if (change.path.startsWith('pets.') && change.path.endsWith('.anim')) {
         // 点播动画：同样按前缀/后缀切片（counter 每次写入都递增，连点两次也会分发两次）
         applyAnimLeaf(change.path.slice('pets.'.length, -'.anim'.length), change.leaf);
+      } else if (change.path.startsWith('pets.') && change.path.endsWith('.position')) {
+        // 位置指令：同样按前缀/后缀切片，绝不 split('.')
+        applyPositionLeaf(change.path.slice('pets.'.length, -'.position'.length), change.leaf);
+      } else if (change.path.startsWith('pets.') && change.path.endsWith('.throw')) {
+        // 抛掷指令：同上
+        applyThrowLeaf(change.path.slice('pets.'.length, -'.throw'.length), change.leaf);
       }
     }
+    return true;
   } catch {
     /* 轻量轮询失败静默：下一拍再试 */
+    return false;
   }
-}
-
-/** 立即跑一拍：右键菜单等**前端动作**完成后调用——结果 0 延迟可见，不用等下一个 1s */
-function pollStateNow() {
-  void pollStateOnce();
 }
 
 function startLoops() {
   if (loopsStarted) return;
   loopsStarted = true;
 
-  // 统一轮询：1s 一拍（余额数据由 host 定时器刷新后写进 S，这里只读）
+  // 统一轮询：**自调度长轮询**（请求 → 处理 → 立刻再请求）。宿主在版本没变时挂起，所以
+  // 空闲时是 1 请求/秒（与改造前一致），叶子一变立刻收到——不需要"前端动作后叫醒一拍"了
+  // （动作端点都会写叶子 → 版本变 → 挂着的这一拍自己就返回）。本窗口只装一只宠物，
+  // 所以每个窗口各跑一份；全局计数器意味着任意写入会唤醒所有窗口（有意为之，见 host ./state）。
   const stateLoop = async () => {
-    await pollStateOnce();
-    setTimeout(() => void stateLoop(), 1000);
+    const hit = await pollStateOnce();
+    setTimeout(() => void stateLoop(), hit && stateLongPoll ? 0 : 1000);
   };
   void stateLoop();
 }

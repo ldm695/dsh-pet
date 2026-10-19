@@ -18,12 +18,12 @@ export interface StateLeaf {
 
 /** S 的客户端视图（叶子已规范化：counter 必为数字） */
 export interface PollState {
+  /** 整份 S 的版本号（= 最后一次写入的编号）。回传成 `?since=` 表达"我手里这份是哪个版本"。
+   *  **老宿主不带此字段** → undefined：消费端据此退回定时轮询——老宿主不认识 since/timeout，
+   *  会立刻返回，不退避就变成狂打。 */
+  counter?: number;
   sections: Record<string, StateLeaf>;
   pets: Record<string, Record<string, StateLeaf>>;
-  /** 配置版本（host 顺带下发）：变了说明配置被别处改过（桌面端右键改 display / 另一个页面保存 /
-   *  用户手工编辑配置文件），消费端据此重拉 /config。老版本 host 不带此字段 → undefined，
-   *  消费端按「无从判断」处理，不会误触发重拉。 */
-  configVersion?: string;
 }
 
 /** 一次变化的叶子（path 用于日志/调试，leaf 用于渲染） */
@@ -43,15 +43,22 @@ function normLeaf(value: unknown): StateLeaf | null {
 /**
  * 拉一次 /state。
  * 失败 / HTTP 非 2xx / 形状不对 → null（轮询侧静默重试，与其余轮询同一容错口径）。
+ *
+ * `wait` 传了就带 `?since=&timeout=` 走**长轮询**：宿主在"版本没变"时挂起，直到任意叶子被写过
+ * （立刻返回）或超时。不传 = 立刻返回全量（改造前的语义）。
  */
-export async function fetchState(baseUrl = '/dsh-pet-7340/state'): Promise<PollState | null> {
+export async function fetchState(
+  baseUrl = '/dsh-pet-7340/state',
+  wait?: { since: number; timeoutMs: number },
+): Promise<PollState | null> {
   try {
-    const res = await fetch(baseUrl, { cache: 'no-store' });
+    const url = wait ? `${baseUrl}?since=${wait.since}&timeout=${wait.timeoutMs}` : baseUrl;
+    const res = await fetch(url, { cache: 'no-store' });
     if (!res.ok) return null;
     const raw = (await res.json().catch(() => null)) as {
+      counter?: unknown;
       sections?: unknown;
       pets?: unknown;
-      configVersion?: unknown;
     } | null;
     if (!raw || typeof raw !== 'object') return null;
     const sections: Record<string, StateLeaf> = {};
@@ -72,12 +79,10 @@ export async function fetchState(baseUrl = '/dsh-pet-7340/state'): Promise<PollS
       }
       pets[petId] = leaves;
     }
-    // configVersion 是**顶层附带字段**（不属于叶子，walkLeaves 不会遍历它）：
-    // 这里必须显式带上——本函数是"重建对象"，不带上就等于把它丢了（host 挂了也白挂）。
     return {
+      counter: typeof raw.counter === 'number' && Number.isFinite(raw.counter) ? raw.counter : undefined,
       sections,
       pets,
-      configVersion: typeof raw.configVersion === 'string' ? raw.configVersion : undefined,
     };
   } catch {
     return null;
@@ -131,15 +136,36 @@ export function readBalance(leaf: StateLeaf): { state: BalanceState; manual: boo
 }
 
 /**
- * 类型收窄：宠物说话叶子 → `{ text, image? }`（形状非法 / 空文本 → null，消费端跳过这一拍）。
+ * 说话指令（`pets.<id>.say` 的两种形态）：
+ *
+ * - `say`：弹一个气泡。`duration` = 显示时长（毫秒；缺省 10s，`0` = 字面意思「不显示」）；
+ *   `anim` **只在显式 `false` 时出现**，表示这次不联动 `events.whisper` 动画、只弹气泡。
+ * - `clear`：收起当前气泡（`POST /bubble/clear` 的落点）。**必须单独一个形态**——
+ *   空文本会被本函数判成非法、整拍跳过，表达不了"清空"这个动作。
+ */
+export type SayCue =
+  { kind: 'say'; text: string; image?: string; duration?: number; anim?: boolean } | { kind: 'clear' };
+
+/**
+ * 类型收窄：宠物说话叶子 → SayCue（形状非法 / 空文本 → null，消费端跳过这一拍）。
  * 碎碎念、命令气泡、对话回复共用这一个叶子——前端本来就是同一条展示链路
  * （同一个 triggerWhisper、同一个气泡槽、同一批 events.whisper 动画）。
+ * `duration` / `anim` 缺省即**老行为**（10s + 联动），所以老 host 写的叶子照常能读。
  */
-export function readSay(leaf: StateLeaf): { text: string; image?: string } | null {
+export function readSay(leaf: StateLeaf): SayCue | null {
   if (!leaf.data || typeof leaf.data !== 'object') return null;
-  const d = leaf.data as { text?: unknown; image?: unknown };
+  const d = leaf.data as { text?: unknown; image?: unknown; duration?: unknown; anim?: unknown; clear?: unknown };
+  // 清空指令优先：它不带 text，所以必须排在文本校验**前面**
+  if (d.clear === true) return { kind: 'clear' };
   if (typeof d.text !== 'string' || !d.text) return null;
-  return { text: d.text, image: typeof d.image === 'string' ? d.image : undefined };
+  return {
+    kind: 'say',
+    text: d.text,
+    image: typeof d.image === 'string' ? d.image : undefined,
+    // 只认 ≥0 的有限数：非法值当"没给"（写端已校验，这里只是防御，不让脏数据毁掉整拍）
+    duration: typeof d.duration === 'number' && Number.isFinite(d.duration) && d.duration >= 0 ? d.duration : undefined,
+    anim: typeof d.anim === 'boolean' ? d.anim : undefined,
+  };
 }
 
 /**
@@ -151,21 +177,64 @@ export function readWorkStatus(leaf: StateLeaf): WorkStatusSnapshot | null {
 }
 
 /**
- * 类型收窄：点播动画叶子 → 动画名（形状非法 / 空名 → null，消费端跳过这一拍）。
+ * 类型收窄：点播动画叶子 → 动画名 + 回执编号（形状非法 / 空名 → null，消费端跳过这一拍）。
  * **名字即文件名**：消费端拿到后交给菜单动作处理函数换源播放，所以这里只做形状校验；
  * "这个动画是否存在于该宠物"由宿主在写入前保证（播放端对不存在的名字没有兜底）。
+ * `playbackId`：宿主受理时生成的回执编号（issue #122），渲染端拿它在播放的四个时机
+ * 上报真实状态（见 /playback 路由）。老 host 不写这个字段 → undefined，消费端按"无回执"处理。
  */
-export function readAnim(leaf: StateLeaf): { name: string } | null {
+export function readAnim(leaf: StateLeaf): { name: string; playbackId?: string } | null {
   if (!leaf.data || typeof leaf.data !== 'object') return null;
-  const d = leaf.data as { name?: unknown };
+  const d = leaf.data as { name?: unknown; playbackId?: unknown };
   if (typeof d.name !== 'string' || !d.name) return null;
-  return { name: d.name };
+  return { name: d.name, playbackId: typeof d.playbackId === 'string' && d.playbackId ? d.playbackId : undefined };
+}
+
+/**
+ * 位置指令的运动模式（三选一）。**与 host/motion-cue.ts 的同名联合体是两份**——宿主不 import
+ * src/shared（同 `Corner` 的处理方式），改动时两边要一起改。
+ */
+export type PositionMode = 'instant' | 'spring' | 'line';
+
+/**
+ * 类型收窄：位置指令叶子 → `{ x, y, mode, duration }`（形状非法 → null，消费端跳过这一拍）。
+ * **这是指令不是状态上报**：host 写、前端读来挪宠物，前端不往回写。
+ * `x`/`y` 是宠物**中心**的归一化坐标（0~1，host 写入前已夹取）；
+ * `mode` 决定走哪条路（instant 一帧到位 / spring 过阻尼弹簧 / line 按 duration 直线走到）；
+ * `duration` **只有 `line` 模式才在叶子里**，其余模式恒为 `0`（它们本来就不用时间）。
+ */
+export function readPosition(leaf: StateLeaf): { x: number; y: number; mode: PositionMode; duration: number } | null {
+  if (!leaf.data || typeof leaf.data !== 'object') return null;
+  const d = leaf.data as { x?: unknown; y?: unknown; mode?: unknown; duration?: unknown };
+  if (typeof d.x !== 'number' || !Number.isFinite(d.x)) return null;
+  if (typeof d.y !== 'number' || !Number.isFinite(d.y)) return null;
+  if (d.mode !== 'instant' && d.mode !== 'spring' && d.mode !== 'line') return null;
+  if (d.mode === 'line') {
+    // line 缺 duration（或非法）就是形状非法：宿主一定会写，写错宁可跳过这一拍，也不替它猜一个时间
+    if (typeof d.duration !== 'number' || !Number.isFinite(d.duration) || d.duration < 0) return null;
+    return { x: d.x, y: d.y, mode: 'line', duration: d.duration };
+  }
+  return { x: d.x, y: d.y, mode: d.mode, duration: 0 };
+}
+
+/**
+ * 类型收窄：抛掷指令叶子 → `{ angle, power }`（形状非法 → null，消费端跳过这一拍）。
+ * `angle` 单位**度**（`0` = 正右，逆时针为正）；`power` 是力度倍率（`1.0` = 1200 px/s 软钳速前）。
+ * 同样是**指令**，前端不往回写。
+ */
+export function readThrow(leaf: StateLeaf): { angle: number; power: number } | null {
+  if (!leaf.data || typeof leaf.data !== 'object') return null;
+  const d = leaf.data as { angle?: unknown; power?: unknown };
+  if (typeof d.angle !== 'number' || !Number.isFinite(d.angle)) return null;
+  if (typeof d.power !== 'number' || !Number.isFinite(d.power) || d.power <= 0) return null;
+  return { angle: d.angle, power: d.power };
 }
 
 /**
  * 动作端点：POST 一次，返回是否成功（`{ok:true}`）。
- * 动作**不返回数据**——数据只有一个出口（/state），调用方收到 ok 后立刻 `pollStateNow()`
- * 拉一拍即可 0 延迟看到结果（见 host 侧的路由说明）。
+ * 动作**不返回数据**——数据只有一个出口（/state）。调用方**不需要**在收到 ok 后再做什么：
+ * 这些动作都会写叶子 → 顶层 `counter` 变 → 挂着的长轮询那一拍立刻返回，结果 0 延迟到达。
+ * （改造前这里靠"前端主动叫醒一拍"，长轮询上线后那套已经删掉了。）
  */
 export async function postAction(baseUrl: string, body?: unknown): Promise<boolean> {
   try {

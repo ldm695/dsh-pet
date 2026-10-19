@@ -198,14 +198,57 @@ describe('/state + /balance —— 轮询统一状态与余额动作端点', () 
       sections: Record<string, { counter: number; data: unknown }>;
       pets: Record<string, unknown>;
     };
-    assert.deepEqual(Object.keys(body.sections).sort(), ['balance', 'notify', 'workStatus']);
+    assert.deepEqual(Object.keys(body.sections).sort(), ['balance', 'config', 'notify', 'workStatus']);
     assert.equal(body.sections.balance.counter, 0, '没人写过时 counter=0（前端首拉当基线）');
     assert.equal(body.sections.balance.data, null);
+    assert.equal(body.sections.config.data, null, '配置变更信号也没人写过（counter=0 / data=null）');
     assert.deepEqual(body.pets, {});
   });
 
   test('非 GET → 405（只读端点）', async () => {
     assert.equal((await call('/dsh-pet-7340/state', 'POST')).status, 405);
+  });
+
+  test('只传 since / 只传 timeout → 400（成对必填，与 /playback 的 wait/timeout 同一套约定）', async () => {
+    assert.equal((await call('/dsh-pet-7340/state?since=0')).status, 400);
+    assert.equal((await call('/dsh-pet-7340/state?timeout=1000')).status, 400);
+  });
+
+  test('非法 since / timeout → 400（非整数、负数、小数、超上限）', async () => {
+    for (const q of [
+      'since=abc&timeout=1000',
+      'since=-1&timeout=1000',
+      'since=0&timeout=99999',
+      'since=0&timeout=1.5',
+    ]) {
+      assert.equal((await call('/dsh-pet-7340/state?' + q)).status, 400, q);
+    }
+  });
+
+  test('since 与当前版本不同 → 立刻返回全量（不挂起）', async () => {
+    const r = await call('/dsh-pet-7340/state?since=12345&timeout=10000');
+    assert.equal(r.status, 200);
+    const body = JSON.parse(r.body) as { counter: number; sections: Record<string, unknown> };
+    assert.equal(typeof body.counter, 'number', '响应必须带顶层 counter（调用方拿它当下一拍的 since）');
+    assert.ok(body.sections, '立刻返回时同样是全量状态');
+  });
+
+  test('since 与当前版本相同 + timeout=0 → 走挂起分支但下一拍就醒（等价"立刻返回"）', async () => {
+    const first = JSON.parse((await call('/dsh-pet-7340/state')).body) as { counter: number };
+    const r = await call('/dsh-pet-7340/state?since=' + first.counter + '&timeout=0');
+    assert.equal(r.status, 200);
+    assert.equal((JSON.parse(r.body) as { counter: number }).counter, first.counter, '没人写过 → 版本号不变');
+  });
+
+  test('since 与当前版本相同 → **真的挂起**，到点才返回（长轮询的核心行为）', async () => {
+    const first = JSON.parse((await call('/dsh-pet-7340/state')).body) as { counter: number };
+    const t0 = Date.now();
+    const r = await call('/dsh-pet-7340/state?since=' + first.counter + '&timeout=200');
+    const elapsed = Date.now() - t0;
+    assert.equal(r.status, 200);
+    // 没人写叶子 → 只能等超时。这条用例存在的意义就是证明"挂起"不是空话：
+    // 其余用例都用 timeout=0，走同一个分支但不会真的等。
+    assert.ok(elapsed >= 180, `应当真的挂起约 200ms，实测 ${elapsed}ms`);
   });
 
   test('POST /balance 是动作端点：只回 { ok: true }，不返回余额数据', async () => {
@@ -296,6 +339,43 @@ describe('/broadcast —— 第三方投喂（POST 写入端点，issue #76）',
     assert.equal(body.ok, false, '读不到配置绝不能回 ok:true——否则调用方以为气泡已投喂');
     assert.equal(body.reason, 'generate-error');
   });
+
+  test('非法 duration → bad-request，且**在读配置之前**就短路（不是 generate-error）', async () => {
+    // 与本文件里"配置不可达"这一前提配合：若 duration 校验被放到读配置之后，
+    // 这几条会变成 generate-error——断言 reason 就同时钉住了**短路顺序**。
+    for (const duration of [-1, -0.5, '3000', {}, [], true]) {
+      const r = await call('/dsh-pet-7340/broadcast?pet=main', 'POST', JSON.stringify({ text: '该喝水了', duration }));
+      assert.equal(r.status, 200, `duration=${JSON.stringify(duration)}`);
+      assert.equal(
+        (JSON.parse(r.body) as { reason: string }).reason,
+        'bad-request',
+        `duration=${JSON.stringify(duration)} 应在读配置前被拦下`,
+      );
+    }
+  });
+});
+
+describe('/bubble/clear —— 清空气泡（POST 写入端点，issue #122 第 5 条）', () => {
+  // 覆盖范围同 /broadcast：源码形态下 readAllConfig 必然抛错，"成功写进 pets.<id>.say"
+  // 那条路径在这里测不了（宠物选择由 broadcast.test.ts 的 decideBubbleClear 单测覆盖）。
+  // 这里只钉路由层契约：方法、无请求体、失败口径。
+
+  test('GET → 405（清空是动作端点，不是读端点）', async () => {
+    assert.equal((await call('/dsh-pet-7340/bubble/clear?pet=main')).status, 405);
+  });
+
+  test('无请求体也照常受理（不像 /broadcast 那样要求 JSON body）', async () => {
+    const r = await call('/dsh-pet-7340/bubble/clear?pet=main', 'POST');
+    assert.notEqual(r.status, 400, '本端点不解析请求体，不该因为"没给 body"而 400');
+  });
+
+  test('配置不可达时不静默：显式 ok:false/generate-error（不假装气泡已清空）', async () => {
+    const r = await call('/dsh-pet-7340/bubble/clear?pet=main', 'POST');
+    assert.equal(r.status, 200);
+    const body = JSON.parse(r.body) as { ok: boolean; reason: string };
+    assert.equal(body.ok, false, '读不到配置绝不能回 ok:true——否则调用方以为气泡已收起');
+    assert.equal(body.reason, 'generate-error');
+  });
 });
 
 describe('/anim —— 点播动画（POST 写入端点）', () => {
@@ -319,6 +399,49 @@ describe('/anim —— 点播动画（POST 写入端点）', () => {
     const body = JSON.parse(r.body) as { ok: boolean; reason: string };
     assert.equal(body.ok, false, '读不到配置绝不能回 ok:true——否则调用方以为动画已点播');
     assert.equal(body.reason, 'generate-error');
+  });
+});
+
+describe('/position + /throw —— 位置与抛掷指令（POST 写入端点）', () => {
+  // 覆盖范围同 /anim：源码形态下 PACKAGE_ROOT 解析为 <pkg>/src，readAllConfig 必然抛错，
+  // 因此"成功写进 pets.<id>.position / pets.<id>.throw"那条路径在这里测不了（参数校验、坐标夹取
+  // 与宠物解析由 motion-cue.test.ts 的决策层单测覆盖）。这里只钉路由层契约：方法、JSON 解析、失败口径。
+
+  test('GET → 405（两条都是动作端点，不是读端点）', async () => {
+    assert.equal((await call('/dsh-pet-7340/position?pet=main')).status, 405);
+    assert.equal((await call('/dsh-pet-7340/throw?pet=main')).status, 405);
+  });
+
+  test('请求体不是合法 JSON → 400', async () => {
+    for (const path of ['position', 'throw']) {
+      const r = await call(`/dsh-pet-7340/${path}?pet=main`, 'POST', '{ 不是 json');
+      assert.equal(r.status, 400, path);
+      assert.match(r.body, /invalid JSON body/);
+    }
+  });
+
+  test('配置不可达时不静默：显式 ok:false/generate-error（不假装已挪位 / 已抛出）', async () => {
+    const pos = await call(
+      '/dsh-pet-7340/position?pet=main',
+      'POST',
+      JSON.stringify({ x: 0.5, y: 0.5, mode: 'spring' }),
+    );
+    assert.equal(pos.status, 200);
+    const posBody = JSON.parse(pos.body) as { ok: boolean; reason: string };
+    assert.equal(posBody.ok, false, '读不到配置绝不能回 ok:true——否则调用方以为宠物已经挪过去了');
+    assert.equal(posBody.reason, 'generate-error');
+
+    const thr = await call('/dsh-pet-7340/throw?pet=main', 'POST', JSON.stringify({ angle: 45, power: 1 }));
+    assert.equal(thr.status, 200);
+    const thrBody = JSON.parse(thr.body) as { ok: boolean; reason: string };
+    assert.equal(thrBody.ok, false, '读不到配置绝不能回 ok:true——否则调用方以为宠物已经飞出去了');
+    assert.equal(thrBody.reason, 'generate-error');
+  });
+
+  test('空请求体（不是对象）→ 不抛，走失败口径', async () => {
+    const r = await call('/dsh-pet-7340/position?pet=main', 'POST', 'null');
+    assert.equal(r.status, 200);
+    assert.equal((JSON.parse(r.body) as { ok: boolean }).ok, false);
   });
 });
 
