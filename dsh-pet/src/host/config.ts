@@ -392,6 +392,8 @@ function topFieldValid(key: string, value: unknown): boolean {
       return physicsValid(value);
     case 'font':
       return fontValid(value);
+    case 'uiTheme':
+      return value === 'system' || value === 'light' || value === 'dark';
     case 'whisperModel':
     case 'chatModel':
       return modelSelectionValid(value);
@@ -720,6 +722,8 @@ export function saveUserConfig(
   // 校验直接复用读取侧的 fontValid（family 白名单 / size 4~200 / followPet 布尔），读写同一份规则。
   const fo = o.font;
   if (fo !== undefined && !fontValid(fo)) return null;
+  const uiTheme = o.uiTheme;
+  if (uiTheme !== undefined && !topFieldValid('uiTheme', uiTheme)) return null;
   // whisperModel / chatModel（碎碎念 / 对话各自的服务商 + 模型；设置页两个下拉框写的就是它们）：
   // 与 physics 同一套语义——传了就整段校验后进白名单，没传则走下面的透传保留。
   // 落盘时归一化成 { provider, model } 两个 trim 过的字符串（请求体多带的键不写进用户层）。
@@ -750,6 +754,7 @@ export function saveUserConfig(
   if (pdp !== undefined) outConfig.petDisplayPriority = pdp;
   if (ph !== undefined) outConfig.physics = ph;
   if (fo !== undefined) outConfig.font = fo;
+  if (uiTheme !== undefined) outConfig.uiTheme = uiTheme;
   if (wm !== undefined) outConfig.whisperModel = cleanModel(wm as Record<string, unknown>);
   if (cm !== undefined) outConfig.chatModel = cleanModel(cm as Record<string, unknown>);
   // 数值归一化落盘：请求体传 "9" 也存成 9（与读取侧 topFieldValid 的 Number() 口径一致）
@@ -767,6 +772,7 @@ export function saveUserConfig(
   if (pdp !== undefined) bodyOwned.add('petDisplayPriority');
   if (ph !== undefined) bodyOwned.add('physics');
   if (fo !== undefined) bodyOwned.add('font');
+  if (uiTheme !== undefined) bodyOwned.add('uiTheme');
   if (wm !== undefined) bodyOwned.add('whisperModel');
   if (cm !== undefined) bodyOwned.add('chatModel');
   if (cmr !== undefined) bodyOwned.add('chatMemoryRounds');

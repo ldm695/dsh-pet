@@ -12,12 +12,13 @@ GitHub Releases 仅发布大众版。个人版及其专属图标保留在维护�
 
 设置页和托盘菜单中的显示选项为「仅桌面」与「不显示」。旧配置会自动兼容：`both` 转为 `desktop`，`web` 转为 `none`。
 
-配置和用户数据默认位于 `%USERPROFILE%\.dsh\dsh-pet\`；若设置了 `DSH_HOME`，则使用对应目录。保存的 DeepSeek API Key 在 Windows 上通过当前用户 DPAPI 加密。
+配置和用户数据默认位于 `%USERPROFILE%\.dsh\dsh-pet\`；若设置了 `DSH_HOME`，则使用对应目录。独立模式 AI 支持 OpenAI 兼容接口与 Anthropic；Windows 上的 API 密钥使用当前用户 DPAPI 加密，旧版 DeepSeek 密钥仍可用于余额查询。
 
 ## 功能
 
 - 多只桌宠、透明动画、点击、拖拽、抛掷和桌面移动。
 - 桌宠右键菜单、托盘显示控制、全屏或最大化窗口隐藏策略、字体与外观设置。
+- 独立模式 AI 可设置模型端点、密钥与模型，并在设置页测试连接；自动碎碎念需单独开启。
 - 可选的工作状态联动：DSH Desktop、Codex 和 Claude Code 各自通过独立桥接插件上报状态。
 - 支持自定义动画、表情包和额外桌宠种类。
 - 本机 HTTP API 默认监听 `127.0.0.1:6952`，用于应用设置、桌面 Helper 和本机集成。

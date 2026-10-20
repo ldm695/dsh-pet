@@ -3,7 +3,7 @@
 DSH Pet Windows 应用在本机 HTTP 服务上提供统一的 `/dsh-pet-7340` 路由前缀，供桌面 Helper、内嵌设置页和本机集成使用。DSH Pet 不再注册为 DSH Web 插件，也不会向 DSH Web 页面显示桌宠。本文提供接口概览；参数、响应结构、字段定义、错误码和示例请参阅根目录的 [`openapi.yaml`](openapi.yaml)。
 
 - **基址**：`http://127.0.0.1:6952/dsh-pet-7340`（默认端口；被占用时应用会顺延）
-- **只监听 127.0.0.1，且没有鉴权**：任何能访问本机该端口的进程都能调用，请勿转发到公网
+- **只监听 127.0.0.1**：桌面业务 API 沿用本机调用方式；独立模式 AI 设置端点另有一次性令牌与来源校验，请勿转发到公网
 
 ---
 
@@ -15,19 +15,21 @@ DSH Pet Windows 应用在本机 HTTP 服务上提供统一的 `/dsh-pet-7340` �
 | `GET /dsh-pet-7340/config` | 读合并后的成品配置（内置默认 + 用户层，字段已填满） |
 | `GET /dsh-pet-7340/config/meta` | 配置文件路径、各类数据落盘位置、卸载该用哪个 profile |
 | `GET /dsh-pet-7340/models` | 可用服务商与模型清单（与 DSH 自己的模型选择器同源） |
-| `GET /dsh-pet-7340/chat?pet=` | 读某只桌宠最近的对话记忆窗口 |
+| `GET /dsh-pet-7340/chat?pet=&rounds=` | 读某只桌宠最近的对话记忆窗口；`rounds` 为本次读取轮数（0–200），不传用配置 |
+| `GET /dsh-pet-7340/pose?pet=` | 读取桌面端最近一次上报的位置与朝向快照 |
 
 ## 操作
 
 | 接口 | 功能 |
 | --- | --- |
-| `POST /dsh-pet-7340/whisper?pet=&surface=desktop` | 让桌宠**生成**一句碎碎念（走当前模型） |
+| `POST /dsh-pet-7340/whisper?pet=&surface=desktop` | 让桌宠**生成**一句碎碎念（走当前模型），成功响应含 `text` 和可选 `image` |
 | `POST /dsh-pet-7340/broadcast?pet=&surface=desktop` | **第三方投喂**：把文本及可选远程配图写进气泡（不生成，只搬运） |
 | `POST /dsh-pet-7340/bubble/clear?pet=&surface=desktop` | **清空气泡**：提前收起说话气泡（只动气泡，不动动画） |
 | `POST /dsh-pet-7340/anim?pet=&surface=desktop` | **点播动画**：播放池内动画或远程视频，可选指定朝向；回 `playbackId` |
 | `GET /dsh-pet-7340/playback/{id}` | **播放回执**：查那次点播的真实状态；带 `?wait=&timeout=` 可挂起等待 |
 | `POST /dsh-pet-7340/playback/{id}/report` | 渲染端上报播放状态（**内部通道**，第三方不用调） |
-| `POST /dsh-pet-7340/chat?pet=&surface=desktop` | 对桌宠说一句话并生成回复，同时写入对话记忆 |
+| `POST /dsh-pet-7340/chat?pet=&surface=desktop` | 对桌宠说一句话并生成回复，同时写入对话记忆；成功响应含 `text` 和可选 `image` |
+| `POST /dsh-pet-7340/pose/report?pet=&surface=desktop` | 桌面 Helper 上报宠物位置与朝向（内部通道） |
 | `POST /dsh-pet-7340/position?pet=&surface=desktop` | **位置控制**：挪到归一化坐标，`mode` = 直接/弹簧/直线；不碰动画 |
 | `POST /dsh-pet-7340/throw?pet=&surface=desktop` | **原生抛掷**：给桌宠一个初速度让它飞出去（`angle` 度、`power` 倍率） |
 | `POST /dsh-pet-7340/lock?pet=&surface=desktop` | 申请或续期单只桌宠的独占控制租约 |
@@ -59,14 +61,18 @@ DSH Pet Windows 应用在本机 HTTP 服务上提供统一的 `/dsh-pet-7340` �
    `surface=desktop`；缺少参数或目标桌宠处于隐藏状态时会返回 `ok:false`，不会静默落到列表中的另一只宠物。
 2. **独占控制**：多数动画、气泡和移动动作在桌宠被锁定时需要携带返回的 `lockId`；否则会收到
    `lock-required`。锁有时限，调用方可用同一 `lockId` 续期；用户点击或拖动桌宠可以接管并释放锁。
-3. **数据只有一个出口**：`GET /state`。它返回宿主内存里的已发布状态，每个状态位是
-   `{ counter, data }`。
+   锁失效后仍携带旧 `lockId` 的请求会收到 `lock-lost`，不会被当作普通无锁请求放行。
+3. **状态统一从 `/state` 读取**：它返回宿主内存里的已发布状态，每个状态位是
+   `{ counter, data }`。`POST /whisper` 与 `POST /chat` 也会回传同一份生成文本，方便立即使用。
+   DeepSeek 多币种余额的新格式使用 `data.wallets` 数组；`currency`、`total`、`granted`、`toppedUp`
+   等单钱包字段仍保留为主钱包兼容别名，旧客户端可以继续读取。
 4. **动作端点不返回数据**：大多数 `POST` 只回 `{ ok: true }`；结果写进状态，
    长轮询那一拍会立刻把它送到（调用方不必主动补拉）。
-   **两个例外**，都只多回"受理"层面的信息：
+   **其他例外**会额外返回对应结果：
    - `POST /anim` 额外带回 `playbackId`——只代表"受理了"，**不等于播完了**；
      真实回执看 `GET /playback/{id}`。
    - `POST /position` 额外带回夹取后的 `x`/`y`（越界会被夹到 `0~1`，回的是实际生效值）。
+   - `POST /whisper` 与 `POST /chat` 成功时带回 `text` 与可选 `image`，和写入 `/state` 的值相同。
 3. **`counter` 变了才渲染**：它是 `Date.now()` 且严格递增，宿主重启也不会倒退。
    状态位的路径（如 `sections.balance`、`pets.<id>.say`）请当作**不透明键**使用——
    宠物 id 允许含点号，**不要按 `.` 切分**。

@@ -1,25 +1,25 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createActionRoute, type ActionRouteDependencies } from './action-route';
+import { LockStore } from './lock';
 import type { RouteRequest } from './route-contract';
 
 function fixture(overrides: Partial<ActionRouteDependencies> = {}) {
   const calls: Array<{ kind: string; args: unknown[] }> = [];
   const config = {
     main: {
-      pets: [{ id: 'main', name: 'Main' }],
+      pets: [{ id: 'main', name: 'Main', display: 'desktop' }],
       animations: { idle: ['idle'] },
     },
   };
   const deps: ActionRouteDependencies = {
     readConfig: () => config,
-    activePetId: () => 'main',
     refreshBalance: async (...args) => {
       calls.push({ kind: 'balance', args });
     },
     publishWhisper: async (...args) => {
       calls.push({ kind: 'whisper', args });
-      return true;
+      return { ok: true, text: 'hello' };
     },
     memeDirs: (...args) => {
       calls.push({ kind: 'meme-dirs', args });
@@ -30,17 +30,17 @@ function fixture(overrides: Partial<ActionRouteDependencies> = {}) {
       calls.push({ kind: 'playback', args });
       return { playbackId: 'play-1' };
     },
+    locks: new LockStore(),
     ...overrides,
   };
   return { route: createActionRoute(deps), calls };
 }
 
-const request = (rest: string, method = 'POST', body?: string, query?: string): RouteRequest => ({
-  rest,
-  method,
-  body,
-  query: new URLSearchParams(query),
-});
+const request = (rest: string, method = 'POST', body?: string, query?: string): RouteRequest => {
+  const params = new URLSearchParams(query);
+  if (!params.has('surface')) params.set('surface', 'desktop');
+  return { rest, method, body, query: params };
+};
 
 describe('createActionRoute', () => {
   test('balance and whisper keep targeted pet values and response semantics', async () => {
@@ -53,15 +53,15 @@ describe('createActionRoute', () => {
     assert.deepEqual(await route(request('whisper', 'POST', undefined, 'pet=main')), {
       kind: 'json',
       status: 200,
-      obj: { ok: true },
+      obj: { ok: true, text: 'hello' },
     });
     assert.deepEqual(calls, [
       { kind: 'balance', args: [true, 'main'] },
       { kind: 'whisper', args: ['main'] },
     ]);
 
-    const failed = fixture({ publishWhisper: async () => false });
-    assert.deepEqual(await failed.route(request('whisper')), {
+    const failed = fixture({ publishWhisper: async () => ({ ok: false, reason: 'generate-error' }) });
+    assert.deepEqual(await failed.route(request('whisper', 'POST', undefined, 'pet=main')), {
       kind: 'json',
       status: 200,
       obj: { ok: false, reason: 'generate-error' },
@@ -71,7 +71,7 @@ describe('createActionRoute', () => {
         throw new Error('provider failed');
       },
     });
-    assert.deepEqual(await thrown.route(request('whisper')), {
+    assert.deepEqual(await thrown.route(request('whisper', 'POST', undefined, 'pet=main')), {
       kind: 'json',
       status: 200,
       obj: { ok: false, reason: 'generate-error', message: 'provider failed' },

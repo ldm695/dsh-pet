@@ -84,10 +84,13 @@ import { createLockRoute } from './lock-route';
 import { createStateRoute } from './state-route';
 import { createPlaybackRoute } from './playback-route';
 import { createChatRoute } from './chat-route';
+import { createPoseRoute } from './pose-route';
+import { PoseStore } from './pose';
 import { createStandaloneControlRoute } from './standalone-control-route';
 import type { RouteRequest, RouteResult } from './route-contract';
 import { queryBalance } from './balance/index';
 import { generateWhisper } from './whisper';
+import { automaticWhisperSchedule } from './whisper-policy';
 import { generateChat, type ChatMemoryMessage } from './chat';
 import { configuredModel } from './model-selection';
 import { limitPool, pickMeme, readMemePool } from './memes';
@@ -476,6 +479,10 @@ export function apply(ctx: any): void {
 
   /** 对话记忆轮数（1 轮 = 1 问 1 答）：所属条目/主条目的 chatMemoryRounds（合并器已填默认非负数字） */
   const memoryRounds = (petId: string, cfg: Record<string, Record<string, unknown>>): number => {
+    if (ctx.standaloneAi) {
+      const value = Number(ctx.standaloneAi.chatMemoryRounds());
+      return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 5;
+    }
     const found = findPetInstance(cfg, petId);
     const v = Number(found?.conf.chatMemoryRounds ?? cfg.main?.chatMemoryRounds);
     return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 5;
@@ -487,7 +494,9 @@ export function apply(ctx: any): void {
    *  同一个气泡槽、同一批 events.whisper 动画），所以合并成同一个叶子；"周期内不重复"由
    *  调度侧的 lastWhisperAt 保证，不再需要一份 whisperCache（多端共享也由 S 天然保证）。
    *  配图（whisperImageEnabled 开启时）：从表情包池**随机抽 1 张**，把描述注入指令并随文本一起写。 */
-  const publishWhisper = async (petId: string): Promise<boolean> => {
+  const publishWhisper = async (
+    petId: string,
+  ): Promise<{ ok: true; text: string; image?: string } | { ok: false; reason: 'generate-error'; message?: string }> => {
     const cfg = readAllConfig(configPaths);
     const found = findPetInstance(cfg, petId);
     const conf = found ? found.conf : (cfg.main ?? {});
@@ -495,8 +504,9 @@ export function apply(ctx: any): void {
     const system = petSystemPrompt(petId, cfg);
     // 配图：全局开关关闭 / 池为空 / 池内图片全缺失 → 纯文本（不报错，退化为原行为）
     const meme = conf.whisperImageEnabled === true ? pickMeme(readMemePool(conf.memes, memeDirsFor(entry))) : undefined;
-    // 模型：条目配置的 whisperModel 优先（留空 = 不指定）；生成侧失败会回落到当前对话的模型重试一次
-    const result = await generateWhisper(ctx, system, meme, configuredModel(conf, 'whisperModel'));
+    // 独立模式统一使用独立 AI 设置页的模型；DSH 宿主模式仍允许条目级模型覆盖。
+    const model = ctx.standaloneAi ? undefined : configuredModel(conf, 'whisperModel');
+    const result = await generateWhisper(ctx, system, meme, model);
     if (!result.ok) {
       // 失败**不写 S**（与改造前一致：静默跳过 + console.warn，不伪造文案、不弹错误气泡）
       console.warn(
@@ -506,7 +516,7 @@ export function apply(ctx: any): void {
           result.reason +
           (result.message ? ' ' + result.message : ''),
       );
-      return false;
+      return { ok: false, reason: 'generate-error', ...(result.message ? { message: result.message } : {}) };
     }
     state.writePet(
       petId,
@@ -515,7 +525,7 @@ export function apply(ctx: any): void {
         ? { text: result.text, image: result.image, kind: 'whisper' }
         : { text: result.text, kind: 'whisper' },
     );
-    return true;
+    return { ok: true, text: result.text, ...(result.image ? { image: result.image } : {}) };
   };
 
   /** 与某只宠物对话：截取最近记忆 → 生成回复 → 写入记忆 → 把回复写进 S 的 pets.<id>.say。
@@ -524,7 +534,10 @@ export function apply(ctx: any): void {
   const chatWithPet = async (
     petId: string,
     text: string,
-  ): Promise<{ ok: true } | { ok: false; reason: 'provider-missing' | 'generate-error'; message?: string }> =>
+  ): Promise<
+    | { ok: true; text: string; image?: string }
+    | { ok: false; reason: 'provider-missing' | 'generate-error'; message?: string }
+  > =>
     withMemoryLock(async () => {
       const cfg = readAllConfig(configPaths);
       const rounds = memoryRounds(petId, cfg);
@@ -536,7 +549,10 @@ export function apply(ctx: any): void {
       // 张数上限（chatImageLimit，0 = 不限制）：整张清单每条消息都要附，截断后费用上限可控。
       const pool =
         conf.chatImageEnabled === true
-          ? limitPool(readMemePool(conf.memes, memeDirsFor(found?.entry ?? 'main')), Number(conf.chatImageLimit))
+          ? limitPool(
+              readMemePool(conf.memes, memeDirsFor(found?.entry ?? 'main')),
+              Number(ctx.standaloneAi ? ctx.standaloneAi.chatImageLimit() : conf.chatImageLimit),
+            )
           : [];
       const mem = await readMemory();
       const bucketKey = found?.entry ?? petId;
@@ -545,8 +561,9 @@ export function apply(ctx: any): void {
       // rounds = 0（用户关掉历史）→ 空历史；否则截尾部 rounds 轮（1 轮 = 1 问 1 答）。
       // 不能写 slice(-rounds * 2)：-0 在 JS 里 === 0，slice(-0) 返回整个数组而不是空。
       const list = sliceMemoryRounds(entry.messages, rounds);
-      // 模型：条目配置的 chatModel 优先（留空 = 不指定）；生成侧失败会回落到当前对话的模型重试一次
-      const generated = await generateChat(ctx, system, list, text, pool, configuredModel(conf, 'chatModel'));
+      // 独立模式统一使用独立 AI 设置页的模型；DSH 宿主模式仍允许条目级模型覆盖。
+      const model = ctx.standaloneAi ? undefined : configuredModel(conf, 'chatModel');
+      const generated = await generateChat(ctx, system, list, text, pool, model);
       if (!generated.ok) return generated;
       const now = Date.now();
       entry.messages.push({ role: 'user', content: text, ts: now });
@@ -561,7 +578,11 @@ export function apply(ctx: any): void {
           ? { text: generated.text, image: generated.image, kind: 'chat' }
           : { text: generated.text, kind: 'chat' },
       );
-      return { ok: true as const };
+      return {
+        ok: true as const,
+        text: generated.text,
+        ...(generated.image ? { image: generated.image } : {}),
+      };
     });
 
   /**
@@ -949,11 +970,18 @@ export function apply(ctx: any): void {
   const standaloneMoveTestConfig = (
     config: Record<string, Record<string, unknown>>,
   ): Record<string, Record<string, unknown>> => {
+    const withStandaloneAi =
+      process.env.DSH_PET_STANDALONE === '1'
+        ? {
+            ...config,
+            main: { ...(config.main ?? {}), dshPetAiChatEnabled: ctx.standaloneAi?.chatEnabled() === true },
+          }
+        : config;
     if (process.env.DSH_PET_STANDALONE !== '1' || process.env.DSH_PET_FORCE_MOVE_PROBABILITY !== '100') {
-      return config;
+      return withStandaloneAi;
     }
     return Object.fromEntries(
-      Object.entries(config).map(([id, entry]) => [
+      Object.entries(withStandaloneAi).map(([id, entry]) => [
         id,
         {
           ...entry,
@@ -1040,14 +1068,15 @@ export function apply(ctx: any): void {
     bridgePaths: { dsh: bridgePath, codex: codexBridgePath, claude: claudeBridgePath },
   });
   const playbackRoute = createPlaybackRoute({ playback });
+  const poseRoute = createPoseRoute({ readConfig: () => readAllConfig(configPaths), store: new PoseStore() });
   const chatRoute = createChatRoute({
     readConfig: () => readAllConfig(configPaths),
-    readHistory: async (petId) => {
+    readHistory: async (petId, roundsOverride) => {
       const cfg = readAllConfig(configPaths);
       const mem = await readMemory();
       const bucket = mem[findPetInstance(cfg, petId)?.entry ?? petId] ?? {};
       const messages = (bucket[petId]?.messages ?? []).slice();
-      const rounds = memoryRounds(petId, cfg);
+      const rounds = roundsOverride ?? memoryRounds(petId, cfg);
       return { messages: sliceMemoryRounds(messages, rounds), rounds };
     },
     chatWithPet,
@@ -1086,6 +1115,8 @@ export function apply(ctx: any): void {
     if (stateResult !== undefined) return stateResult;
     const playbackResult = await playbackRoute(routeRequest);
     if (playbackResult !== undefined) return playbackResult;
+    const poseResult = await poseRoute(routeRequest);
+    if (poseResult !== undefined) return poseResult;
     const chatResult = await chatRoute(routeRequest);
     if (chatResult !== undefined) return chatResult;
     // Final fallback handles font/pic/thumb and preserves the legacy unknown-path response.
@@ -1326,9 +1357,15 @@ export function apply(ctx: any): void {
         const enabledIds = new Set<string>();
         for (const pet of flattenPetList(cfg)) {
           const petId = String(pet.id ?? '');
-          if (!petId || pet.whisperEnabled !== true) continue;
+          if (!petId) continue;
+          const schedule = automaticWhisperSchedule(
+            ctx.standaloneAi,
+            pet.whisperEnabled === true,
+            whisperPeriodSec(cfg, petId),
+          );
+          if (!schedule.enabled) continue;
           enabledIds.add(petId);
-          const sec = whisperPeriodSec(cfg, petId);
+          const sec = schedule.periodSec;
           const periodMs = sec * 1000;
           let dueAt = nextWhisperAt.get(petId);
           if (dueAt === undefined) {

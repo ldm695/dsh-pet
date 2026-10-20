@@ -26,20 +26,19 @@ info:
     # 1. 拉一次统一状态（只读、零副作用，可以随便轮询）
     curl -s $BASE/state
 
-    # 2. 让 main 这只宠物立刻说一句（动作端点：只回 {ok}，内容去 /state 里取）
+    # 2. 让 main 这只宠物立刻说一句（响应带 text；同一内容也写入 /state）
     curl -s -X POST "$BASE/whisper?pet=main"
-    curl -s $BASE/state   # → pets.main.say.data.text
+    curl -s $BASE/state   # → pets.main.say.data.text（与 POST 响应相同）
     ```
 
     ## 数据流：为什么有"动作端点"和"/state"两套
 
     这是本 API 最重要的一条约定，理解了它其余都是细节：
 
-    1. **数据只有一个出口**：`GET /state`。它返回宿主内存里的一份"已发布状态" S，
+    1. **状态统一从 `/state` 读取**：它返回宿主内存里的一份"已发布状态" S，
        里面是若干 **叶子（leaf）**，每个叶子形如 `{ counter, data }`。
-    2. **动作端点不返回数据**：`POST /balance`、`POST /whisper`、`POST /broadcast`、`POST /bubble/clear`、
-       `POST /anim`、`POST /chat` 只回 `{ ok: true }`，
-       表示"这次动作做完了"。它们在宿主内部把结果**写进 S**，调用方随后拉一拍 `/state` 就能看到。
+    2. 大多数动作端点只回 `{ ok: true }` 并把结果写进 S；`POST /whisper` 与 `POST /chat` 成功时
+       还会回传和 S 中相同的 `text` 与可选 `image`，供调用方立即使用。
     3. **`counter` 是"变了没有"的唯一信号**：它是 `Date.now()` 且**严格递增**（同毫秒连写会 +1），
        宿主重启也不会倒退。消费端只比较 `counter` 是否与自己上次记录的一致，一致就跳过渲染。
        这样前端不需要任何业务知识就能统一处理所有叶子。
@@ -72,7 +71,7 @@ tags:
   - name: State
     description: 统一状态轮询——前端 1 秒一次的唯一数据源，只读、纯内存、零副作用
   - name: Action
-    description: 动作端点——触发一次宿主行为，写进 State，只回 `{ ok }`
+    description: 动作端点——触发一次宿主行为并写进 State；碎碎念与对话同时回传生成文本
   - name: Config
     description: 配置的读取、保存与元信息
   - name: Assets
@@ -231,7 +230,7 @@ paths:
       summary: 让指定宠物立刻说一句
       description: |
         按该宠物所属条目的 `whisperPrompt` 人设生成一句碎碎念，写入 `pets.<id>.say`。
-        这是 `POST` 动作端点，**不返回文本**——文本只有一个出口（`/state`）。
+        这是 `POST` 动作端点。成功时响应包含 `text` 和可选的 `image`，且同一份内容仍会写入 `/state`。
 
         - `whisperEnabled` 配置**不门控本端点**：那个字段只关自动周期碎碎念，
           手动/接口触发始终可用，不受它影响。
@@ -253,7 +252,7 @@ paths:
             application/json:
               schema:
                 oneOf:
-                  - $ref: "#/components/schemas/OkResponse"
+                  - $ref: "#/components/schemas/SayResponse"
                   - $ref: "#/components/schemas/FailureResponse"
         "405":
           $ref: "#/components/responses/MethodNotAllowed"
@@ -1038,6 +1037,83 @@ paths:
         "405":
           $ref: "#/components/responses/MethodNotAllowed"
 
+  /dsh-pet-7340/pose:
+    get:
+      tags: [State]
+      operationId: getDesktopPose
+      summary: 读取桌面端宠物实况
+      description: 返回桌面 Helper 最近一次上报的位置、朝向和更新时间。此端点不恢复 DSH Web 客户端。
+      parameters:
+        - $ref: "#/components/parameters/PetIdQuery"
+      responses:
+        "200":
+          description: 实况快照或明确的不可用原因
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [ok, petId, x, y, facing, updatedAt]
+                    properties:
+                      ok:
+                        type: boolean
+                        const: true
+                      petId:
+                        type: string
+                      x:
+                        type: number
+                        description: 桌宠中心点相对虚拟桌面范围的归一化横坐标
+                      y:
+                        type: number
+                        description: 桌宠中心点相对虚拟桌面范围的归一化纵坐标
+                      facing:
+                        type: string
+                        enum: [left, right]
+                      updatedAt:
+                        type: integer
+                        format: int64
+                        description: Helper 上报时间（Unix 毫秒）
+                  - $ref: "#/components/schemas/FailureResponse"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+  /dsh-pet-7340/pose/report:
+    post:
+      tags: [Action]
+      operationId: reportDesktopPose
+      summary: 上报桌面端宠物实况
+      description: 桌面 Helper 内部上报接口；普通集成方应读取 GET /pose。
+      parameters:
+        - $ref: "#/components/parameters/PetIdQuery"
+        - $ref: "#/components/parameters/SurfaceQuery"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [x, y, facing]
+              properties:
+                x:
+                  type: number
+                  description: 桌宠中心点归一化横坐标
+                y:
+                  type: number
+                  description: 桌宠中心点归一化纵坐标
+                facing:
+                  type: string
+                  enum: [left, right]
+      responses:
+        "200":
+          description: 上报结果
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/OkResponse"
+                  - $ref: "#/components/schemas/FailureResponse"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
   /dsh-pet-7340/chat:
     get:
       tags: [Action]
@@ -1048,9 +1124,17 @@ paths:
 
         记忆的唯一读写方是宿主（落盘在 `memory.json`），桌面窗口仅作为客户端，
         因此同一 DSH Pet 实例下的所有桌宠窗口**天然共享同一份记忆**。文件全量保留、不删除，
-        只是响应时按 `chatMemoryRounds`（默认 5 轮，1 轮 = 1 问 1 答）截取尾部。
+        只是响应时按 `chatMemoryRounds`（默认 5 轮，1 轮 = 1 问 1 答）截取尾部；
+        传入 `?rounds=` 可覆盖本次读取值，不改变后续对话上下文。
       parameters:
         - $ref: "#/components/parameters/PetIdQuery"
+        - name: rounds
+          in: query
+          description: 本次读取轮数（0–200）；不传或空值时使用配置。非法值返回 bad-request。
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 200
       responses:
         "200":
           description: 最近窗口
@@ -1070,7 +1154,7 @@ paths:
                       $ref: "#/components/schemas/ChatMemoryMessage"
                   rounds:
                     type: integer
-                    description: 该宠物当前生效的轮数（来自配置 `chatMemoryRounds`）
+                    description: 本次生效的轮数（配置值或本次请求覆盖值）
         "405":
           $ref: "#/components/responses/MethodNotAllowed"
         "500":
@@ -1081,7 +1165,7 @@ paths:
       summary: 对指定宠物说一句话并生成回复
       description: |
         携带历史上下文生成回复，把「问 + 答」写入记忆，并把回复写进 `pets.<id>.say`。
-        这是动作端点，**只回 `{ ok: true }`**——回复文本从 `/state` 读。
+        这是动作端点。成功响应包含 `text` 和可选的 `image`；同一份回复仍写入 `/state`，供桌面渲染端显示。
 
         调用方收到 `ok` 后应立刻拉一拍 `/state` 即可看到回复，无需额外等待。
 
@@ -1119,7 +1203,7 @@ paths:
             application/json:
               schema:
                 oneOf:
-                  - $ref: "#/components/schemas/OkResponse"
+                  - $ref: "#/components/schemas/SayResponse"
                   - $ref: "#/components/schemas/FailureResponse"
         "405":
           $ref: "#/components/responses/MethodNotAllowed"
@@ -1725,6 +1809,20 @@ components:
           const: true
       description: 动作已完成。数据请从 `GET /state` 读取。
 
+    SayResponse:
+      type: object
+      required: [ok, text]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        text:
+          type: string
+          description: 与写入 `pets.<id>.say` 的正文相同。
+        image:
+          type: string
+          description: 可选表情包名称；仅在本次生成命中配图时出现。
+
     LockResponse:
       type: object
       required: [ok, pet, lockId, expiresAt, renewed]
@@ -1954,6 +2052,32 @@ components:
         toppedUp:
           type: string
           description: deepseek：充值额度
+        fullBalance:
+          type: string
+          description: DeepSeek：档位计算基准；缺省表示该币种没有基准。
+        tier:
+          type: string
+          enum: [peak, idle]
+          description: DeepSeek：当前计价档位。
+        wallets:
+          type: array
+          description: |
+            新版多币种钱包列表。旧客户端可以继续读取上方的 `currency` / `total` 等主钱包兼容字段；
+            新客户端应优先读取此列表。单币种响应可以省略 `wallets`。
+          items:
+            type: object
+            required: [currency, total, granted, toppedUp]
+            properties:
+              currency:
+                type: string
+              total:
+                type: string
+              granted:
+                type: string
+              toppedUp:
+                type: string
+              fullBalance:
+                type: string
 
     BalanceUnavailable:
       type: object

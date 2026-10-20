@@ -3,7 +3,9 @@ import { createPortal } from 'react-dom';
 import { jsx } from 'react/jsx-runtime';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { flattenConfigPets } from '../shared/config';
+import { AiSettingsPage } from './ai-settings-react';
 import { makePetConfigSection, petBridge, zh } from './pet-settings';
+import { applySettingsTheme } from './settings-style';
 
 type RenderMode = 'hardware' | 'software';
 
@@ -11,7 +13,7 @@ const APP_DISPLAY_NAME =
   (window as Window & { DSH_PET_APP_NAME?: string }).DSH_PET_APP_NAME === 'DSH Pet' ? 'DSH Pet' : '哦鲸鲸';
 document.title = `${APP_DISPLAY_NAME} 设置`;
 
-function AutoStartSettings(): ReturnType<typeof jsx> {
+function AutoStartSettings(): ReturnType<typeof jsx> | null {
   const [available, setAvailable] = useState(false);
   const [enabled, setEnabled] = useState(false);
   const [ready, setReady] = useState(false);
@@ -88,7 +90,7 @@ function AutoStartSettings(): ReturnType<typeof jsx> {
                   type: 'checkbox',
                   checked: enabled,
                   disabled: !ready || !available || busy || (message !== null && !message.ok),
-                  onChange: (event) => void save(event.currentTarget.checked),
+                  onChange: (event: { currentTarget: HTMLInputElement }) => void save(event.currentTarget.checked),
                 }),
                 jsx('span', { children: '登录 Windows 时启动 DSH Pet' }),
               ],
@@ -263,11 +265,7 @@ const PetSettings = makePetConfigSection({
         '启用后跟随工作状态动画；若安装了 DSH 桥接插件或 DSH Pet Codex 状态桥接插件，则同步最近活动的对话，否则保持空闲。',
       notifyToggleHint: '控制 DSH 工作流和桌宠对话回复的通知。保存后生效。',
       modelHint:
-        '分别设置碎碎念与对话使用的模型，并设置对话历史轮数。留空表示使用独立版当前 DeepSeek API 模型；也可为每只宠物单独指定模型。',
-      modelFollow: '使用独立版默认模型',
-      modelFieldHint:
-        '使用独立版默认模型：优先读取环境变量 DSH_PET_STANDALONE_DEEPSEEK_MODEL，未设置时使用 deepseek-flash；指定模型调用失败时，会回退到该模型重试一次。',
-      invalidModel: '请检查模型设置：服务商与模型要么都选，要么都留空（使用独立版默认模型）。',
+        '模型端点、密钥与模型名称统一在独立模式 AI 设置中配置。此处可设置对话历史轮数和配图数量。',
       'storage.userData':
         '用户数据：自定义配置 main-config.jsonc、对话记忆 memory.json、自定义动画素材 main-animation/、文件宠物 pet/',
       standaloneStorageNote: `退出桌宠请使用系统托盘菜单中的「退出 ${APP_DISPLAY_NAME}」。删除用户数据会清除配置、对话记忆和自定义素材。`,
@@ -278,15 +276,32 @@ const PetSettings = makePetConfigSection({
   notificationAppName: APP_DISPLAY_NAME,
   standaloneAddon: jsx('div', {
     style: { display: 'flex', flexDirection: 'column', gap: '16px' },
-    children: [jsx(AutoStartSettings, {}), jsx(RenderModeSettings, {})],
+    children: [
+      jsx(AutoStartSettings, {}),
+      jsx(RenderModeSettings, {}),
+    ],
   }),
 });
 
 async function start(): Promise<void> {
+  const root = document.getElementById('app');
+  if (!root) return;
+  let merged: Record<string, Record<string, unknown>> | null = null;
   try {
     const response = await fetch('/dsh-pet-7340/config');
     if (response.ok) {
-      const merged = (await response.json()) as Record<string, Record<string, unknown>>;
+      merged = (await response.json()) as Record<string, Record<string, unknown>>;
+      applySettingsTheme(merged.main?.uiTheme);
+    }
+  } catch {
+    // Missing config keeps the system-following theme from the page shell.
+  }
+  if (window.location.pathname.startsWith('/standalone-ai/')) {
+    createRoot(root).render(jsx(AiSettingsPage, {}));
+    return;
+  }
+  if (merged) {
+    try {
       petBridge.current = flattenConfigPets(merged);
       petBridge.template = petBridge.current.find((pet) => !pet.extra);
       petBridge.reload = (next) => {
@@ -295,12 +310,11 @@ async function start(): Promise<void> {
           petBridge.template = petBridge.current.find((pet) => !pet.extra);
         }
       };
+    } catch {
+      // The form performs its own load and displays its normal retry state.
     }
-  } catch {
-    // The form performs its own load and displays its normal retry state.
   }
-  const root = document.getElementById('app');
-  if (root) createRoot(root).render(jsx(PetSettings, {}));
+  createRoot(root).render(jsx(PetSettings, {}));
 }
 
 void start();

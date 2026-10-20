@@ -16,6 +16,8 @@ import { createServer } from 'node:http';
 import type { IncomingMessage, Server as HttpServer, ServerResponse } from 'node:http';
 
 import type { RegisteredRoute, StandaloneLogger } from './context';
+import { boundedRequest, MAX_SETTINGS_BYTES } from './request-body';
+import { secureResponse, type RequestSecurity } from './request-security';
 
 /** 独立模式默认端口（与插件 helper 的内置默认一致） */
 export const DEFAULT_STANDALONE_PORT = 6952;
@@ -32,6 +34,8 @@ export interface StandaloneServerOptions {
   status?: () => unknown;
   /** `/shutdown` 被请求时通知调用方收尾（独立模式的脚本化停机） */
   onShutdown?: () => void;
+  /** 独立 AI 本机设置接口使用的请求令牌与来源校验 */
+  requestSecurity?: RequestSecurity;
 }
 
 export interface StandaloneServer {
@@ -96,14 +100,15 @@ function fail(res: ServerResponse, error: unknown, logger: StandaloneLogger): vo
 export function createRequestListener(
   options: StandaloneServerOptions,
 ): (req: IncomingMessage, res: ServerResponse) => void {
-  const { routes, logger, status, onShutdown } = options;
+  const { routes, logger, status, onShutdown, requestSecurity } = options;
   return (req, res) => {
     const method = req.method ?? 'GET';
     const pathname = pathnameOf(req.url);
     logger.debug(`${method} ${pathname}`);
 
     if (method === 'OPTIONS') {
-      res.writeHead(204, CORS_HEADERS);
+      const headers = pathname.startsWith('/standalone-ai/') ? {} : CORS_HEADERS;
+      res.writeHead(204, headers);
       res.end();
       return;
     }
@@ -127,11 +132,20 @@ export function createRequestListener(
       );
       return;
     }
-    try {
-      void Promise.resolve(route.handler(req, res)).catch((error: unknown) => fail(res, error, logger));
-    } catch (error) {
-      fail(res, error, logger);
-    }
+    const invoke = async (): Promise<void> => {
+      let request = req;
+      if (pathname.startsWith('/standalone-ai/')) {
+        secureResponse(res, pathname);
+        if (!requestSecurity || !requestSecurity.authorize(req, res)) return;
+        if (method === 'POST') {
+          const replay = await boundedRequest(req, res, MAX_SETTINGS_BYTES);
+          if (!replay) return;
+          request = replay;
+        }
+      }
+      await route.handler(request, res);
+    };
+    void invoke().catch((error: unknown) => fail(res, error, logger));
   };
 }
 

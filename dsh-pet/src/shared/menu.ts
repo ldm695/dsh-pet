@@ -132,28 +132,30 @@ export function isNoMirrorAnimation(categories: Category[], anim: string): boole
  *  每一级面板是独立的绝对定位盒子（.dsh-pet-menu-column），位置由 JS 内联写入；
  *  面板与面板之间互不嵌套，各自独立滚动。 */
 export const MENU_CSS = [
-  '.dsh-pet-menu{position:fixed;left:0;top:0;z-index:2147483000;color:#2b2b2b;font-size:13px;line-height:1.5;',
+  '.dsh-pet-menu{--dsh-menu-text:#252525;--dsh-menu-bg:rgba(255,255,255,.98);--dsh-menu-border:rgba(0,0,0,.12);--dsh-menu-shadow:0 8px 28px rgba(0,0,0,.2);--dsh-menu-hover:rgba(43,99,255,.14);--dsh-menu-scrollbar:rgba(0,0,0,.16);--dsh-menu-scrollbar-hover:rgba(43,99,255,.4);--dsh-menu-arrow:#9aa0a6;position:fixed;left:0;top:0;z-index:2147483000;color:var(--dsh-menu-text);font-size:13px;line-height:1.5;',
   "font-family:var(--dsh-pet-font-family,'ShangshouSoftCandy','Yuanti SC','YouYuan','幼圆','Comic Sans MS','PingFang SC','Microsoft YaHei',sans-serif);user-select:none;pointer-events:auto}",
+  '.dsh-pet-menu[data-theme="dark"]{--dsh-menu-text:#dedede;--dsh-menu-bg:rgba(36,36,36,.98);--dsh-menu-border:#505050;--dsh-menu-shadow:0 8px 28px rgba(0,0,0,.45);--dsh-menu-hover:#373737;--dsh-menu-scrollbar:rgba(255,255,255,.24);--dsh-menu-scrollbar-hover:rgba(120,174,232,.65);--dsh-menu-arrow:#a0a0a0}',
+  '@media(prefers-color-scheme:dark){.dsh-pet-menu[data-theme="system"]{--dsh-menu-text:#dedede;--dsh-menu-bg:rgba(36,36,36,.98);--dsh-menu-border:#505050;--dsh-menu-shadow:0 8px 28px rgba(0,0,0,.45);--dsh-menu-hover:#373737;--dsh-menu-scrollbar:rgba(255,255,255,.24);--dsh-menu-scrollbar-hover:rgba(120,174,232,.65);--dsh-menu-arrow:#a0a0a0}}',
   '.dsh-pet-menu,.dsh-pet-menu *{box-sizing:border-box}',
   '.dsh-pet-menu-column{position:absolute;min-width:150px;max-width:240px;padding:4px;',
-  'background:rgba(255,255,255,.98);border:1px solid rgba(0,0,0,.12);border-radius:8px;',
-  'box-shadow:0 8px 28px rgba(0,0,0,.2);max-height:min(62vh,460px);overflow-y:auto;',
+  'background:var(--dsh-menu-bg);border:1px solid var(--dsh-menu-border);border-radius:8px;',
+  'box-shadow:var(--dsh-menu-shadow);max-height:min(62vh,460px);overflow-y:auto;',
   // 自定义滚动条：细圆角半透明条（Chromium 系 Chrome/Edge/Electron 走 ::-webkit-scrollbar；
   // Firefox 走 scrollbar-width/scrollbar-color）。thumb 用 border+background-clip 内缩 2px 留白，
   // 与菜单的圆角白底协调；hover 加深并与 item:hover 的蓝呼应。track 透明不抢视觉。
-  'scrollbar-width:thin;scrollbar-color:rgba(0,0,0,.22) transparent}',
+  'scrollbar-width:thin;scrollbar-color:var(--dsh-menu-scrollbar) transparent}',
   '.dsh-pet-menu-column::-webkit-scrollbar{width:8px;height:8px}',
   '.dsh-pet-menu-column::-webkit-scrollbar-track{background:transparent}',
-  '.dsh-pet-menu-column::-webkit-scrollbar-thumb{background:rgba(0,0,0,.16);border-radius:4px;',
+  '.dsh-pet-menu-column::-webkit-scrollbar-thumb{background:var(--dsh-menu-scrollbar);border-radius:4px;',
   'border:2px solid transparent;background-clip:content-box}',
-  '.dsh-pet-menu-column::-webkit-scrollbar-thumb:hover{background:rgba(43,99,255,.4);',
+  '.dsh-pet-menu-column::-webkit-scrollbar-thumb:hover{background:var(--dsh-menu-scrollbar-hover);',
   'border:2px solid transparent;background-clip:content-box}',
   '.dsh-pet-menu-column::-webkit-scrollbar-corner{background:transparent}',
   '.dsh-pet-menu-item{position:relative;display:flex;align-items:center;justify-content:space-between;',
   'gap:14px;padding:5px 12px;border-radius:6px;white-space:nowrap;cursor:default}',
-  '.dsh-pet-menu-item:hover{background:rgba(43,99,255,.14)}',
+  '.dsh-pet-menu-item:hover{background:var(--dsh-menu-hover)}',
   '.dsh-pet-menu-item>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis}',
-  '.dsh-pet-menu-arrow{color:#9aa0a6;font-size:12px;flex:none}',
+  '.dsh-pet-menu-arrow{color:var(--dsh-menu-arrow);font-size:12px;flex:none}',
 ].join('');
 
 /** mountContextMenu 返回值 */
@@ -190,8 +192,10 @@ export function mountContextMenu(opts: {
   onClose?: () => void;
   /** 菜单允许占用的矩形（视口局部坐标）；缺省 = 整个视口（浏览器既有行为） */
   clamp?: { x: number; y: number; w: number; h: number };
+  /** 独立桌面应用设置的主题；system 跟随系统外观。 */
+  themeMode?: 'system' | 'light' | 'dark';
 }): ContextMenuMount {
-  const { tree, x, y, onAction, onClose, clamp } = opts;
+  const { tree, x, y, onAction, onClose, clamp, themeMode = 'system' } = opts;
   // 夹取基准：缺省整个视口；桌面传入「窗口 ∩ 工作区」后各级面板都只在这个矩形内落位/翻转。
   // 防御：clamp 含非有限值（如坐标来源缺失变成 NaN）时回落整个视口——否则面板会落到 (0,0)
   const c =
@@ -200,6 +204,7 @@ export function mountContextMenu(opts: {
       : { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight };
   const root = document.createElement('div');
   root.className = 'dsh-pet-menu';
+  root.dataset.theme = themeMode === 'light' || themeMode === 'dark' ? themeMode : 'system';
   root.style.left = '0px';
   root.style.top = '0px';
   root.addEventListener('contextmenu', (e) => e.preventDefault());

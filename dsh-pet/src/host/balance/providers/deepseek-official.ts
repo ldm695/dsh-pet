@@ -7,8 +7,8 @@
  *
  * 与账号路由（./deepseek-account.ts）**同 shape、同形**：展示层共用同一套气泡，差异只在取数。
  */
-import { DEEPSEEK_FULL_BALANCE, deepseekPricingTier } from '../deepseek-common';
-import { fetchWithRetry, str } from '../internal';
+import { deepseekFullBalance, deepseekPricingTier } from '../deepseek-common';
+import { fetchWithRetry, obj, str } from '../internal';
 import type { BalanceProvider } from '../types';
 
 export const deepseekOfficial: BalanceProvider = {
@@ -21,17 +21,27 @@ export const deepseekOfficial: BalanceProvider = {
     const infos = (body as { balance_infos?: unknown })?.balance_infos;
     if (!Array.isArray(infos) || infos.length === 0)
       throw new Error('dsh-pet: deepseek balance 响应缺少 balance_infos');
-    const first = infos[0] as Record<string, unknown>;
+    const wallets = infos.map((raw) => {
+      const item = obj(raw) ?? {};
+      const currency = str(item.currency, 'currency');
+      const fullBalance = deepseekFullBalance(currency);
+      return {
+        currency,
+        total: str(item.total_balance, 'total_balance'),
+        granted: str(item.granted_balance, 'granted_balance'),
+        toppedUp: str(item.topped_up_balance, 'topped_up_balance'),
+        ...(fullBalance === undefined ? {} : { fullBalance }),
+      };
+    });
+    const primary = wallets.find((wallet) => wallet.currency === 'CNY') ?? wallets[0];
     return {
       ok: true,
       provider,
       shape: 'money',
       data: {
-        currency: str(first.currency, 'currency'),
-        total: str(first.total_balance, 'total_balance'),
-        granted: str(first.granted_balance, 'granted_balance'),
-        toppedUp: str(first.topped_up_balance, 'topped_up_balance'),
-        fullBalance: DEEPSEEK_FULL_BALANCE,
+        ...(wallets.length > 1 ? { wallets } : {}),
+        // Additive compatibility for older renderers which only understand one wallet.
+        ...primary,
         tier: deepseekPricingTier(),
       },
     };

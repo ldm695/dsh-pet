@@ -36,6 +36,7 @@ function hideError() {
 }
 let overlayVisualReadySent = false;
 let frameDiagnosticsStarted = false;
+let bootFailures = 0;
 
 function startFrameDiagnostics() {
   if (!CONFIG.frameDiagnostics || frameDiagnosticsStarted) return;
@@ -134,7 +135,12 @@ async function loadConfig() {
     // 字体（全局一份，合并器已填内置默认）：字体族在此取一次、注入全局变量；字号由每只宠物
     // 按自己的尺寸算（见 PetSprite 注入的 --dsh-pet-font-bubble / --dsh-pet-font-tip）
     font: (merged && merged.main && merged.main.font) || S.DEFAULT_FONT,
+    uiTheme:
+      merged && merged.main && (merged.main.uiTheme === 'light' || merged.main.uiTheme === 'dark')
+        ? merged.main.uiTheme
+        : 'system',
     notificationsEnabled: !(merged && merged.main && merged.main.notificationsEnabled === false),
+    aiChatEnabled: !(merged && merged.main && merged.main.dshPetAiChatEnabled === false),
   };
 }
 
@@ -143,6 +149,7 @@ async function boot() {
   try {
     const cfg = await loadConfig();
     config = cfg;
+    bootFailures = 0;
     hideError();
     // 字体族（全局配置 font.family）→ documentElement：对话窗/得分弹窗挂在 body 下、继承不到
     // 宠物根容器，只能走全局变量；气泡与提示也从这里继承样式变量。
@@ -191,7 +198,10 @@ async function boot() {
     }
     startLoops();
   } catch (e) {
-    showError('配置加载失败：' + (e && e.message ? String(e.message) : String(e)));
+    const message = '配置加载失败：' + (e && e.message ? String(e.message) : String(e));
+    bootFailures += 1;
+    if (bootFailures > 1) showError(message);
+    else console.error('[dsh-pet] ' + message + ' (first boot, retrying)');
     await signalOverlayVisualReady();
     scheduleReboot();
   }

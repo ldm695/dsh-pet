@@ -27,6 +27,8 @@ export interface RawBalanceResult {
     weeklyCapUsd?: unknown;
     monthlyCapUsd?: unknown;
     rollingLabel?: unknown;
+    /** 新格式：money 可同时包含多个币种；解析器仍接受下方旧式单钱包字段。 */
+    wallets?: unknown;
     currency?: unknown;
     total?: unknown;
     granted?: unknown;
@@ -63,6 +65,8 @@ export interface BalanceView {
   monthlyCapUsd?: number;
   /** 滚动窗展示名（服务商自报，如 `5h`）；缺省回落 DEFAULT_ROLLING_LABEL */
   rollingLabel?: string;
+  /** money：新版多币种钱包；缺失时消费下方兼容字段。 */
+  wallets?: MoneyWalletView[];
   /** money：余额金额（字符串，与接口一致） */
   currency?: string;
   total?: string;
@@ -75,6 +79,14 @@ export interface BalanceView {
   fullBalance?: string;
   /** money：计价档位装饰；缺省 = 渲染成不带峰谷的「余额 ¥x.xx」 */
   tier?: PricingTier;
+}
+
+export interface MoneyWalletView {
+  currency: string;
+  total: string;
+  granted?: string;
+  toppedUp?: string;
+  fullBalance?: string;
 }
 
 /** 无效（不支持/缺凭证/抓取失败）：显式标记，不静默 */
@@ -154,15 +166,59 @@ export function toBalanceState(raw: unknown): BalanceState | null {
     };
   }
   if (r.shape === 'money') {
+    const rawWallets = Array.isArray(d.wallets) ? d.wallets : [];
+    const hasWalletArray = Array.isArray(d.wallets);
+    const wallets: MoneyWalletView[] = [];
+    if (hasWalletArray) {
+      for (const item of rawWallets) {
+        if (!item || typeof item !== 'object') continue;
+        const w = item as Record<string, unknown>;
+        if (typeof w.currency !== 'string' || !w.currency || typeof w.total !== 'string' || !w.total) continue;
+        wallets.push({
+          currency: w.currency,
+          total: w.total,
+          granted: typeof w.granted === 'string' ? w.granted : '0.00',
+          toppedUp: typeof w.toppedUp === 'string' ? w.toppedUp : '0.00',
+          ...(typeof w.fullBalance === 'string' && w.fullBalance ? { fullBalance: w.fullBalance } : {}),
+        });
+      }
+    }
+    const legacyWallet =
+      typeof d.total === 'string'
+        ? {
+            currency: typeof d.currency === 'string' && d.currency ? d.currency : 'CNY',
+            total: d.total,
+            granted: typeof d.granted === 'string' ? d.granted : '0.00',
+            toppedUp: typeof d.toppedUp === 'string' ? d.toppedUp : '0.00',
+            ...(typeof d.fullBalance === 'string' && d.fullBalance ? { fullBalance: d.fullBalance } : {}),
+          }
+        : undefined;
+    if (wallets.length === 0 && legacyWallet) wallets.push(legacyWallet);
+    if (wallets.length === 0) return null;
+    const legacy = legacyWallet ?? wallets.find((wallet) => wallet.currency === 'CNY') ?? wallets[0];
+    if (!hasWalletArray) {
+      return {
+        provider,
+        shape: 'money',
+        ok: true,
+        currency: legacy.currency,
+        total: legacy.total,
+        granted: legacy.granted,
+        toppedUp: legacy.toppedUp,
+        fullBalance: legacy.fullBalance,
+        tier: d.tier === 'peak' || d.tier === 'idle' ? d.tier : undefined,
+      };
+    }
     return {
       provider,
       shape: 'money',
       ok: true,
-      currency: typeof d.currency === 'string' ? d.currency : undefined,
-      total: typeof d.total === 'string' ? d.total : undefined,
-      granted: typeof d.granted === 'string' ? d.granted : undefined,
-      toppedUp: typeof d.toppedUp === 'string' ? d.toppedUp : undefined,
-      fullBalance: typeof d.fullBalance === 'string' ? d.fullBalance : undefined,
+      wallets,
+      currency: legacy.currency,
+      total: legacy.total,
+      granted: legacy.granted,
+      toppedUp: legacy.toppedUp,
+      fullBalance: legacy.fullBalance,
       tier: d.tier === 'peak' || d.tier === 'idle' ? d.tier : undefined,
     };
   }
@@ -177,6 +233,18 @@ export function toBalanceState(raw: unknown): BalanceState | null {
  */
 export function balancePercent(v: BalanceView): number | undefined {
   if (v.shape === 'money') {
+    if (v.wallets?.length) {
+      let remaining = 0;
+      let based = 0;
+      for (const wallet of v.wallets) {
+        const total = Number(wallet.total);
+        const full = Number(wallet.fullBalance);
+        if (!Number.isFinite(total) || !Number.isFinite(full) || full <= 0) continue;
+        remaining += total / full;
+        based++;
+      }
+      return based === 0 ? undefined : Math.max(0, Math.min(100, 100 - (remaining / based) * 100));
+    }
     const total = Number(v.total);
     const full = Number(v.fullBalance);
     if (!Number.isFinite(total)) return undefined; // 金额非法（非数字）：不触发（上层校验已兜底，此处双保险）
@@ -362,9 +430,14 @@ export function balanceBubbleView(state: BalanceState): BalanceBubbleRow[] {
       }
       return [{ role: 'label', text: '额度数据不可用' }];
     }
-    // money：币种符号由数据带出（CNY → ¥，USD → $）
-    const symbol = state.currency === 'USD' ? '$' : '¥';
-    const amount = symbol + (state.total ?? '-');
+    // money：多个币种按各自金额展示，CNY 优先；0 余额不占位，全部为 0 时仍显示 ¥0.00。
+    const wallets = state.wallets ?? [];
+    const visible = wallets
+      .filter((wallet) => Number(wallet.total) !== 0)
+      .sort((a, b) => (a.currency === 'CNY' ? 0 : 1) - (b.currency === 'CNY' ? 0 : 1));
+    const amount = visible.length
+      ? visible.map((wallet) => `${wallet.currency === 'USD' ? '$' : wallet.currency === 'CNY' ? '¥' : wallet.currency + ' '}${wallet.total}`).join('/')
+      : `${state.currency === 'USD' ? '$' : '¥'}${state.total ?? '0.00'}`;
     // 档位装饰（峰/谷）只有提供该计价规则的服务商才有；没有就不加括号那一段
     if (!state.tier) return [{ role: 'label', text: '余额 ' + amount }];
     return [

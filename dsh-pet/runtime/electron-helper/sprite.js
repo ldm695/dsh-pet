@@ -118,6 +118,8 @@ class PetSprite {
     // 占用锁：锁生效时冻结随机动画和自动事件；用户输入可立即接管。
     this.frozen = false;
     this.lockTimer = null;
+    this._facing = 'left';
+    this.poseTimer = null;
     this.facing = 'left';
     // 交互/移动
     this.dragState = { active: false, dragging: false, sx: 0, sy: 0, petX: 0, petY: 0 };
@@ -392,6 +394,8 @@ class PetSprite {
     this.stopDragFollow();
     this.stopSquash();
     this.stopMove();
+    if (this.poseTimer !== null) window.clearTimeout(this.poseTimer);
+    this.poseTimer = null;
     window.petBridge?.moveTargets?.forget?.(this.pet.id);
     window.__dshPetLiveStates?.delete(this.pet.id);
     this.el.remove();
@@ -453,6 +457,37 @@ class PetSprite {
     // 而光标存的是视口坐标，窗口一移，光标相对窗口的位置就变了，不重摆提示会跟着窗口漂走。
     // 只在显示时重摆：漫游逐帧调本函数，没显示提示时不做无谓的 DOM 写入。
     if (this.tipOn) this.renderTip();
+    this.markPoseDirty();
+  }
+
+  get facing() {
+    return this._facing;
+  }
+
+  set facing(next) {
+    const value = next === 'right' ? 'right' : 'left';
+    if (this._facing === value) return;
+    this._facing = value;
+    this.markPoseDirty();
+  }
+
+  markPoseDirty() {
+    if (this.poseTimer !== null) return;
+    this.poseTimer = window.setTimeout(() => {
+      this.poseTimer = null;
+      this.reportPose();
+    }, POSE_THROTTLE_MS);
+  }
+
+  reportPose() {
+    if (!this.pos) return;
+    const body = {
+      x: (this.pos.x + this.halfW) / VIEW.w,
+      y: (this.pos.y + this.halfH) / VIEW.h,
+      facing: this.facing,
+    };
+    const url = POSE_REPORT_URL + '?pet=' + encodeURIComponent(this.pet.id) + '&surface=desktop';
+    void S.postAction(url, body);
   }
 
   // 角落/边距 → 窗口位置；拖拽后按会话内位置（比例）还原——**松手无任何边界夹取**，
@@ -2278,12 +2313,23 @@ class PetSprite {
     return { x: vx0 - winX, y: vy0 - winY, w, h };
   }
 
-  onContextMenu(e) {
+  async onContextMenu(e) {
     const d = this.dragState;
     if (d.active || d.dragging || this.justDragged || this.menuOpen) return;
     e.preventDefault();
     this.stopThrow(); // 菜单弹出前停住飞行中的宠物
     this.stopMove(); // 菜单悬停期间宠物不漫游
+    // 独立模式的 AI 开关保存在专用设置中，不属于桌宠 config 文件；打开菜单时刷新一次，
+    // 让保存开关后立即隐藏/显示对话项，而无需重启 Helper。DSH 宿主模式不增加此请求。
+    if (STANDALONE) {
+      try {
+        const response = await fetch(BASE + '/config', { cache: 'no-store' });
+        if (response.ok) {
+          const latest = await response.json();
+          config.aiChatEnabled = !(latest && latest.main && latest.main.dshPetAiChatEnabled === false);
+        }
+      } catch {}
+    }
     // 桌面专属工具根项（打开网站 / 查看余额 / 碎碎念 / 对话 / 回到初始位置）+ 共享菜单树（动作→分类→具体动画）
     // 碎碎念/对话项无条件显示：手动触发不受 whisperEnabled 限制（该字段只影响自动周期轮询）
     // 首项文案随宿主形态变（OPEN_TARGET）：宿主是 DSH 桌面应用时点是"唤起桌面应用窗口"，仍叫「打开网站」会误导
@@ -2293,13 +2339,13 @@ class PetSprite {
     tools.push({ label: '查看余额', action: 'show-balance' });
     tools.push(
       { label: '碎碎念', action: 'whisper' },
-      { label: '对话', action: 'chat' },
       { label: '回到初始位置', action: 'home' },
       // 显示位置（仅桌面/不显示）：改这只宠物的 display 配置 + 宿主重载生效。
       // 为什么不就地关窗/开窗：桌面宠物共用一个 Electron 进程，窗口是进程启动时按 DSH_PET_PETS
       // 一次性建的——就地增删窗口既改不了磁盘配置（下次启动又回来）也改不了窗口数量。
       S.displayMenuBranch(),
     );
+    if (!STANDALONE || config.aiChatEnabled !== false) tools.splice(tools.length - 1, 0, { label: '对话', action: 'chat' });
     const tree = tools.concat(S.buildMenuTree(this.animations));
     // 客户端启动器和维护操作固定放在「动作」分支之后，启动器悬停展开子菜单。
     tree.push({
@@ -2325,6 +2371,7 @@ class PetSprite {
       y: e.clientY,
       // 只允许在「窗口 ∩ 工作区」内显示：宠物贴边时外扩余量伸出屏幕，菜单走进那里会被 OS 裁掉（#41）
       clamp: this.visibleClampRect(),
+      themeMode: config.uiTheme,
       onAction: (leaf) => this.onMenuAction(leaf, { fromContextMenu: true }),
       // 菜单被点外/Esc 关闭（非菜单项路径）：同样复位可交互标记，恢复命中区判定
       onClose: () => {

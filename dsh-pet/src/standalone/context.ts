@@ -11,10 +11,9 @@
  * 不存在"第二套实现对不上"的漂移（这正是 `routes.test.ts` 开头记的那类事故）。
  *
  * 独立服务的边界（都是显式失败，不假装成功）：
- *   - `agentDefaultModel.currentSelection()` → 默认使用 `deepseek-official` 和独立版默认模型
- *     → 未配置 Key 时余额路由命中明确的凭证缺失分支
- *   - `credentials.resolve()` → 仅解析 DeepSeek API Key，其他凭据仍为 `undefined`
- *   - `llm.*` → DeepSeek 官方 API；未配置 Key 时生成调用明确失败
+ *   - `agentDefaultModel.currentSelection()` → 已启用时使用用户配置的独立 AI 模型，否则模型未就绪
+ *   - `credentials.resolve()` → 仅提供 DeepSeek 官方 API Key，供兼容的余额路由使用
+ *   - `llm.*` → 有独立 AI 服务时走用户配置的 OpenAI 兼容 / Anthropic 接口；无 AI 注入时保留旧 DeepSeek 适配
  *   - `on(...)` → 不订阅任何事件：独立模式没有 DSH 会话，工作状态因此保持空闲
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -25,11 +24,11 @@ import { saveDeepSeekApiKey } from './api-key-store';
 import {
   deepseekApiKey,
   deepseekApiKeySource,
-  deepseekCurrentModel,
   deepseekModels,
   setSavedDeepSeekApiKey,
   streamDeepSeekChat,
 } from './deepseek';
+import type { StandaloneAiService } from './ai-provider';
 
 /** 独立模式下模型及余额路由使用的 DeepSeek 官方 API 服务商 id。 */
 export const STANDALONE_PROVIDER = 'deepseek-official';
@@ -126,6 +125,8 @@ export interface StandaloneContextOptions {
   apiKeyStorePath?: string;
   /** Electron 硬件/软件合成偏好文件；保存后需重启 Electron Helper 生效 */
   renderModeStorePath?: string;
+  ai?: StandaloneAiService;
+  authenticatedUrl?: (baseUrl: string) => string;
 }
 
 export interface StandaloneContext {
@@ -162,6 +163,7 @@ export function createStandaloneLogger(): StandaloneLogger {
  */
 export function createStandaloneContext(options: StandaloneContextOptions): StandaloneContext {
   const { logger } = options;
+  const ai = options.ai;
   let apiKey = deepseekApiKey();
   const routes = options.routes ?? [];
   const failures: string[] = [];
@@ -170,6 +172,63 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
   let disposed = false;
 
   const portOf = (): number => (typeof options.port === 'function' ? options.port() : options.port);
+
+  const sendAiJson = (res: ServerResponse, status: number, value: unknown): void => {
+    const payload = JSON.stringify(value);
+    res.writeHead(status, {
+      'content-type': 'application/json; charset=utf-8',
+      'content-length': Buffer.byteLength(payload),
+      'cache-control': 'no-store',
+    });
+    res.end(payload);
+  };
+  const readAiBody = (req: IncomingMessage): Promise<string> =>
+    new Promise((resolve, reject) => {
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk: string) => (body += chunk));
+      req.once('end', () => resolve(body));
+      req.once('error', reject);
+    });
+  if (ai) {
+    routes.push(
+      {
+        kind: 'exact',
+        path: '/standalone-ai/settings',
+        handler: async (req, res) => {
+          if (req.method === 'GET') {
+            sendAiJson(res, 200, ai.getSettings());
+            return;
+          }
+          if (req.method !== 'POST') {
+            sendAiJson(res, 405, { error: 'Method not allowed' });
+            return;
+          }
+          try {
+            sendAiJson(res, 200, await ai.saveSettings(JSON.parse(await readAiBody(req)) as unknown));
+          } catch (error) {
+            sendAiJson(res, 400, { error: error instanceof Error ? error.message : '设置无效' });
+          }
+        },
+      },
+      {
+        kind: 'exact',
+        path: '/standalone-ai/test',
+        handler: async (req, res) => {
+          if (req.method !== 'POST') {
+            sendAiJson(res, 405, { error: 'Method not allowed' });
+            return;
+          }
+          try {
+            const input = JSON.parse(await readAiBody(req)) as Parameters<StandaloneAiService['testConnection']>[0];
+            sendAiJson(res, 200, await ai.testConnection(input));
+          } catch (error) {
+            sendAiJson(res, 400, { ok: false, message: error instanceof Error ? error.message : '请求无效' });
+          }
+        },
+      },
+    );
+  }
 
   if (options.apiKeyStorePath) {
     routes.push({
@@ -448,24 +507,44 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
      * 所以没有令牌可加，原样返回 baseUrl —— 与 DSH 侧 `ctx.connection.authenticatedUrl(baseUrl)`
      * （附加本进程启动令牌，供桌面 Helper 的「打开网站」用）语义对应，只是这一步在独立模式下恒等。
      */
-    connection: { authenticatedUrl: (baseUrl: string): string => baseUrl },
+    connection: { authenticatedUrl: options.authenticatedUrl ?? ((baseUrl: string): string => baseUrl) },
     commands: { register: (): (() => void) => () => {} },
     agentDefaultModel: {
-      currentSelection: (): { provider: string; model: string } => ({
-        provider: STANDALONE_PROVIDER,
-        model: deepseekCurrentModel(),
-      }),
+      currentSelection: (): { provider: string; model: string } =>
+        ai?.currentSelection() ?? { provider: STANDALONE_PROVIDER, model: '' },
     },
     credentials: {
       resolve: async (ref: unknown): Promise<{ value: string } | undefined> => {
         const name = typeof ref === 'string' ? ref : (ref as { name?: unknown } | null)?.name;
-        return name === 'DEEPSEEK_API_KEY' && apiKey ? { value: apiKey } : undefined;
+        const key = ai?.deepSeekApiKey() ?? apiKey;
+        return name === 'DEEPSEEK_API_KEY' && key ? { value: key } : undefined;
       },
     },
-    llm: {
-      listProviders: (): unknown[] => (apiKey ? [{ id: 'deepseek-official', name: 'DeepSeek API', models: [] }] : []),
-      listModels: async (provider: string): Promise<unknown[]> =>
-        provider === 'deepseek-official' && apiKey ? deepseekModels(apiKey) : [],
+    ...(ai
+      ? {
+          standaloneAi: {
+            isReady: () => ai.isReady(),
+            canWhisper: () => ai.canWhisper(),
+            chatEnabled: () => ai.getSettings().enabled,
+            whisperIntervalSec: () => ai.getSettings().whisperIntervalSec,
+            chatMemoryRounds: () => ai.getSettings().chatMemoryRounds,
+            chatImageLimit: () => ai.getSettings().chatImageLimit,
+          },
+        }
+      : {}),
+    llm: ai
+      ? {
+          listProviders: (): unknown[] => ai.listProviders(),
+          listModels: (provider: string): Promise<unknown[]> => ai.listModels(provider),
+          resolveModelInfo: (provider?: string, model?: string, signal?: AbortSignal): Promise<unknown> =>
+            ai.resolveModelInfo(provider, model, signal),
+          stream: (request: unknown): AsyncIterable<unknown> => ai.stream(request),
+        }
+      : {
+          listProviders: (): unknown[] =>
+            apiKey ? [{ id: 'deepseek-official', name: 'DeepSeek API', models: [] }] : [],
+          listModels: async (provider: string): Promise<unknown[]> =>
+            provider === 'deepseek-official' && apiKey ? deepseekModels(apiKey) : [],
       /**
        * 模型元数据查询。DSH 的契约是
        * `resolveModelInfo(provider, model, signal?): Promise<LlmResolvedModelInfo>` —— **异步**。
@@ -475,7 +554,7 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
        * 目前唯一消费方 `supportsReasoningOff` 用 `await` + `?.` + try/catch 包着，所以不炸——
        * 但那是靠消费方防御，不是靠形状正确。形状对不上，就不该指望下一个消费方也这么写。
        */
-      resolveModelInfo: async (): Promise<undefined> => undefined,
+          resolveModelInfo: async (): Promise<undefined> => undefined,
       /**
        * 生成入口：独立模式将调用转发到 DeepSeek 官方 API；未配置密钥时迭代时报错。
        *
@@ -490,8 +569,8 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
        * whisperModel/chatModel 就必崩，因为只有配了模型才会真的走到这里。
        */
       // 委托给 async generator，保证该 API 代理始终符合 AsyncIterable 契约。
-      stream: (request: unknown): AsyncIterable<unknown> => streamDeepSeekChat(apiKey, request),
-    },
+          stream: (request: unknown): AsyncIterable<unknown> => streamDeepSeekChat(apiKey, request),
+        },
   };
 
   return {
@@ -501,6 +580,7 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
     async dispose(): Promise<void> {
       if (disposed) return;
       disposed = true;
+      ai?.dispose();
       for (const dispose of disposers.splice(0).reverse()) {
         try {
           await dispose();

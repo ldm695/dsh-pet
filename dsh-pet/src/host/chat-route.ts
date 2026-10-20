@@ -3,7 +3,7 @@ import { requirePet, validatePetSurface, type ConfigSnapshot } from './route-val
 
 export interface ChatRouteDependencies {
   readConfig: () => ConfigSnapshot;
-  readHistory: (petId: string) => Promise<{ messages: unknown[]; rounds: number }>;
+  readHistory: (petId: string, rounds?: number) => Promise<{ messages: unknown[]; rounds: number }>;
   chatWithPet: (petId: string, text: string) => Promise<unknown>;
 }
 
@@ -22,6 +22,20 @@ export function createChatRoute(
     }
 
     try {
+      let roundsOverride: number | undefined;
+      const roundsRaw = method === 'GET' ? (query?.get('rounds') ?? null) : null;
+      if (roundsRaw !== null && roundsRaw.trim() !== '') {
+        const rounds = Number(roundsRaw);
+        if (!Number.isInteger(rounds) || rounds < 0 || rounds > 200) {
+          return {
+            kind: 'json',
+            status: 200,
+            obj: { ok: false, reason: 'bad-request', message: 'rounds 必须是 0–200 的整数（不传则用配置）' },
+          };
+        }
+        roundsOverride = rounds;
+      }
+
       let payload: Record<string, unknown> = {};
       if (method === 'POST') {
         try {
@@ -42,7 +56,7 @@ export function createChatRoute(
       const who = requirePet(deps.readConfig(), query?.get('pet'));
       if (!who.ok) return who.result;
       if (method === 'GET') {
-        const { messages, rounds } = await deps.readHistory(who.petId);
+        const { messages, rounds } = await deps.readHistory(who.petId, roundsOverride);
         return { kind: 'json', status: 200, obj: { ok: true, messages, rounds } };
       }
 

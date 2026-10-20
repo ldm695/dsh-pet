@@ -101,11 +101,22 @@ export interface WindowsUsage {
  * - `tier`：计价档位装饰（峰/谷）。**只有提供该规则的服务商会带**（DeepSeek 的高峰时段计价），
  *   不带就渲染成不带峰谷的「余额 ¥x.xx」。
  */
-export interface MoneyBalance {
+export interface MoneyWallet {
   currency: string;
   total: string;
   granted: string;
   toppedUp: string;
+  fullBalance?: string;
+}
+
+export interface MoneyBalance {
+  /** 新格式：一个账号可同时包含多个币种。 */
+  wallets?: MoneyWallet[];
+  /** 兼容旧客户端的主钱包字段；优先 CNY，其次取第一项。 */
+  currency?: string;
+  total?: string;
+  granted?: string;
+  toppedUp?: string;
   fullBalance?: string;
   tier?: PricingTier;
 }

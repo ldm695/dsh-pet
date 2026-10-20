@@ -12,7 +12,11 @@ import type { PricingTier } from './types';
  *
  * 为什么是 ¥20：DeepSeek 充值以 10 元为最小档，20 元是「余量充足」的常用参照；低于它才开始示警。
  */
-export const DEEPSEEK_FULL_BALANCE = '20';
+export const DEEPSEEK_FULL_BALANCE: Readonly<Record<string, string>> = Object.freeze({ CNY: '20', USD: '5' });
+
+export function deepseekFullBalance(currency: string): string | undefined {
+  return DEEPSEEK_FULL_BALANCE[currency];
+}
 
 /**
  * DeepSeek 峰谷计价档位（北京时间）：

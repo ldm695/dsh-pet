@@ -165,6 +165,8 @@ const BASE = BRIDGE ? 'dsh-pet-bridge://dsh-pet/dsh-pet-7340' : ORIGIN + '/dsh-p
 const STATE_URL = BASE + '/state'; // 轮询统一状态 S：前端 1s 轮询的唯一数据源（余额/工作状态/通知/说话）
 const BALANCE_URL = BASE + '/balance'; // 余额刷新动作（POST，写 S；数据本身从 /state 读）
 const WHISPER_URL = BASE + '/whisper';
+const POSE_REPORT_URL = BASE + '/pose/report';
+const POSE_THROTTLE_MS = 300;
 const BUBBLE_DURATION_MS = 10 * 1000; // 余额/碎碎念气泡展示时长（与浏览器一致：定时自动消失，与动画解耦）
 // /state 长轮询的挂起时长：宿主在"版本没变"时最多挂这么久。
 // 1s 是前端自己定的下限——空闲时请求率与改造前一致（1 req/s），叶子一变宿主立刻返回。

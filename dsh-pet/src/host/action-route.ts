@@ -17,12 +17,16 @@ type ActionLeaf = 'say' | 'anim' | 'position' | 'throw';
 export interface ActionRouteDependencies {
   readConfig: () => ConfigSnapshot;
   refreshBalance: (manual: boolean, targetPetId?: string) => Promise<void>;
-  publishWhisper: (petId: string) => Promise<boolean>;
+  publishWhisper: (petId: string) => Promise<WhisperActionResult>;
   memeDirs: (assetRoot: string) => string[];
   writePet: (petId: string, leaf: ActionLeaf, data: unknown) => void;
   createPlayback: (petId: string, name: string) => { playbackId: string };
   locks: LockStore;
 }
+
+export type WhisperActionResult =
+  | { ok: true; text: string; image?: string }
+  | { ok: false; reason: 'generate-error'; message?: string };
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -68,11 +72,11 @@ export function createActionRoute(
       const surfaceError = validateSurfaceById(cfg, who.petId, query ?? new URLSearchParams());
       if (surfaceError) return surfaceError;
       try {
-        const ok = await deps.publishWhisper(who.petId);
+        const result = await deps.publishWhisper(who.petId);
         return {
           kind: 'json',
           status: 200,
-          obj: ok ? { ok: true } : { ok: false, reason: 'generate-error' },
+          obj: result,
         };
       } catch (error) {
         return {

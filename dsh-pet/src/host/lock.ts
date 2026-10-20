@@ -10,9 +10,8 @@
  *
  * 四条边界（改之前先读完）：
  *
- *   1. **无锁 = 现状零变化**。没有锁时 `gate()` 直接放行、`locked()` 恒 false，所有既有路径一个字
- *      都不变（issue #122：「没有有效联动占用时，接口不改变 pet 原有行为」）。这也是它不会把
- *      代码搞乱的原因：新增的判断在常态下是空转的。
+ *   1. **不带 lock = 现状零变化**。没有锁时 `gate()` 对不带编号的调用放行、`locked()` 恒 false。
+ *      带了编号却查不到锁代表调用方仍以为自己持有旧租约，必须返回 `lock-lost`，不能静默放行。
  *   2. **有界**：内存态 + TTL（缺省 2min、上限 30min），插件卸载 / 宿主重启即全部失效——
  *      调用方崩溃不会把宠物永久锁死（issue #122：「避免宠物被永久锁住」）。
  *   3. **续期就是心跳**：调用方必须定期续期，而**续期那一次调用同时就是「我的锁还在吗」的探测器**
@@ -184,17 +183,21 @@ export class LockStore {
   /**
    * 动作端点的门禁（`/anim`、`/broadcast`、`/position`、`/throw`、`/bubble/clear` 共用）。
    *
-   * **无锁 → 一律放行**（`lock` 参数连看都不看）：这是「无锁 = 现状零变化」那条的落点，
-   * 第三方在没有占用的常态下照旧不传 `lock` 就能用。
+   * 无锁时区分调用方是否声明了租约：不带 `lock` 照旧放行；带了编号但查不到时，用墓碑返回
+   * `lock-lost`，避免过期或已释放的请求继续执行。
    */
   gate(petId: string, provided: string): LockGate {
     const rec = this.current(petId);
-    if (rec === null) return { ok: true };
-    if (provided && provided === rec.lockId) return { ok: true };
-    if (!provided) {
-      return { ok: false, reason: 'lock-required', message: '这只桌宠正被占用，必须带 lock=<lockId>' };
+    if (rec !== null) {
+      if (provided && provided === rec.lockId) return { ok: true };
+      if (!provided) {
+        return { ok: false, reason: 'lock-required', message: '这只桌宠正被占用，必须带 lock=<lockId>' };
+      }
+      return { ok: false, reason: 'lock-lost', cause: 'unknown', message: CAUSE_TEXT.unknown };
     }
-    return { ok: false, reason: 'lock-lost', cause: 'unknown', message: CAUSE_TEXT.unknown };
+    if (!provided) return { ok: true };
+    const cause = this.causeOf(petId, provided);
+    return { ok: false, reason: 'lock-lost', cause, message: CAUSE_TEXT[cause] };
   }
 
   /**

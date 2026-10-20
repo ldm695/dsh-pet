@@ -10,7 +10,7 @@
 //     chatMemoryRounds / whisperModel / chatModel / eventsRefreshSec
 //   · 条目级（每个条目一份：main 一份、每个种类各一份；种类文件顶层可覆盖）：
 //     whisperPrompt / memes / workStatusTexts / animations / animationWeights
-//   · 只读 main（写了也只认 main 条目那份）：notificationsEnabled / eventsRefreshSec.balance
+//   · 应用级偏好（仅 main 条目生效）：notificationsEnabled / uiTheme / eventsRefreshSec.balance
 // 合并口径：所有顶层字段都是**整段替换**——写了就整段用自己的，缺的子键不会从本文件补回来
 //   （消费端各自兜底：余额周期读不到按 1800、碎碎念按 300）。
 {
@@ -158,6 +158,9 @@
     "size": 21,
     "followPet": true
   },
+  // ===================== 界面主题（全局默认，设置页与桌宠右键菜单共用） =====================
+  // system 跟随 Windows 外观；也可固定为 light（白天）或 dark（黑夜）。
+  "uiTheme": "system",
   // ===================== 默认宠物列表（多开） =====================
   // pets 数组定义默认宠物；「设置页 → 添加宠物」的默认模板取 pets[0]（main）。
   // 每个宠物独立：name（显示名，可重复：悬浮提示 / AI 人设追加「你的名字是X」/ 未来命令行定位的

@@ -1,4 +1,4 @@
-/** Windows DPAPI storage for the standalone DeepSeek API credential. */
+/** Windows DPAPI storage for standalone AI credentials. */
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -34,7 +34,7 @@ function dpapi(action: 'protect' | 'unprotect', input: string): Promise<string> 
 }
 
 /** 读取当前 Windows 用户可解密的凭据；空文件或无效数据会明确报错。 */
-export async function loadDeepSeekApiKey(path: string): Promise<string | undefined> {
+export async function loadProtectedApiKey(path: string): Promise<string | undefined> {
   let encrypted: string;
   try {
     encrypted = (await readFile(path, 'utf8')).trim();
@@ -49,7 +49,7 @@ export async function loadDeepSeekApiKey(path: string): Promise<string | undefin
 }
 
 /** 原子写入 DPAPI 密文；临时文件与密文均保存在用户数据目录。 */
-export async function saveDeepSeekApiKey(path: string, key: string | undefined): Promise<void> {
+export async function saveProtectedApiKey(path: string, key: string | undefined): Promise<void> {
   if (!key?.trim()) {
     try {
       await unlink(path);
@@ -64,3 +64,7 @@ export async function saveDeepSeekApiKey(path: string, key: string | undefined):
   await writeFile(temporary, encrypted, { encoding: 'utf8', mode: 0o600 });
   await rename(temporary, path);
 }
+
+/** Backwards-compatible names for the legacy DeepSeek balance credential. */
+export const loadDeepSeekApiKey = loadProtectedApiKey;
+export const saveDeepSeekApiKey = saveProtectedApiKey;

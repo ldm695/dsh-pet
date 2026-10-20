@@ -164,6 +164,8 @@ export interface PhysicsParams {
 
 /** 字体种类预设 id（config.jsonc 的 font.family 白名单；清单与对应字体栈见 src/shared/fonts.ts） */
 export type FontFamilyId = 'candy' | 'yahei' | 'youyuan' | 'kaiti' | 'simsun' | 'comic' | 'system';
+/** 设置界面与桌宠右键菜单的主题模式。 */
+export type UiTheme = 'system' | 'light' | 'dark';
 
 /** config.jsonc 的 font 段：字体（全局一份，所有宠物共用）。
  *  默认值 = src/shared/fonts.ts 的 DEFAULT_FONT（candy / 21 / true），内置配置与代码两侧保持一致。
@@ -182,6 +184,8 @@ export interface FontConfig {
 
 /** config.jsonc 全集——运行时直接使用（ANIM 即本类型） */
 export interface ClientConfig {
+  /** 设置界面与桌宠右键菜单主题；system 跟随操作系统外观。 */
+  uiTheme: UiTheme;
   /** DSH 通知总开关：控制 DSH 工作流事件与桌宠对话回复的系统通知；缺失即配置错误 */
   notificationsEnabled: boolean;
   /** 碎碎念配图开关：true=碎碎念每次从表情包池随机抽 1 张连同文本显示（碎碎念无上下文，故随机） */
