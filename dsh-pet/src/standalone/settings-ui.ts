@@ -117,9 +117,9 @@ function AutoStartSettings(): ReturnType<typeof jsx> {
 }
 
 function RenderModeSettings(): ReturnType<typeof jsx> {
-  const [renderMode, setRenderMode] = useState<RenderMode>('hardware');
-  const [savedMode, setSavedMode] = useState<RenderMode>('hardware');
-  const [activeMode, setActiveMode] = useState<RenderMode>('hardware');
+  const [renderMode, setRenderMode] = useState<RenderMode>('software');
+  const [savedMode, setSavedMode] = useState<RenderMode>('software');
+  const [activeMode, setActiveMode] = useState<RenderMode>('software');
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);

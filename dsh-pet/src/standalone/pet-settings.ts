@@ -119,13 +119,18 @@ const SETTINGS_CSS = [
   // 类名统一 dsh-pet-cfg__ 前缀，不会撞 DSH 自己的类名。
 
   // 页面根容器与标题
-  '.dsh-pet-cfg{container-type:inline-size;display:flex;flex-direction:column;gap:12px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;font-family:var(--dsh-pet-font-family,inherit)}',
-  '.dsh-pet-cfg__title{display:flex;align-items:center;gap:6px;margin:0;font-size:16px;font-weight:500;line-height:24px}',
+  '.dsh-pet-cfg{container-type:inline-size;box-sizing:border-box;width:100%;min-width:0;display:flex;flex-direction:column;gap:12px;overflow-x:clip;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;font-family:var(--dsh-pet-font-family,inherit)}',
+  '.dsh-pet-cfg__title{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0;margin:0;font-size:16px;font-weight:500;line-height:24px}',
 
   // 卡片：宠物配置 / 全局开关 / AI 模型 / 物理 / 高级配置 / 卸载与存储 统一用这一个框
   '.dsh-pet-cfg__card{display:flex;flex-direction:column;gap:10px;padding:12px 14px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px}',
   '.dsh-pet-cfg__cardHead{display:flex;align-items:center;gap:6px;min-height:20px}',
   '.dsh-pet-cfg__cardTitle{font-size:13px;font-weight:500;color:var(--dsw-alias-label-primary)}',
+  '.dsh-pet-cfg__scope{margin-left:4px;padding:2px 7px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;font-size:11px;font-weight:400;line-height:16px;color:var(--dsw-alias-label-secondary);white-space:nowrap}',
+  '.dsh-pet-cfg__sectionTitle{margin:16px 0 2px;font-size:15px;font-weight:600;line-height:22px;color:var(--dsw-alias-label-primary)}',
+  '.dsh-pet-cfg__headerActions{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px;min-width:0;max-width:100%;margin-left:auto}',
+  '.dsh-pet-cfg__subsection{display:flex;flex-direction:column;gap:10px;margin-top:4px;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2)}',
+  '.dsh-pet-cfg__settingsSection{display:flex;flex-direction:column;gap:12px}',
 
   // 栅格：列数固定 → 行与行的控件自然对齐成一列
   '.dsh-pet-cfg__grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 16px;align-items:end}',
@@ -153,17 +158,9 @@ const SETTINGS_CSS = [
   '.dsh-pet-cfg__toggle>label>span{overflow-wrap:anywhere}',
   '.dsh-pet-cfg__toggle input[type=checkbox]{flex:none;width:16px;height:16px;margin:0;accent-color:var(--dsw-alias-state-business-primary);cursor:pointer}',
 
-  // 问号 + 悬浮说明：解释小字全部收进这里（data-tip → ::after）
+  // 问号 + 悬浮说明：提示层挂到 body，避免被设置页滚动容器裁切。
   '.dsh-pet-cfg__q{position:relative;display:inline-flex;align-items:center;justify-content:center;flex:none;width:14px;height:14px;border:1px solid var(--dsw-alias-label-tertiary);border-radius:50%;color:var(--dsw-alias-label-tertiary);font-size:10px;font-style:normal;line-height:1;cursor:help;user-select:none}',
-  // 气泡默认**左对齐**到问号（left:-4px），而不是居中。
-  // 为什么不能居中：问号常常贴着卡片左缘（卡片头、栅格第一列、页标题），居中会让气泡
-  // 往左伸出一大截，被设置页的滚动容器（overflow 会连带裁掉横向）切掉——看起来就是
-  // 「气泡左边被左边框遮住」。左对齐则一律向右展开，左侧永不出界。
-  '.dsh-pet-cfg__q::after{display:none;content:attr(data-tip);position:absolute;left:-4px;bottom:calc(100% + 8px);width:max-content;max-width:260px;padding:6px 10px;border-radius:8px;background:var(--dsw-alias-tooltip-bg);color:#fff;font-size:12px;font-style:normal;font-weight:400;line-height:18px;text-align:left;white-space:normal;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .12s ease;box-shadow:0 6px 20px rgba(0,0,0,.22);z-index:2147483000}',
-  '.dsh-pet-cfg__q:hover::after{display:block;opacity:1;visibility:visible}',
-  '.dsh-pet-cfg__q.is-below::after{top:calc(100% + 8px);bottom:auto}',
-  // 最右一列：改为右对齐，避免气泡顶出设置页右缘
-  '.dsh-pet-cfg__q.is-end::after{left:auto;right:-4px}',
+  '.dsh-pet-cfg__tooltip{position:fixed;z-index:2147483647;box-sizing:border-box;width:max-content;max-width:min(260px,calc(100vw - 24px));padding:6px 10px;border-radius:8px;background:var(--dsw-alias-tooltip-bg,#333);color:#fff;font-family:var(--dsh-pet-font-family,inherit);font-size:12px;font-weight:400;line-height:18px;text-align:left;white-space:normal;pointer-events:none;box-shadow:0 6px 20px rgba(0,0,0,.22)}',
 
   // 按钮
   '.dsh-pet-cfg__btn{border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-primary);border-radius:8px;padding:4px 14px;font:inherit;font-size:12px;line-height:20px;cursor:pointer;white-space:nowrap}',
@@ -194,7 +191,6 @@ const SETTINGS_CSS = [
   '.dsh-pet-cfg__saveTitle{font-size:14px;font-weight:600;color:var(--dsw-alias-label-primary)}',
   '.dsh-pet-cfg__saveHint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}',
   '.dsh-pet-cfg__saveRow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
-  '.dsh-pet-cfg__btn.is-save{min-width:128px;min-height:36px;padding:6px 18px;font-size:14px;font-weight:600}',
   '.dsh-pet-cfg__saveTools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l2)}',
   '.dsh-pet-cfg__msg{margin-left:4px;font-size:12px;color:var(--dsw-alias-state-success-primary)}',
   '.dsh-pet-cfg__msg.is-err{color:var(--dsw-alias-state-error-primary)}',
@@ -227,11 +223,20 @@ export const zh = {
   nav: '桌宠配置',
   intro: '管理多个桌宠：每个宠物可独立设置大小与首次启动位置（保存后即时生效）。',
   // 卡片标题 + 卡片级说明（说明都进问号，不再占一行小字）
-  petCardTitle: '宠物配置',
+  petCardTitle: '当前桌宠：{name}',
+  petOnlyScope: '仅此桌宠',
   petCardHint:
     '每只宠物独立配置：名字 / 大小 / 显示位置 / 首次启动位置与偏移 / 四个功能开关。改完点最下面的「保存」即时生效。',
   globalTitle: '全局设置',
-  globalHint: '显示层级和开关由所有宠物共用；选择后先改本地状态，点击「保存」才写入配置。桌面端保存后会重载宠物窗口。',
+  globalControlsTitle: '通知与显示',
+  petSectionTitle: '桌宠设置',
+  petSettingsList: '桌宠设置',
+  globalSettingsList: '全局设置',
+  allPetsScope: '所有桌宠共用',
+  globalDefaultScope: '全局默认，可覆盖',
+  appWideScope: '应用级',
+  applicationTitle: '应用本身',
+  globalHint: '此处设置作用于全部桌宠或整个应用，不会随上方选中的桌宠切换。修改后点击「保存设置」应用。',
   cornerHint:
     '首次启动或没有位置记录时，宠物按这里选择的角落出现；之后启动会恢复上次位置。右键「回到初始位置」也会回到这里（桌面端按主显示器工作区计算）。',
   marginXHint: '首次启动位置距所选角落的水平距离（px）；右键「回到初始位置」时也使用此值。',
@@ -312,9 +317,10 @@ export const zh = {
     '多屏用户：甩出去的宠物只在松手时所在那块屏幕内弹（屏缝当墙，不飞到隔壁屏）；关掉则照常跨屏飞行。',
   displayPriorityLabel: '桌宠显示层级',
   displayPriorityHint:
-    '全局设置，只影响桌面模式。Windows 检测到全屏应用时隐藏该显示器上的桌宠；macOS 跟随全屏空间隐藏。Linux 暂不支持检测其它应用的全屏状态。',
+    '全局设置，只影响桌面模式。Windows 可检测前台全屏应用；选择“全屏或最大化时自动隐藏”时，也会检测最大化窗口并隐藏其所在显示器上的桌宠。macOS 跟随全屏空间隐藏，Linux 暂不支持检测其它应用窗口。',
   'displayPriority.always-on-top': '始终置顶',
   'displayPriority.hide-on-fullscreen': '全屏时自动隐藏',
+  'displayPriority.hide-on-fullscreen-or-maximized': '全屏或最大化时自动隐藏',
   'displayPriority.normal': '不置顶',
   physicsTitle: '物理（拖拽抛掷手感）',
   physicsHint:
@@ -408,12 +414,20 @@ export const en = {
   nav: 'Pet Config',
   intro: 'Manage multiple pets: each pet has its own size and first-launch position (applies instantly after saving).',
   // Card titles + card-level help (all hints move into the "?" bubble)
-  petCardTitle: 'Pet',
+  petCardTitle: 'Selected pet: {name}',
+  petOnlyScope: 'This pet only',
   petCardHint:
     'Per-pet settings: name / size / display / first-launch position and offsets / the four feature switches. Click "Save" at the bottom to apply instantly.',
   globalTitle: 'Global settings',
-  globalHint:
-    'The window priority and switches are shared by every pet. Changes stay local until you click Save; desktop windows reload after saving.',
+  globalControlsTitle: 'Notifications & display',
+  petSectionTitle: 'Pet settings',
+  petSettingsList: 'Pet settings',
+  globalSettingsList: 'Global settings',
+  allPetsScope: 'All pets',
+  globalDefaultScope: 'Global default; overridable',
+  appWideScope: 'App-wide',
+  applicationTitle: 'Application',
+  globalHint: 'These settings apply to all pets or the entire app and do not change with the selected pet above. Click Save Settings to apply.',
   cornerHint:
     'Used on the first launch or when no saved position exists; later launches restore the last position. The right-click “Go home” action also returns here (primary display work area in desktop mode).',
   marginXHint: 'Horizontal offset (px) for the first-launch position and the right-click “Go home” position.',
@@ -497,9 +511,10 @@ export const en = {
     'Multi-monitor: a thrown pet bounces only inside the screen it was released on (screen seams act as walls, so it never flies to the neighbouring monitor); turn this off to let it cross screens as usual.',
   displayPriorityLabel: 'Pet window priority',
   displayPriorityHint:
-    'Global desktop-mode setting. Windows hides pets on the monitor with a fullscreen app; macOS follows fullscreen Spaces. Detection of other apps fullscreen is not supported on Linux.',
+    'Global desktop-mode setting. Windows detects foreground fullscreen apps; “Hide during fullscreen or maximized windows” also detects maximized windows and hides pets on that monitor. macOS follows fullscreen Spaces; Linux does not detect other application windows.',
   'displayPriority.always-on-top': 'Always on top',
   'displayPriority.hide-on-fullscreen': 'Hide during fullscreen',
+  'displayPriority.hide-on-fullscreen-or-maximized': 'Hide during fullscreen or maximized windows',
   'displayPriority.normal': 'Normal window level',
   physicsTitle: 'Physics (drag & throw feel)',
   physicsHint:
@@ -668,20 +683,38 @@ export function makePetConfigSection(rt: {
    * @param tip 说明正文（已翻译）
    * @param end 是否右对齐气泡（给栅格最右一列用，免得气泡顶出设置页）
    */
-  const q = (tip: string, end = false): ReturnType<typeof h> =>
-    h('i', {
+  const q = (tip: string, end = false): ReturnType<typeof h> => {
+    let tooltip: HTMLDivElement | null = null;
+    const hideTip = (): void => {
+      tooltip?.remove();
+      tooltip = null;
+    };
+    return h('i', {
       className: 'dsh-pet-cfg__q' + (end ? ' is-end' : ''),
-      'data-tip': tip,
       'aria-label': tip,
       role: 'img',
       onMouseEnter: (e: ReactNS.MouseEvent<HTMLElement>) => {
-        // Near the top edge there is not enough room for the bubble above the icon;
-        // the native window title bar sits outside the web contents and clips it.
-        e.currentTarget.classList.toggle('is-below', e.currentTarget.getBoundingClientRect().top < 120);
+        const rect = e.currentTarget.getBoundingClientRect();
+        hideTip();
+        tooltip = document.createElement('div');
+        tooltip.className = 'dsh-pet-cfg__tooltip';
+        tooltip.textContent = tip;
+        tooltip.style.visibility = 'hidden';
+        document.body.appendChild(tooltip);
+        const tipRect = tooltip.getBoundingClientRect();
+        const left = end
+          ? Math.min(window.innerWidth - tipRect.width - 12, rect.right - tipRect.width + 4)
+          : Math.max(12, Math.min(rect.left - 4, window.innerWidth - tipRect.width - 12));
+        const below = rect.top < tipRect.height + 20;
+        const top = below ? Math.min(window.innerHeight - tipRect.height - 8, rect.bottom + 8) : rect.top - tipRect.height - 8;
+        tooltip.style.left = Math.max(12, left) + 'px';
+        tooltip.style.top = Math.max(8, top) + 'px';
+        tooltip.style.visibility = 'visible';
       },
-      onMouseLeave: (e: ReactNS.MouseEvent<HTMLElement>) => e.currentTarget.classList.remove('is-below'),
+      onMouseLeave: hideTip,
       children: '?',
     });
+  };
 
   /** Native select popups ignore CSS corner radius on Windows; render these two short lists in-page. */
   const ConfigSelect: FunctionComponent<{
@@ -849,12 +882,13 @@ export function makePetConfigSection(rt: {
   };
 
   /** 卡片头：标题 + 问号说明（+ 可选右侧动作，由调用方自行 append） */
-  const cardHead = (title: string, tip?: string, end = false): ReturnType<typeof h> =>
+  const cardHead = (title: string, tip?: string, end = false, scope?: string): ReturnType<typeof h> =>
     h('div', {
       className: 'dsh-pet-cfg__cardHead',
       children: [
         h('span', { key: 't', className: 'dsh-pet-cfg__cardTitle', children: title }),
         tip ? q(tip, end) : null,
+        scope ? h('span', { key: 'scope', className: 'dsh-pet-cfg__scope', children: scope }) : null,
       ],
     });
 
@@ -1278,6 +1312,7 @@ export function makePetConfigSection(rt: {
       if (
         m.petDisplayPriority === 'always-on-top' ||
         m.petDisplayPriority === 'hide-on-fullscreen' ||
+        m.petDisplayPriority === 'hide-on-fullscreen-or-maximized' ||
         m.petDisplayPriority === 'normal'
       ) {
         setDisplayPriority(m.petDisplayPriority);
@@ -1709,13 +1744,50 @@ export function makePetConfigSection(rt: {
       className: 'dsh-pet-cfg',
       style: { maxWidth: '720px', fontFamily: appliedFontFamily },
       children: [
-        // 标题：intro 与「额外宠物」说明都收进问号，不再各占一行小字
         h('h2', {
           className: 'dsh-pet-cfg__title',
           children: [
             t('nav'),
             q(extraCount > 0 ? t('intro') + '\n' + t('extraPetsHint').replace('{n}', String(extraCount)) : t('intro')),
-          ],
+            h('div', {
+              className: 'dsh-pet-cfg__headerActions',
+              children: [
+                h('button', {
+                  type: 'button',
+                  disabled: busy,
+                  onClick: sync,
+                  className: 'dsh-pet-cfg__btn is-danger',
+                  children: t('sync'),
+                }),
+                q(t('syncHint')),
+                h('button', {
+                  type: 'button',
+                  onClick: () => void testNotification(),
+                  className: 'dsh-pet-cfg__btn',
+                  children: t('notifyTest'),
+                }),
+                permMsg.text
+                  ? h('span', {
+                      className: 'dsh-pet-cfg__msg' + (permMsg.kind === 'err' ? '' : ' is-err'),
+                      children: permMsg.text,
+                    })
+                  : null,
+                msg.text
+                  ? h('span', {
+                      className: 'dsh-pet-cfg__msg' + (msg.kind === 'err' ? '' : ' is-err'),
+                      children: msg.text,
+                    })
+                  : null,
+                h('button', {
+                  type: 'button',
+                  disabled: busy,
+                  onClick: () => void save(),
+                  className: 'dsh-pet-cfg__btn is-primary',
+                  children: busy ? t('busy') : t('save'),
+                }),
+                q(t('saveHint'), true),
+              ],
+            }),          ],
         }),
 
         loadState !== 'ready'
@@ -1738,6 +1810,9 @@ export function makePetConfigSection(rt: {
               ],
             })
           : null,
+
+        h('div', { className: 'dsh-pet-cfg__settingsSection', children: [
+        h('h3', { className: 'dsh-pet-cfg__sectionTitle', children: t('petSectionTitle') }),
 
         // 宠物列表 + 添加
         h('div', {
@@ -1772,8 +1847,13 @@ export function makePetConfigSection(rt: {
                 h('div', {
                   className: 'dsh-pet-cfg__cardHead',
                   children: [
-                    h('span', { key: 't', className: 'dsh-pet-cfg__cardTitle', children: t('petCardTitle') }),
+                    h('span', {
+                      key: 't',
+                      className: 'dsh-pet-cfg__cardTitle',
+                      children: t('petCardTitle').replace('{name}', String(cur.name || cur.id)),
+                    }),
                     q(t('petCardHint')),
+                    h('span', { key: 'scope', className: 'dsh-pet-cfg__scope', children: t('petOnlyScope') }),
                     h('button', {
                       key: 'rm',
                       type: 'button',
@@ -1868,6 +1948,11 @@ export function makePetConfigSection(rt: {
               className: 'dsh-pet-cfg__note',
               children: t('emptyPets'),
             }),
+                ] }),
+
+
+        h('div', { className: 'dsh-pet-cfg__settingsSection', children: [
+        h('h3', { className: 'dsh-pet-cfg__sectionTitle', children: t('globalTitle') }),
 
         // 全局开关卡（需求 4：四个开关一行）。
         // 四个开关行为**一致**：切换只改本地状态，随「保存」整包写入用户级配置——不做即时写入
@@ -1877,7 +1962,7 @@ export function makePetConfigSection(rt: {
         h('div', {
           className: 'dsh-pet-cfg__card',
           children: [
-            cardHead(t('globalTitle'), t('globalHint')),
+            cardHead(t('globalControlsTitle'), t('globalHint'), false, t('allPetsScope')),
             h('div', {
               className: 'dsh-pet-cfg__grid4',
               children: [
@@ -1897,7 +1982,14 @@ export function makePetConfigSection(rt: {
                     value: displayPriority,
                     fontFamily: appliedFontFamily,
                     disabled: busy,
-                    options: (['always-on-top', 'hide-on-fullscreen', 'normal'] as PetDisplayPriority[]).map(
+                    options: (
+                      [
+                        'always-on-top',
+                        'hide-on-fullscreen',
+                        'hide-on-fullscreen-or-maximized',
+                        'normal',
+                      ] as PetDisplayPriority[]
+                    ).map(
                       (value) => ({
                         value,
                         label: t('displayPriority.' + value),
@@ -1909,7 +2001,15 @@ export function makePetConfigSection(rt: {
                 ),
               ],
             }),
-            rt.standaloneAddon ?? null,
+            rt.standaloneAddon
+              ? h('div', {
+                  className: 'dsh-pet-cfg__subsection',
+                  children: [
+                    cardHead(t('applicationTitle'), undefined, false, t('appWideScope')),
+                    rt.standaloneAddon,
+                  ],
+                })
+              : null,
           ],
         }),
 
@@ -1920,7 +2020,7 @@ export function makePetConfigSection(rt: {
         h('div', {
           className: 'dsh-pet-cfg__card',
           children: [
-            cardHead(t('fontTitle'), t('fontHint')),
+            cardHead(t('fontTitle'), t('fontHint'), false, t('globalDefaultScope')),
             h('div', {
               className: 'dsh-pet-cfg__grid2',
               children: [
@@ -1970,7 +2070,7 @@ export function makePetConfigSection(rt: {
         h('div', {
           className: 'dsh-pet-cfg__card',
           children: [
-            cardHead(t('modelTitle'), t('modelHint')),
+            cardHead(t('modelTitle'), t('modelHint'), false, t('globalDefaultScope')),
             h('div', {
                   className: 'dsh-pet-cfg__apiKey',
                   children: [
@@ -2055,7 +2155,7 @@ export function makePetConfigSection(rt: {
         h('div', {
           className: 'dsh-pet-cfg__card',
           children: [
-            cardHead(t('physicsTitle'), t('physicsHint')),
+            cardHead(t('physicsTitle'), t('physicsHint'), false, t('globalDefaultScope')),
             h('div', {
               className: 'dsh-pet-cfg__grid4',
               children: [
@@ -2078,63 +2178,6 @@ export function makePetConfigSection(rt: {
                   (v) => setPhysics((p) => ({ ...p, petCollision: v })),
                   true,
                 ),
-              ],
-            }),
-          ],
-        }),
-
-        // 操作区：保存作为明确主操作；恢复默认配置与测试弹窗收在次级操作区。
-        h('div', {
-          className: 'dsh-pet-cfg__savePanel',
-          children: [
-            h('div', {
-              className: 'dsh-pet-cfg__saveHead',
-              children: [
-                h('div', { key: 'title', className: 'dsh-pet-cfg__saveTitle', children: t('save') }),
-                h('div', { key: 'hint', className: 'dsh-pet-cfg__saveHint', children: t('saveHint') }),
-              ],
-            }),
-            h('div', {
-              className: 'dsh-pet-cfg__saveRow',
-              children: [
-                h('button', {
-                  type: 'button',
-                  disabled: busy,
-                  onClick: () => void save(),
-                  className: 'dsh-pet-cfg__btn is-primary is-save',
-                  children: t('save'),
-                }),
-                msg.text
-                  ? h('span', {
-                      className: 'dsh-pet-cfg__msg' + (msg.kind === 'err' ? ' is-err' : ''),
-                      children: msg.text,
-                    })
-                  : null,
-              ],
-            }),
-            h('div', {
-              className: 'dsh-pet-cfg__saveTools',
-              children: [
-                h('button', {
-                  type: 'button',
-                  disabled: busy,
-                  onClick: sync,
-                  className: 'dsh-pet-cfg__btn is-danger',
-                  children: t('sync'),
-                }),
-                q(t('syncHint')),
-                h('button', {
-                  type: 'button',
-                  onClick: () => void testNotification(),
-                  className: 'dsh-pet-cfg__btn',
-                  children: t('notifyTest'),
-                }),
-                permMsg.text
-                  ? h('span', {
-                      className: 'dsh-pet-cfg__msg' + (permMsg.kind === 'err' ? ' is-err' : ''),
-                      children: permMsg.text,
-                    })
-                  : null,
               ],
             }),
           ],
@@ -2187,6 +2230,7 @@ export function makePetConfigSection(rt: {
               ],
             })
           : null,
+                ] }),
 
         // 确认/提示弹窗（仿官方弹窗视觉：遮罩 + 居中卡片 + 按钮）
         dialog

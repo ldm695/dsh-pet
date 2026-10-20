@@ -1,9 +1,10 @@
 import { deflateSync, inflateSync } from 'node:zlib';
 import { readFile, writeFile } from 'node:fs/promises';
 
-const pngPath = new URL('../assets/dsh-pet-icon-16.png', import.meta.url);
-const icoPath = new URL('../assets/dsh-pet-icon.ico', import.meta.url);
-const iconPngPath = new URL('../assets/dsh-pet-icon-256.png', import.meta.url);
+const edition = process.argv[2] === 'public' ? 'public' : 'personal';
+const pngPath = new URL(edition === 'public' ? '../assets/logo-rounded.png' : '../assets/dsh-pet-icon-16.png', import.meta.url);
+const icoPath = new URL(edition === 'public' ? '../assets/dsh-pet-icon-public.ico' : '../assets/dsh-pet-icon.ico', import.meta.url);
+const iconPngPath = edition === 'personal' ? new URL('../assets/dsh-pet-icon-256.png', import.meta.url) : null;
 const png = await readFile(pngPath);
 const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
@@ -18,8 +19,9 @@ const colorType = png[25];
 if (bitDepth !== 8 || ![3, 6].includes(colorType) || png[28] !== 0) {
   throw new Error('Expected a non-interlaced 8-bit indexed or RGBA PNG');
 }
-if (width !== 16 || height !== 16) {
-  throw new Error(`Expected a 16×16 app icon, got ${width}×${height}`);
+const expectedSize = edition === 'public' ? 256 : 16;
+if (width !== expectedSize || height !== expectedSize) {
+  throw new Error(`Expected a ${expectedSize}×${expectedSize} app icon, got ${width}×${height}`);
 }
 
 const chunks = [];
@@ -134,7 +136,7 @@ function scaledPng(size) {
   ]);
 }
 
-const sizes = [16, 32, 48, 64, 128, 256];
+const sizes = edition === 'public' ? [256] : [16, 32, 48, 64, 128, 256];
 const frames = sizes.map((size) => ({ size, png: scaledPng(size) }));
 const directorySize = 6 + frames.length * 16;
 const ico = Buffer.alloc(directorySize + frames.reduce((sum, frame) => sum + frame.png.length, 0));
@@ -157,5 +159,9 @@ frames.forEach((frame, index) => {
 });
 
 await writeFile(icoPath, ico);
-await writeFile(iconPngPath, frames.at(-1).png);
-process.stdout.write(`Generated ${icoPath.pathname} from the original 16×16 pixel icon with nearest-neighbor scaling: ${sizes.join(', ')} px\n`);
+if (iconPngPath) await writeFile(iconPngPath, frames.at(-1).png);
+process.stdout.write(
+  edition === 'public'
+    ? `Generated ${icoPath.pathname} from the rounded upstream 256×256 logo.\n`
+    : `Generated ${icoPath.pathname} from the original 16×16 pixel icon with nearest-neighbor scaling: ${sizes.join(', ')} px\n`,
+);

@@ -376,7 +376,12 @@ function topFieldValid(key: string, value: unknown): boolean {
     case 'confineToScreen':
       return typeof value === 'boolean';
     case 'petDisplayPriority':
-      return value === 'always-on-top' || value === 'hide-on-fullscreen' || value === 'normal';
+      return (
+        value === 'always-on-top' ||
+        value === 'hide-on-fullscreen' ||
+        value === 'hide-on-fullscreen-or-maximized' ||
+        value === 'normal'
+      );
     case 'animations':
       return animationsValid(value);
     case 'animationWeights':

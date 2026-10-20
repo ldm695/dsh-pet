@@ -2250,7 +2250,14 @@ class PetSprite {
       S.displayMenuBranch(),
     );
     const tree = tools.concat(S.buildMenuTree(this.animations));
-    // 维护操作固定放在「动作」分支之后，退出项只存在于独立版。
+    // 客户端启动器和维护操作固定放在「动作」分支之后，启动器悬停展开子菜单。
+    tree.push({
+      label: '打开应用',
+      children: [
+        { label: 'DSH Desktop', action: 'open-app', app: 'desktop' },
+        { label: 'DSH Web', action: 'open-app', app: 'web' },
+      ],
+    });
     tree.push({ label: '重载配置', action: 'reload' });
     if (STANDALONE) {
       tree.push({ label: '打开桌宠设置', action: 'open-settings' });
@@ -2317,6 +2324,12 @@ class PetSprite {
     }
     if (leaf.action === 'reload') {
       this.reloadDesktop(); // 请宿主重启桌面 Helper：全部桌面宠物窗口按最新配置重建
+      return;
+    }
+    if (leaf.action === 'open-app') {
+      console.warn('[dsh-pet] open-app menu action:', String(leaf.app || ''));
+      if (window.petBridge) window.petBridge.openDshApp(leaf.app, ORIGIN);
+      else console.error('[dsh-pet] open-app failed: petBridge is unavailable');
       return;
     }
     if (!leaf.anim) return;

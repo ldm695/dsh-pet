@@ -100,7 +100,8 @@
   // 仅影响桌面宠物窗口。改动后重启或重载配置生效。
   "confineToScreen": false,
   // ===================== 桌宠显示层级（全局设置） =====================
-  // always-on-top = 始终置顶（默认）；hide-on-fullscreen = 普通时置顶，全屏应用所在屏幕的桌宠自动隐藏；
+  // always-on-top = 始终置顶（默认）；hide-on-fullscreen = 全屏应用所在屏幕的桌宠隐藏；
+  // hide-on-fullscreen-or-maximized = 全屏或 Windows 前台最大化窗口所在屏幕的桌宠隐藏；
   // normal = 普通窗口层级，可被其它应用窗口覆盖。
   // 全屏隐藏通过 Windows 前台窗口检测实现；macOS 跟随全屏空间隐藏；Linux 暂不检测其它应用全屏。
   "petDisplayPriority": "always-on-top",

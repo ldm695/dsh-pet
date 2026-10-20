@@ -244,7 +244,7 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
 
   if (options.renderModeStorePath) {
     const modeOf = (): 'hardware' | 'software' =>
-      process.env.DSH_PET_RENDER_MODE === 'software' ? 'software' : 'hardware';
+      process.env.DSH_PET_RENDER_MODE === 'hardware' ? 'hardware' : 'software';
     const sendRenderMode = (res: ServerResponse, status: number, body: unknown): void => {
       const payload = JSON.stringify(body);
       res.writeHead(status, {

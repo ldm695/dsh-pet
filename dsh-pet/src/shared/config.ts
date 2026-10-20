@@ -21,7 +21,12 @@ import type {
 export const PET_DISPLAYS: PetDisplay[] = ['desktop', 'none'];
 
 /** 桌面窗口层级白名单 */
-export const PET_DISPLAY_PRIORITIES: PetDisplayPriority[] = ['always-on-top', 'hide-on-fullscreen', 'normal'];
+export const PET_DISPLAY_PRIORITIES: PetDisplayPriority[] = [
+  'always-on-top',
+  'hide-on-fullscreen',
+  'hide-on-fullscreen-or-maximized',
+  'normal',
+];
 
 /** 仅保留给未打包的旧客户端源码；Windows EXE 和正式配置不再支持 Web overlay。 */
 export const isWebVisible = (display: PetDisplay): boolean => display === 'web' || display === 'both';

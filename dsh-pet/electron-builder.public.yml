@@ -3,7 +3,7 @@ productName: DSH Pet
 electronVersion: 43.3.0
 asar: false
 directories:
-  output: portable-dist
+  output: portable-dist/public
 extraMetadata:
   main: desktop-main.cjs
   dshPetEdition: public
@@ -17,7 +17,9 @@ files:
   - assets/dsh-pet-icon-16.png
   - assets/dsh-pet-icon-256.png
   - assets/dsh-pet-icon.ico
+  - assets/dsh-pet-icon-public.ico
   - assets/logo.png
+  - assets/logo-rounded.png
   - assets/webm/**
   - assets/fonts/**
   - assets/pic/**
@@ -27,7 +29,7 @@ files:
   - '!**/*.map'
   - '!**/*.test.*'
 win:
-  icon: assets/dsh-pet-icon.ico
+  icon: assets/dsh-pet-icon-public.ico
   target:
     - target: portable
       arch:

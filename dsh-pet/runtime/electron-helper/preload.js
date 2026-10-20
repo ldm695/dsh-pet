@@ -104,6 +104,9 @@ contextBridge.exposeInMainWorld('petBridge', {
   openDshSite(url) {
     ipcRenderer.send('pet:open-site', { url });
   },
+  openDshApp(app, url) {
+    ipcRenderer.send('pet:open-app', { app, url });
+  },
   openSettings() {
     ipcRenderer.send('pet:open-settings');
   },

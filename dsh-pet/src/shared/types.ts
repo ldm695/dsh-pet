@@ -22,7 +22,11 @@ export interface Rect {
 export type PetDisplay = 'web' | 'desktop' | 'both' | 'none';
 
 /** 桌面宠物窗口的显示层级（全局设置）。 */
-export type PetDisplayPriority = 'always-on-top' | 'hide-on-fullscreen' | 'normal';
+export type PetDisplayPriority =
+  | 'always-on-top'
+  | 'hide-on-fullscreen'
+  | 'hide-on-fullscreen-or-maximized'
+  | 'normal';
 
 /** 移动动作：一个动作名 + 可选覆盖参数（未写字段取 moves.default） */
 export interface MoveSpec {
@@ -189,7 +193,7 @@ export interface ClientConfig {
    *  false=跨屏飞行 / 跨屏行走（现状）。根字段（不属于 physics：它不改手感，只改「被允许去哪」），
    *  条目级，缺失即配置错误 */
   confineToScreen: boolean;
-  /** 桌面宠物显示层级：始终置顶 / 全屏时隐藏 / 普通窗口层级。 */
+  /** 桌面宠物显示层级：始终置顶 / 全屏时隐藏 / 全屏或最大化时隐藏 / 普通窗口层级。 */
   petDisplayPriority: PetDisplayPriority;
   pets: Pet[];
   animations: Animations;

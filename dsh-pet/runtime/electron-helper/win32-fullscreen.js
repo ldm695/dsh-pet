@@ -1,8 +1,8 @@
 'use strict';
 
 /**
- * Read the foreground window bounds inside the existing Electron helper process.
- * This is loaded only when Windows fullscreen hiding is enabled, so the normal
+ * Read the foreground window bounds/state inside the existing Electron helper process.
+ * This is loaded only when Windows fullscreen or maximized-window hiding is enabled, so the normal
  * display modes do not initialize the FFI binding or create a polling process.
  */
 function createForegroundWindowProbe() {
@@ -27,6 +27,7 @@ function createForegroundWindowProbe() {
   );
   const isWindowVisible = user32.func('int32_t __stdcall IsWindowVisible(DshPetFullscreenHwnd hWnd)');
   const isIconic = user32.func('int32_t __stdcall IsIconic(DshPetFullscreenHwnd hWnd)');
+  const isZoomed = user32.func('int32_t __stdcall IsZoomed(DshPetFullscreenHwnd hWnd)');
   const getClassName = user32.func(
     'int32_t __stdcall GetClassNameA(DshPetFullscreenHwnd hWnd, _Out_ uint8_t *lpClassName, int32_t nMaxCount)',
   );
@@ -46,6 +47,7 @@ function createForegroundWindowProbe() {
       right: rect.right,
       bottom: rect.bottom,
       className: classNameLength > 0 ? classNameBuffer.toString('ascii', 0, classNameLength) : '',
+      isMaximized: Boolean(isZoomed(hWnd)),
     };
   };
 }

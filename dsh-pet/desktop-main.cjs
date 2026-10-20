@@ -1,12 +1,13 @@
 const { app, BrowserWindow, Menu, nativeImage, shell, Tray } = require('electron');
 const { spawn } = require('node:child_process');
 const { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync } = require('node:fs');
-const { join } = require('node:path');
+const { join, resolve } = require('node:path');
 
 const PORT = 6952;
 const packageMetadata = JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8'));
 const APP_EDITION = packageMetadata.dshPetEdition === 'public' ? 'public' : 'personal';
 const APP_DISPLAY_NAME = APP_EDITION === 'public' ? 'DSH Pet' : '哦鲸鲸';
+const APP_ICON_FILE = APP_EDITION === 'public' ? 'logo-rounded.png' : 'dsh-pet-icon-16.png';
 const APP_USER_MODEL_ID = APP_EDITION === 'public' ? 'cloud.pc2005.dsh-pet.public' : 'cloud.pc2005.dsh-pet';
 const TOAST_ACTIVATOR_CLSID = '{8C4174A4-DA42-4E82-9A67-A0A32D76D6B2}';
 // Diagnostic launch switches are forwarded through the standalone host to the transparent helper.
@@ -17,6 +18,10 @@ for (const arg of process.argv.slice(1)) {
   if (arg === '--dsh-pet-frame-diagnostics') process.env.DSH_PET_FRAME_DIAGNOSTICS = '1';
 }
 // Product branding can change without relocating existing settings, logs, and credentials.
+// Tests may redirect Electron's complete per-user data tree without touching the normal profile.
+if (process.env.DSH_PET_APP_DATA_DIR) {
+  app.setPath('appData', resolve(process.env.DSH_PET_APP_DATA_DIR));
+}
 app.setPath('userData', join(app.getPath('appData'), APP_EDITION === 'public' ? 'dsh-pet-public' : 'dsh-pet'));
 process.env.DSH_PET_EDITION = APP_EDITION;
 process.env.DSH_PET_DISPLAY_NAME = APP_DISPLAY_NAME;
@@ -26,9 +31,9 @@ process.env.DSH_PET_RENDER_MODE_FILE = renderModeSettingsPath;
 if (!process.env.DSH_PET_RENDER_MODE) {
   try {
     const preference = JSON.parse(readFileSync(renderModeSettingsPath, 'utf8'));
-    process.env.DSH_PET_RENDER_MODE = preference.renderMode === 'software' ? 'software' : 'hardware';
+    process.env.DSH_PET_RENDER_MODE = preference.renderMode === 'hardware' ? 'hardware' : 'software';
   } catch {
-    process.env.DSH_PET_RENDER_MODE = 'hardware';
+    process.env.DSH_PET_RENDER_MODE = 'software';
   }
 }
 let host;
@@ -81,7 +86,7 @@ if (helperEntry) {
       minWidth: 720,
       minHeight: 620,
       title: `${APP_DISPLAY_NAME} 设置`,
-      icon: join(app.getAppPath(), 'assets', 'dsh-pet-icon-16.png'),
+      icon: join(app.getAppPath(), 'assets', APP_ICON_FILE),
       backgroundColor: '#292929',
       autoHideMenuBar: true,
       show: false,
@@ -91,7 +96,7 @@ if (helperEntry) {
         sandbox: true,
       },
     });
-    const settingsIcon = nativeImage.createFromPath(join(app.getAppPath(), 'assets', 'dsh-pet-icon-16.png'));
+    const settingsIcon = nativeImage.createFromPath(join(app.getAppPath(), 'assets', APP_ICON_FILE));
     if (!settingsIcon.isEmpty()) settingsWindow.setIcon(settingsIcon);
     settingsWindow.removeMenu();
     settingsWindow.setMenuBarVisibility(false);
@@ -265,7 +270,7 @@ if (helperEntry) {
 
   function createTray() {
     if (tray) return;
-    const icon = nativeImage.createFromPath(join(app.getAppPath(), 'assets', 'dsh-pet-icon-16.png'));
+    const icon = nativeImage.createFromPath(join(app.getAppPath(), 'assets', APP_ICON_FILE));
     if (icon.isEmpty()) {
       log('[warning] Tray icon is missing or unreadable');
       return;

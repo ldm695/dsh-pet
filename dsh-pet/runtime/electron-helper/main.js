@@ -41,8 +41,8 @@ try {
 const { app, BrowserWindow, ipcMain, screen, shell, protocol } = electronApi;
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { execFileSync } = require('node:child_process');
-const { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } = require('node:fs');
+const { execFileSync, spawn } = require('node:child_process');
+const { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } = require('node:fs');
 const fsPromises = require('node:fs/promises');
 // 点击穿透兜底通道的纯判定（不依赖 Electron 的 forward 鼠标钩子；见文件头注释）
 const { decideWindowIgnore, pointerZone } = require('./pointer-target.js');
@@ -59,10 +59,13 @@ const { MOVE_TARGETS_CHANNELS, registerMoveTargetHandlers } = require('./move-ip
 // 允许无用户手势直接播放（余额动画等）
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
-// Keep Chromium's GPU compositor enabled by default so video frames use the display/GPU path.
-// Software composition remains available as a rollback for Windows layered-window issues.
-const RENDER_MODE = process.env.DSH_PET_RENDER_MODE === 'software' ? 'software' : 'hardware';
+// Software composition is the default for Windows transparent overlays; hardware composition
+// remains available as an explicit preference for machines where the GPU presentation path is stable.
+const RENDER_MODE = process.env.DSH_PET_RENDER_MODE === 'hardware' ? 'hardware' : 'software';
 const FRAME_DIAGNOSTICS = process.env.DSH_PET_FRAME_DIAGNOSTICS === '1';
+const RENDER_STARTUP_WATCHDOG_MS = 20_000;
+const RENDER_STARTUP_RECHECK_MS = 5_000;
+const RENDER_STARTUP_CONTROL_PREFIX = 'dsh-pet-render-watchdog:';
 
 // 显式定名：Helper 是被 `electron.exe <main.js>` 直接拉起的，Electron 取不到 app 名会回落成
 // "Electron"，userData 便落到 %APPDATA%\Electron —— 那是所有这么跑的 Electron 脚本的公共目录，
@@ -70,6 +73,9 @@ const FRAME_DIAGNOSTICS = process.env.DSH_PET_FRAME_DIAGNOSTICS === '1';
 const APP_EDITION = process.env.DSH_PET_EDITION === 'public' ? 'public' : 'personal';
 const helperAppName = APP_EDITION === 'public' ? 'dsh-pet-public-electron-helper' : 'dsh-pet-electron-helper';
 app.setName(helperAppName);
+if (process.env.DSH_PET_STANDALONE === '1' && process.env.DSH_PET_APP_DATA_DIR) {
+  app.setPath('appData', path.resolve(process.env.DSH_PET_APP_DATA_DIR));
+}
 if (process.env.DSH_PET_STANDALONE === '1' && APP_EDITION === 'public') {
   app.setPath('userData', path.join(app.getPath('appData'), helperAppName));
 }
@@ -126,8 +132,8 @@ if (!DPI_PROBE && HOST_PID > 0) {
 // Windows 透明分层窗口（WS_EX_LAYERED）在 DWM 硬件加速合成下曾出现多处缺陷：
 //   - 拖拽移动时窗口四周出现黑色边框（#37）
 //   - 大透明窗移动覆盖小透明窗时，被覆盖窗口内容丢失（显示"消失"）
-// 当前采用固定桌面大小的单透明窗口，原生窗口不随宠物移动；默认保留 GPU 合成以改善视频帧呈现，
-// 如仍遇到黑边/消失，可通过 --dsh-pet-render-mode=software 切回软件合成。
+// 当前采用固定桌面大小的单透明窗口，原生窗口不随宠物移动；默认使用软件合成，
+// 如确认设备的 GPU 合成稳定且希望降低 CPU 占用，可通过 --dsh-pet-render-mode=hardware 切回硬件合成。
 if (process.platform === 'win32' && RENDER_MODE === 'software') {
   app.disableHardwareAcceleration();
 }
@@ -345,9 +351,11 @@ function rememberPetPosition(id, x, y) {
   petPositionSaveTimer.unref?.();
 }
 app.on('before-quit', flushPetPositions);
-const DISPLAY_PRIORITY = ['hide-on-fullscreen', 'normal'].includes(process.env.DSH_PET_DISPLAY_PRIORITY)
+const DISPLAY_PRIORITY = ['hide-on-fullscreen', 'hide-on-fullscreen-or-maximized', 'normal'].includes(process.env.DSH_PET_DISPLAY_PRIORITY)
   ? process.env.DSH_PET_DISPLAY_PRIORITY
   : 'always-on-top';
+const HIDE_ON_FULLSCREEN = DISPLAY_PRIORITY === 'hide-on-fullscreen' || DISPLAY_PRIORITY === 'hide-on-fullscreen-or-maximized';
+const HIDE_ON_MAXIMIZED = DISPLAY_PRIORITY === 'hide-on-fullscreen-or-maximized';
 const fullscreenDisplayIds = new Set();
 let fullscreenPollTimer;
 let fullscreenStateReady = false;
@@ -355,7 +363,7 @@ let fullscreenZOrderTimer;
 let overlayLoweredForFullscreen = false;
 
 function shouldHideOnFullscreen(win) {
-  if (DISPLAY_PRIORITY !== 'hide-on-fullscreen' || process.platform !== 'win32') return false;
+  if (!HIDE_ON_FULLSCREEN || process.platform !== 'win32') return false;
   if (!fullscreenStateReady) return true;
   try {
     const display = screen.getDisplayMatching(win.getBounds());
@@ -399,11 +407,11 @@ function applyFullscreenVisibility() {
     fullscreenHiddenPets.clear();
     for (const petId of windows.keys()) {
       let shouldHide =
-        DISPLAY_PRIORITY === 'hide-on-fullscreen' && process.platform === 'win32' && !fullscreenStateReady;
+        HIDE_ON_FULLSCREEN && process.platform === 'win32' && !fullscreenStateReady;
       const bounds = overlayPetBounds.get(petId);
       if (
         !shouldHide &&
-        DISPLAY_PRIORITY === 'hide-on-fullscreen' &&
+        HIDE_ON_FULLSCREEN &&
         process.platform === 'win32' &&
         fullscreenStateReady &&
         bounds
@@ -474,6 +482,7 @@ function updateFullscreenDisplays(sample) {
     right: sampleRight = 0,
     bottom: sampleBottom = 0,
     className = '',
+    isMaximized = false,
   } = sample || {};
   const values = [sampleLeft, sampleTop, sampleRight, sampleBottom].map(Number);
   if (values.some((value) => !Number.isFinite(value))) return;
@@ -483,17 +492,25 @@ function updateFullscreenDisplays(sample) {
   const next = new Set();
   const isDesktopShell = ['Progman', 'WorkerW', 'Shell_TrayWnd', 'Shell_SecondaryTrayWnd'].includes(className);
   if (!isDesktopShell && width > 0 && height > 0) {
-    for (const display of screen.getAllDisplays()) {
-      const b = display.bounds;
-      const tolerance = Math.max(10, Math.round(Math.min(b.width, b.height) * 0.02));
-      if (
-        Math.abs(left - b.x) <= tolerance &&
-        Math.abs(top - b.y) <= tolerance &&
-        Math.abs(right - (b.x + b.width)) <= tolerance &&
-        Math.abs(bottom - (b.y + b.height)) <= tolerance
-      ) {
-        next.add(String(display.id));
+    if (HIDE_ON_FULLSCREEN) {
+      for (const display of screen.getAllDisplays()) {
+        const b = display.bounds;
+        const tolerance = Math.max(10, Math.round(Math.min(b.width, b.height) * 0.02));
+        if (
+          Math.abs(left - b.x) <= tolerance &&
+          Math.abs(top - b.y) <= tolerance &&
+          Math.abs(right - (b.x + b.width)) <= tolerance &&
+          Math.abs(bottom - (b.y + b.height)) <= tolerance
+        ) {
+          next.add(String(display.id));
+        }
       }
+    }
+    if (HIDE_ON_MAXIMIZED && isMaximized) {
+      try {
+        const display = screen.getDisplayMatching({ x: left, y: top, width, height });
+        next.add(String(display.id));
+      } catch {}
     }
   }
   fullscreenDisplayIds.clear();
@@ -503,7 +520,7 @@ function updateFullscreenDisplays(sample) {
 }
 
 function startFullscreenWatcher() {
-  if (DISPLAY_PRIORITY !== 'hide-on-fullscreen' || process.platform !== 'win32') return;
+  if (!HIDE_ON_FULLSCREEN || process.platform !== 'win32') return;
   const failOpen = (error) => {
     stopFullscreenWatcher();
     fullscreenStateReady = true;
@@ -744,6 +761,80 @@ let overlayHull = null;
 let overlayFirstFrameReady = false;
 let overlayRendererVisualReady = false;
 let overlayInitialCompositionReady = false;
+let overlayRenderStartupTimer;
+let overlayRenderStartupStartedAt = 0;
+let overlayRenderStartupReported = false;
+
+function stopOverlayRenderStartupWatchdog() {
+  if (overlayRenderStartupTimer) clearTimeout(overlayRenderStartupTimer);
+  overlayRenderStartupTimer = undefined;
+}
+
+function reportOverlayRenderStartupFailure(win, petCount) {
+  if (
+    process.env.DSH_PET_STANDALONE !== '1' ||
+    overlayRenderStartupReported ||
+    !win ||
+    win.isDestroyed()
+  ) {
+    return;
+  }
+
+  // Fullscreen hiding is intentional. Wait until the desktop becomes eligible for display
+  // before deciding that the native transparent surface failed to start.
+  if (
+    HIDE_ON_FULLSCREEN &&
+    process.platform === 'win32' &&
+    (!fullscreenStateReady || allOverlayPetsHiddenOnFullscreen())
+  ) {
+    overlayRenderStartupTimer = setTimeout(
+      () => reportOverlayRenderStartupFailure(win, petCount),
+      RENDER_STARTUP_RECHECK_MS,
+    );
+    overlayRenderStartupTimer.unref?.();
+    return;
+  }
+
+  if (overlayFirstFrameReady && overlayRendererVisualReady && win.isVisible()) {
+    stopOverlayRenderStartupWatchdog();
+    return;
+  }
+
+  overlayRenderStartupReported = true;
+  const event = {
+    type: 'startup-timeout',
+    elapsedMs: Math.max(0, Date.now() - overlayRenderStartupStartedAt),
+    petCount,
+    firstFrameReady: overlayFirstFrameReady,
+    rendererVisualReady: overlayRendererVisualReady,
+    windowVisible: win.isVisible(),
+  };
+  console.error(
+    `[dsh-pet-render-watchdog] ${RENDER_MODE} overlay did not become visible after ${event.elapsedMs}ms ` +
+      `(firstFrame=${event.firstFrameReady}, rendererVisualReady=${event.rendererVisualReady}, pets=${petCount})`,
+  );
+  if (RENDER_MODE === 'hardware') {
+    console.error('[dsh-pet-render-watchdog] requesting one software fallback');
+    process.stdout.write(RENDER_STARTUP_CONTROL_PREFIX + JSON.stringify(event) + '\n');
+  } else {
+    console.error('[dsh-pet-render-watchdog] software fallback also failed; automatic watchdog restart is disabled');
+  }
+  stopOverlayRenderStartupWatchdog();
+}
+
+function startOverlayRenderStartupWatchdog(win, petCount) {
+  stopOverlayRenderStartupWatchdog();
+  overlayRenderStartupReported = false;
+  if (process.env.DSH_PET_STANDALONE !== '1' || petCount <= 0) {
+    return;
+  }
+  overlayRenderStartupStartedAt = Date.now();
+  overlayRenderStartupTimer = setTimeout(
+    () => reportOverlayRenderStartupFailure(win, petCount),
+    RENDER_STARTUP_WATCHDOG_MS,
+  );
+  overlayRenderStartupTimer.unref?.();
+}
 
 function updateOverlayShape() {
   const win = overlayWindow;
@@ -853,7 +944,13 @@ function createPetOverlayWindow() {
     transparent: true,
     backgroundColor: '#00000000',
     frame: false,
-    icon: path.resolve(__dirname, '..', '..', 'assets', 'dsh-pet-icon.ico'),
+    icon: path.resolve(
+      __dirname,
+      '..',
+      '..',
+      'assets',
+      APP_EDITION === 'public' ? 'logo-rounded.png' : 'dsh-pet-icon.ico',
+    ),
     alwaysOnTop: DISPLAY_PRIORITY !== 'normal',
     skipTaskbar: true,
     resizable: false,
@@ -872,13 +969,15 @@ function createPetOverlayWindow() {
   overlayFirstFrameReady = false;
   overlayRendererVisualReady = false;
   overlayInitialCompositionReady = false;
+  startOverlayRenderStartupWatchdog(win, pets.length);
   win.once('ready-to-show', () => {
     if (overlayWindow !== win || win.isDestroyed()) return;
     overlayFirstFrameReady = true;
     if (win.__petShapeKey) showPetWindow(win);
+    if (overlayRendererVisualReady && win.isVisible()) stopOverlayRenderStartupWatchdog();
   });
   win.setAlwaysOnTop(DISPLAY_PRIORITY !== 'normal', 'screen-saver');
-  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: DISPLAY_PRIORITY !== 'hide-on-fullscreen' });
+  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: !HIDE_ON_FULLSCREEN });
   // The shared renderer uses overlayHull as its coordinate origin. If the native full-desktop
   // window is moved independently (for example by a window-manager/DPI transition), every pet
   // remains rendered relative to the old origin and pointer hit-testing becomes offset. Pet
@@ -1011,6 +1110,7 @@ function createPetOverlayWindow() {
       fullscreenZOrderTimer = undefined;
     }
     overlayWindow = null;
+    stopOverlayRenderStartupWatchdog();
     overlayLoweredForFullscreen = false;
     overlayFirstFrameReady = false;
     overlayRendererVisualReady = false;
@@ -1034,7 +1134,9 @@ function createPetOverlayWindow() {
     .loadFile(path.join(__dirname, 'index.html'), {
       query: {
         configUrl,
-        notificationIcon: pathToFileURL(path.resolve(__dirname, '..', '..', 'assets', 'dsh-pet-icon-16.png')).href,
+        notificationIcon: pathToFileURL(
+          path.resolve(__dirname, '..', '..', 'assets', APP_EDITION === 'public' ? 'logo-rounded.png' : 'dsh-pet-icon-16.png'),
+        ).href,
         notificationIcons: JSON.stringify(notificationIcons),
         bridge: BRIDGE ? '1' : '0',
         standalone: process.env.DSH_PET_STANDALONE === '1' ? '1' : '0',
@@ -1276,6 +1378,7 @@ app.whenReady().then(() => {
     for (const petId of windows.keys()) visibility[petId] = fullscreenHiddenPets.has(petId);
     win.webContents.send('pet:fullscreen-visibility', visibility);
     if (win.__petShapeKey) showPetWindow(win);
+    if (overlayFirstFrameReady && win.isVisible()) stopOverlayRenderStartupWatchdog();
   });
 
   registerMoveTargetHandlers({
@@ -1423,6 +1526,93 @@ app.whenReady().then(() => {
       return;
     }
     openSite(url);
+  });
+
+  // 右键「打开应用」子菜单：桌面端用协议唤起，Web 端打开宿主提供的已鉴权页面，
+  // 独立版则通过 DSH CLI 启动 Web profile。
+  const resolveDshCliPath = () => {
+    const candidates = [];
+    try {
+      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+      candidates.push(...execFileSync(path.join(systemRoot, 'System32', 'where.exe'), ['dsh'], { encoding: 'utf8', windowsHide: true })
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line && /dsh\.(cmd|exe)$/i.test(line)));
+    } catch {
+      /* PATH 可能未由启动器继承，继续查安装记录 */
+    }
+    if (process.platform === 'win32') {
+      try {
+        const uninstall = execFileSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'reg.exe'), [
+          'query', 'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+          '/s', '/f', 'DeepSeek Harness',
+        ], { encoding: 'utf8', windowsHide: true });
+        const installLocation = uninstall.match(/^\s*InstallLocation\s+REG_SZ\s+(.+)$/im)?.[1]?.trim();
+        if (installLocation) candidates.push(path.join(installLocation, 'resources', 'runtime', 'cli', 'bin', 'dsh.cmd'));
+      } catch {
+        /* 找不到用户级安装记录时，最后仍可尝试 PATH 命令 */
+      }
+    }
+    const resolved = candidates.find((candidate) => existsSync(candidate));
+    if (resolved) {
+      console.warn('[dsh-pet-desktop-helper] resolved DSH CLI:', resolved);
+      return resolved;
+    }
+    console.error('[dsh-pet-desktop-helper] DSH CLI path not found; falling back to PATH');
+    return 'dsh.cmd';
+  };
+  const launchDshCli = (args = [], label = 'DSH Web') => {
+    if (process.platform !== 'win32') {
+      const child = spawn('dsh', args, { detached: true, stdio: 'ignore' });
+      child.on('error', (error) => console.error('[dsh-pet-desktop-helper] launch DSH CLI failed:', error));
+      child.unref();
+      return;
+    }
+    const cliPath = resolveDshCliPath();
+    const safeArgs = args.map((arg) => String(arg).replace(/[\r\n\"]+/g, ''));
+    const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+    const cmdPath = path.join(systemRoot, 'System32', 'cmd.exe');
+    const workingDirectory = path.dirname(cliPath);
+    const safeLabel = String(label).replace(/[\r\n\"]+/g, '');
+    const installRoot = path.resolve(workingDirectory, '..', '..', '..', '..');
+    const dshExe = path.join(installRoot, 'DeepSeek Harness.exe');
+    const dshCliEntry = path.join(installRoot, 'resources', 'app.asar', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'cli.js');
+    if (!existsSync(dshExe)) {
+      console.error('[dsh-pet-desktop-helper] DSH Node runtime executable not found:', dshExe);
+      return;
+    }
+    const cliInvocation = `"${dshExe}" --expose-internals "${dshCliEntry}"${safeArgs.length ? ' ' + safeArgs.join(' ') : ''}`;
+    const commandSwitch = '/c';
+    const startCommand = `start "${safeLabel}" /D "${workingDirectory}" "${cmdPath}" /d /s ${commandSwitch} "${cliInvocation}"`;
+    const child = spawn(cmdPath, ['/d', '/s', '/c', startCommand], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      windowsVerbatimArguments: true,
+      cwd: workingDirectory,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    });
+    child.on('spawn', () => console.warn(`[dsh-pet-desktop-helper] ${label} visible console dispatched via cmd START with direct Node runtime: pid=${child.pid}`));
+    child.on('error', (error) => console.error(`[dsh-pet-desktop-helper] launch ${label} failed:`, error));
+    child.on('close', (code) => console.warn(`[dsh-pet-desktop-helper] ${label} terminal launcher exited: code=${code}`));
+    child.unref();
+  };
+  ipcMain.on('pet:open-app', (_event, payload) => {
+    const app = payload && typeof payload === 'object' ? String(payload.app || '') : '';
+    const url = payload && typeof payload === 'object' ? String(payload.url || '') : '';
+    console.warn('[dsh-pet-desktop-helper] open-app request:', app);
+    if (app === 'desktop') {
+      shell.openExternal('dsh://open').catch((error) => {
+        console.error('[dsh-pet-desktop-helper] open DSH Desktop failed, falling back to Web:', error);
+        if (/^https?:[/][/]/.test(url)) openSite(url);
+      });
+      return;
+    }
+    if (app === 'web') {
+      if (process.env.DSH_PET_STANDALONE === '1') launchDshCli(['web'], 'DSH Web');
+      else if (/^https?:[/][/]/.test(url)) openSite(url);
+      return;
+    }
   });
 
   // 独立版右键菜单「打开桌宠设置」：请求宿主主进程显示设置页。
