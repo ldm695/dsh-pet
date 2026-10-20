@@ -6,7 +6,7 @@
 
 从 [GitHub Releases](https://github.com/ldm695/dsh-pet/releases) 下载 Windows x64 Portable 文件并运行，无需安装向导。桌宠启动后可右键打开设置页。设置中的显示选项为「仅桌面」和「不显示」。
 
-配置和用户数据默认保存在 `%USERPROFILE%\.dsh\dsh-pet\`；设置了 `DSH_HOME` 时使用该目录。Windows 下保存的 DeepSeek API Key 使用当前用户 DPAPI 加密。
+配置和用户数据默认保存在 `%USERPROFILE%\.dsh\dsh-pet\`；设置了 `DSH_HOME` 时使用该目录。Windows 下独立 AI 设置保存的 API Key 使用当前用户 DPAPI 加密。
 
 ## 从源码构建
 

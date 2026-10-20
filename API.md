@@ -3,7 +3,7 @@
 DSH Pet Windows 应用在本机 HTTP 服务上提供统一的 `/dsh-pet-7340` 路由前缀，供桌面 Helper、内嵌设置页和本机集成使用。DSH Pet 不再注册为 DSH Web 插件，也不会向 DSH Web 页面显示桌宠。本文提供接口概览；参数、响应结构、字段定义、错误码和示例请参阅根目录的 [`openapi.yaml`](openapi.yaml)。
 
 - **基址**：`http://127.0.0.1:6952/dsh-pet-7340`（默认端口；被占用时应用会顺延）
-- **只监听 127.0.0.1**：桌面业务 API 沿用本机调用方式；独立模式 AI 设置端点另有一次性令牌与来源校验，请勿转发到公网
+- **只监听 127.0.0.1**：桌面业务 API 沿用本机调用方式；独立模式 AI 设置端点另有当前运行实例的随机令牌与来源校验，请勿转发到公网
 
 ---
 
@@ -14,7 +14,7 @@ DSH Pet Windows 应用在本机 HTTP 服务上提供统一的 `/dsh-pet-7340` �
 | `GET /dsh-pet-7340/state` | **轮询唯一数据源**：所有状态位都在这里；带 `?since=&timeout=` 可长轮询 |
 | `GET /dsh-pet-7340/config` | 读合并后的成品配置（内置默认 + 用户层，字段已填满） |
 | `GET /dsh-pet-7340/config/meta` | 配置文件路径、各类数据落盘位置、卸载该用哪个 profile |
-| `GET /dsh-pet-7340/models` | 可用服务商与模型清单（与 DSH 自己的模型选择器同源） |
+| `GET /dsh-pet-7340/models` | 当前宿主可用的服务商与模型清单；独立模式返回已启用的独立 AI 模型 |
 | `GET /dsh-pet-7340/chat?pet=&rounds=` | 读某只桌宠最近的对话记忆窗口；`rounds` 为本次读取轮数（0–200），不传用配置 |
 | `GET /dsh-pet-7340/pose?pet=` | 读取桌面端最近一次上报的位置与朝向快照 |
 
@@ -119,16 +119,25 @@ BASE=http://127.0.0.1:6952/dsh-pet-7340   # 默认端口；被占用时自动向
 
 独立模式将插件的宿主部分运行在独立上下文中，并复用 `src/host/index.ts` 的路由实现。桌面助手仍通过 bridge 管道通信。因此，本文件与 [`openapi.yaml`](openapi.yaml) 所描述的 `/dsh-pet-7340` 契约在两种运行方式下保持一致。
 
-独立模式另外多两个只属于该服务的运维端点（不在 `/dsh-pet-7340` 前缀下，故不在 OpenAPI 契约里）：
+独立模式另外提供运维端点（不在 `/dsh-pet-7340` 前缀下，故不在 OpenAPI 契约里）：
 
 | 端点 | 说明 |
 | --- | --- |
 | `GET /`、`GET /health` | 服务与插件信息：名称、插件根与版本、监听端口、已运行秒数 |
 | `POST /shutdown` | 优雅停机：释放插件注册的 effect（停止桌面助手、清掉周期定时器）后关闭服务，进程退出码 0 |
 
-依赖 DSH 的能力在独立模式下不可用，并以结构化结果返回：`POST /whisper`、`POST /chat`
-回 `{ ok: false, reason: 'provider-missing' }`（没有模型服务），`POST /balance` 回
-`{ ok: false, reason: 'unsupported' }`，`GET /state` 的各状态位保持空闲初始值。
+独立 AI 设置页及其本机接口也在此前缀之外：
+
+| 端点 | 说明 |
+| --- | --- |
+| `GET /standalone-ai/` | 独立 AI 设置页；请从桌宠设置入口打开，以获取当前运行实例的访问凭据 |
+| `GET /standalone-ai/settings` | 读取配置；只返回是否已保存密钥，不返回密钥本身 |
+| `POST /standalone-ai/settings` | 保存接口协议、Base URL、模型、密钥、AI 对话、自动碎碎念与上下文设置 |
+| `POST /standalone-ai/test` | 测试当前表单中的连接配置，不保存表单内容 |
+
+设置读写和连接测试仅供本机设置页使用，须通过 `X-DSH-Pet-Token` 请求头提交当前运行实例的随机访问令牌，并通过来源校验。设置页从桌宠菜单打开时取得令牌；不要转发或公开该设置地址。以上端点不属于 `/dsh-pet-7340` 公共接口，也未列入 OpenAPI 规范。
+
+独立模式已接入独立 AI 服务：配置并启用模型后，`POST /whisper` 与 `POST /chat` 可使用独立 AI 设置中的 OpenAI 兼容或 Anthropic 服务。自动碎碎念还需要打开独立 AI 设置中的自动开关，并为目标桌宠启用碎碎念；手动请求不受这两个自动开关限制，但仍需要启用 AI 并完成模型配置。未配置或未启用 AI 时，生成请求会返回结构化失败结果。独立应用目前不支持余额查询（`POST /balance` 返回 `unsupported`）。独立模式没有 DSH 会话，因此工作状态和通知状态不会由 DSH 更新；其余桌面状态仍按实际 API 调用更新。
 
 ## 相关
 
