@@ -55,20 +55,20 @@ const STANDALONE = params.get('standalone') === '1';
 // 工具项「打开网站」的去向（主进程按宿主形态经 query 注入，见 main.js 的 OPEN_TARGET）：
 // desktop = 宿主是 DSH 桌面应用，菜单项改叫「打开 DeepSeek Harness」并唤起桌面应用主窗口；site = 打开站点。
 const OPEN_TARGET = params.get('openTarget') === 'desktop' ? 'desktop' : 'site';
-// 视口 = 全部显示器工作区的外接矩形（多显示器时即整个桌面；窗口只是宠物的一块局部画布）。
+// 视口 = 覆盖窗口外接矩形（Windows 使用完整面板，确保透明窗口覆盖任务栏区域）。
 // 它只是**坐标系原点与比例换算基准**：位置比例（customPos）、漫游 ratio 都按它算。
 // x/y = 外接矩形左上角（多显示器时原点非 0）——visibleClampRect 计算「窗口 ∩ 工作区」需要它；
 // 缺省 0（单显示器原点即 0）。注意：缺失会令夹取矩形变 NaN，菜单将飞到窗口左上角（#41 回归）。
 //
-// **边界判定一律不用它**，改用下面 AREAS 的并集：显示器摆放不规则时外接矩形里有大片空洞
+// **宠物边界判定不用它**，改用下面 AREAS 的并集：显示器摆放不规则时外接矩形里有大片空洞
 // （实测右倒 T 型双屏 23.7% 的面积不属于任何屏），拿它当边界会让宠物走进/飞进不可见区域。
 // 字段可变：显示器分辨率/缩放变化、插拔屏、旋转时由 applyDeskGeometry 就地重挂（#P4）。
 // 主进程下发的视口（**物理像素**，原样保留给首帧 applyDeskGeometry）；VIEW 才是 ÷scale 后的 CSS 系
 const VIEW_SCREEN = {
-  x: Number(params.get('workAreaX') || 0),
-  y: Number(params.get('workAreaY') || 0),
-  w: Number(params.get('workAreaW') || (window.screen && window.screen.availWidth) || 1920),
-  h: Number(params.get('workAreaH') || (window.screen && window.screen.availHeight) || 1080),
+  x: Number(params.get('viewX') || params.get('workAreaX') || 0),
+  y: Number(params.get('viewY') || params.get('workAreaY') || 0),
+  w: Number(params.get('viewW') || params.get('workAreaW') || (window.screen && window.screen.availWidth) || 1920),
+  h: Number(params.get('viewH') || params.get('workAreaH') || (window.screen && window.screen.availHeight) || 1080),
 };
 const VIEW = {
   x: toLocal(VIEW_SCREEN.x),
@@ -76,17 +76,16 @@ const VIEW = {
   w: toLocal(VIEW_SCREEN.w),
   h: toLocal(VIEW_SCREEN.h),
 };
-/** 逐显示器工作区，**视口相对坐标**（= 屏幕坐标 − VIEW 原点）。抛掷/漫游/菜单夹取都走它们的并集 */
+/** 逐显示器宠物活动区，**视口相对坐标**；Windows 使用 workArea，macOS 会按 Dock 规则调整 */
 let AREAS = [];
 /** 菜单/聊天框/提示仍限制在工作区，不能随宠物进入菜单栏或 Dock。 */
 let WORK_AREAS = [];
-/** 逐显示器**完整面板**（含任务栏区，视口相对坐标，与 AREAS 同序）：抛掷「越界侧有没有邻屏」
- *  的探测用它——任务栏在接缝处挖出的工作区条带不当墙（见 shared/physics.ts） */
+/** 逐显示器**完整面板**（含任务栏区，视口相对坐标，与 AREAS 同序）：覆盖窗口与抛掷跨屏邻接探测使用 */
 let PANELS = [];
-/** 主屏工作区（视口相对坐标）：角落定位与「回到初始位置」用它——外接矩形的角落可能落在空洞里 */
+/** 主屏宠物活动区（视口相对坐标）：角落定位与「回到初始位置」使用 */
 let PRIMARY_AREA = null;
 
-/** 把主进程给的桌面几何（{hull, areas, panels, primaryIndex}，屏幕坐标）挂到 VIEW / AREAS / PANELS */
+/** 把主进程给的桌面几何（{hull, areas, workAreas, panels, primaryIndex}，屏幕坐标）挂到渲染坐标系 */
 function applyDeskGeometry(geo) {
   const hull = geo && geo.hull;
   const list = geo && Array.isArray(geo.areas) ? geo.areas.filter((a) => a && a.width > 0 && a.height > 0) : [];

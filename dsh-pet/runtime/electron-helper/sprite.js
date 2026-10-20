@@ -7,6 +7,37 @@
  */
 'use strict';
 
+function clampPetCenterToRegion(areas, cx, cy, halfW, halfH, sideAllow, topInset) {
+  if (!Array.isArray(areas) || areas.length === 0) return { x: cx, y: cy };
+  const bodyHalfW = Math.max(0, halfW - sideAllow);
+  const points = [
+    [cx, cy],
+    [cx - bodyHalfW, cy],
+    [cx + bodyHalfW, cy],
+    [cx, cy - halfH + topInset],
+    [cx, cy + halfH],
+  ];
+  if (points.every(([x, y]) => S.rectAtPoint(areas, x, y))) return { x: cx, y: cy };
+
+  let best = null;
+  let bestDistance = Infinity;
+  for (const area of areas) {
+    const minX = area.x + bodyHalfW;
+    const maxX = area.x + area.width - bodyHalfW - 1;
+    const minY = area.y + halfH - topInset;
+    const maxY = area.y + area.height - halfH - 1;
+    if (maxX < minX || maxY < minY) continue;
+    const x = Math.max(minX, Math.min(maxX, cx));
+    const y = Math.max(minY, Math.min(maxY, cy));
+    const distance = (x - cx) ** 2 + (y - cy) ** 2;
+    if (distance < bestDistance) {
+      best = { x, y };
+      bestDistance = distance;
+    }
+  }
+  return best || S.clampPointToRegion(areas, cx, cy);
+}
+
 // ---------- 单只宠物（行为与浏览器 PetCard 一致；纯逻辑来自 src/shared） ----------
 class PetSprite {
   constructor(pet, index = CONFIG.petIndex) {
@@ -128,10 +159,14 @@ class PetSprite {
     // 首次启动按配置角落定位；已有历史屏幕坐标时还原到视口比例，避免分辨率变化后落在屏幕外。
     const lastPosition = this.layout.lastPosition;
     if (lastPosition && Number.isFinite(Number(lastPosition.x)) && Number.isFinite(Number(lastPosition.y))) {
-      const center = S.clampPointToRegion(
+      const center = clampPetCenterToRegion(
         AREAS,
         toLocal(Number(lastPosition.x)) - VIEW.x + this.halfW,
         toLocal(Number(lastPosition.y)) - VIEW.y + this.halfH,
+        this.halfW,
+        this.halfH,
+        this.sideAllow,
+        this.size * CONFIG.topInsetRatio,
       );
       this.customPos = { rx: center.x / VIEW.w, ry: center.y / VIEW.h };
     } else {
@@ -502,7 +537,15 @@ class PetSprite {
     this.stopMove();
     const cx = this.pos.x + this.halfW;
     const cy = this.pos.y + this.halfH;
-    const p = S.clampPointToRegion(AREAS, cx, cy);
+    const p = clampPetCenterToRegion(
+      AREAS,
+      cx,
+      cy,
+      this.halfW,
+      this.halfH,
+      this.sideAllow,
+      this.size * CONFIG.topInsetRatio,
+    );
     if (p.x !== cx || p.y !== cy) {
       this.customPos = { rx: p.x / VIEW.w, ry: p.y / VIEW.h };
     }
@@ -1664,19 +1707,27 @@ class PetSprite {
    * `line` 在 `duration` 毫秒里**直线**走完（`duration <= 0` 等同 instant）。
    * 用户正按着宠物（`dragState.active` 含点击与拖拽）时**整拍丢弃**——手指底下的东西不该跑；
    * 丢弃是静默的（接口早已回过 ok）。
-   * 归一化空间 = **全部显示器工作区并集的外接矩形**；落点会被夹到 AREAS 并集（空洞不可达）。
+   * 归一化空间 = **全部显示器活动区并集的外接矩形**；落点会把宠物本体完整夹进 AREAS 并集。
    */
   moveToCenter(rx, ry, mode, duration) {
     if (this.dragState.active) return; // 用户交互优先
     this.stopThrow(); // 先显式接管：停掉飞行与走路（stopMove 顺带停掉上一次的位置跟随）
     this.stopMove();
-    // 归一化空间是**外接矩形**（VIEW = AREAS 的 hull），不规则布局里含大片不属于任何屏的空洞
+    // 归一化空间是**覆盖窗口外接矩形**（VIEW）；不规则布局里含大片不属于任何屏的空洞
     // （实测右倒 T 双屏：hull 的 23.7% 是空洞）。而 position() 在 customPos 分支**零夹取**
     // （原文"松手无任何边界夹取"），不夹的话落进空洞的坐标会把宠物放进看不见的地方。
     // 注意：鼠标拖拽到不了那里**不是因为代码在拦**，而是光标物理上出不去屏幕——所以位置接口
-    // 必须自己补这道守卫。判据与 relayout() 完全一致：把**身体中心**夹到 AREAS 并集。
+    // 必须自己补这道守卫。判据与 relayout() 完全一致：把宠物本体夹进 AREAS 并集。
     // 视口坐标范围没有显示器空洞时不需要此函数。
-    const c = S.clampPointToRegion(AREAS, rx * VIEW.w, ry * VIEW.h);
+    const c = clampPetCenterToRegion(
+      AREAS,
+      rx * VIEW.w,
+      ry * VIEW.h,
+      this.halfW,
+      this.halfH,
+      this.sideAllow,
+      this.size * CONFIG.topInsetRatio,
+    );
     // 夹取后的**比例**才是要写进 customPos 的值：position() 会按它重算窗口位置，
     // 存原始 rx/ry 等于把刚做的夹取撤销掉。
     const fx = c.x / VIEW.w;

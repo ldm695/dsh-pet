@@ -911,10 +911,10 @@ function petWindowSize(size) {
 }
 
 /**
- * 桌面几何：逐显示器的宠物活动区 + 它们的外接矩形 + 主屏下标。
+ * 桌面几何：逐显示器的宠物活动区、完整面板和覆盖窗口外接矩形 + 主屏下标。
  *
- * 外接矩形（hull）仍然是渲染端视口 VIEW 的来源——它只用作坐标系原点与比例换算基准。
- * 宠物边界判定（漫游落点 / 抛掷反弹 / 角落定位）走 areas 的**并集**，菜单夹取单独走 workAreas：
+ * Windows 的 hull 使用完整面板，确保透明覆盖窗口仍铺满显示器；宠物漫游、抛掷、角落定位走
+ * areas（Windows 下为 workAreas）的并集，跨屏邻接判断单独使用完整 panels，菜单夹取也走 workAreas：
  * 显示器摆放不规则时 hull 里会有大片不属于任何屏的空洞，以 hull 为边界会把宠物放进去
  * （实测右倒 T 型双屏：hull 的 23.7% 是空洞，宠物飞进去就彻底看不见了）。
  */
@@ -1144,10 +1144,10 @@ function createPetOverlayWindow() {
         scale: String(scale),
         overlay: '1',
         petLayouts,
-        workAreaW: String(area.width),
-        workAreaH: String(area.height),
-        workAreaX: String(area.x),
-        workAreaY: String(area.y),
+        viewW: String(area.width),
+        viewH: String(area.height),
+        viewX: String(area.x),
+        viewY: String(area.y),
         areas: JSON.stringify(geo.areas),
         workAreas: JSON.stringify(geo.workAreas),
         topInsetRatio: String(geo.topInsetRatio),
