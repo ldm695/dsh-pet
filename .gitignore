@@ -45,6 +45,12 @@ dsh-pet/lib/
 dsh-pet/runtime/electron-helper/shared-core.js
 dsh-pet/portable-dist/
 dsh-pet/release/
+dsh-pet/local-only/
+
+# 维护者本机个人版图标（不公开发布）
+dsh-pet/assets/dsh-pet-icon-16.png
+dsh-pet/assets/dsh-pet-icon-256.png
+dsh-pet/assets/dsh-pet-icon.ico
 
 # ── IDE / 编辑器 ──
 .idea/

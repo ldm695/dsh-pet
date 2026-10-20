@@ -8,6 +8,8 @@ DSH Pet 是面向 Windows 的便携桌面宠物应用。它使用 Electron 透�
 
 从 [GitHub Releases](https://github.com/ldm695/dsh-pet/releases) 下载 Windows x64 Portable 文件并运行。应用无需安装向导，启动后桌宠直接显示在桌面。右键桌宠可打开设置页、播放动作、查看余额或退出应用。
 
+GitHub Releases 仅发布大众版。个人版及其专属图标保留在维护者本机，不包含在公开安装包和公开桥接插件压缩包中。
+
 设置页和托盘菜单中的显示选项为「仅桌面」与「不显示」。旧配置会自动兼容：`both` 转为 `desktop`，`web` 转为 `none`。
 
 配置和用户数据默认位于 `%USERPROFILE%\.dsh\dsh-pet\`；若设置了 `DSH_HOME`，则使用对应目录。保存的 DeepSeek API Key 在 Windows 上通过当前用户 DPAPI 加密。

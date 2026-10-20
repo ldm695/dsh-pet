@@ -74,5 +74,13 @@ for (const config of ['electron-builder.yml', 'electron-builder.public.yml']) {
   }
 }
 
+const publicBuilder = readFileSync(join(ROOT, 'electron-builder.public.yml'), 'utf8');
+const packageFiles = Array.isArray(pkg.files) ? pkg.files : [];
+for (const file of ['assets/dsh-pet-icon-16.png', 'assets/dsh-pet-icon-256.png', 'assets/dsh-pet-icon.ico']) {
+  if (publicBuilder.includes(file)) fail(`public EXE must exclude the personal icon resource ${file}`);
+  else ok(`public EXE excludes personal icon resource ${file}`);
+  if (packageFiles.includes(file)) fail(`published package file list must exclude the personal icon resource ${file}`);
+}
+
 if (process.exitCode) console.error('\n[desktop-package-check] fix the failures before building the EXE.');
 else console.log('\n[desktop-package-check] standalone package contents are ready.');

@@ -7,7 +7,16 @@ import { fileURLToPath } from 'node:url';
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const upstreamIcon = join(projectRoot, 'assets', 'logo-rounded.png');
 const personalIcon = join(projectRoot, 'assets', 'dsh-pet-icon-16.png');
-const releaseRoot = join(projectRoot, 'release', 'bridge-plugin-variants');
+const variantFlagIndex = process.argv.indexOf('--variant');
+const variantArg = process.argv.find((arg) => arg.startsWith('--variant='))?.slice('--variant='.length)
+  ?? (variantFlagIndex >= 0 ? process.argv[variantFlagIndex + 1] : undefined)
+  ?? 'public';
+if (!['public', 'personal'].includes(variantArg)) {
+  throw new Error(`Unsupported plugin package variant: ${variantArg}`);
+}
+const releaseRoot = variantArg === 'personal'
+  ? join(projectRoot, 'local-only', 'bridge-plugin-variants')
+  : join(projectRoot, 'release', 'bridge-plugin-variants');
 const buildId = new Date().toISOString().replaceAll(/[-:.TZ]/g, '');
 const outputRoot = join(releaseRoot, buildId);
 
@@ -66,7 +75,7 @@ async function setVariantIcon(pluginDirectory, plugin, variant) {
 await mkdir(releaseRoot, { recursive: true });
 await mkdir(outputRoot, { recursive: false });
 
-for (const variant of ['personal', 'public']) {
+for (const variant of [variantArg]) {
   const variantOutput = join(outputRoot, variant);
   await mkdir(variantOutput, { recursive: false });
 
