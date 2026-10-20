@@ -71,9 +71,6 @@ function AutoStartSettings(): ReturnType<typeof jsx> {
 
   return jsx('div', {
     style: {
-      marginTop: '16px',
-      paddingTop: '12px',
-      borderTop: '1px solid var(--dsw-alias-border-l2)',
       display: 'flex',
       flexDirection: 'column',
       gap: '8px',
@@ -202,9 +199,6 @@ function RenderModeSettings(): ReturnType<typeof jsx> {
 
   return jsx('div', {
     style: {
-      marginTop: '16px',
-      paddingTop: '12px',
-      borderTop: '1px solid var(--dsw-alias-border-l2)',
       display: 'flex',
       flexDirection: 'column',
       gap: '8px',
@@ -282,7 +276,10 @@ const PetSettings = makePetConfigSection({
   },
   notificationIcon: new URL('/dsh-pet-7340/pic/notify-test.png', window.location.href).href,
   notificationAppName: APP_DISPLAY_NAME,
-  standaloneAddon: jsx('div', { children: [jsx(AutoStartSettings, {}), jsx(RenderModeSettings, {})] }),
+  standaloneAddon: jsx('div', {
+    style: { display: 'flex', flexDirection: 'column', gap: '16px' },
+    children: [jsx(AutoStartSettings, {}), jsx(RenderModeSettings, {})],
+  }),
 });
 
 async function start(): Promise<void> {
