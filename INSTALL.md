@@ -16,10 +16,10 @@
 git clone https://github.com/ldm695/dsh-pet.git
 Set-Location .\dsh-pet\dsh-pet
 pnpm install --frozen-lockfile
-pnpm run build:exe:public
+pnpm run build:exe
 ```
 
-Portable EXE 输出到 `dsh-pet\portable-dist\`。构建只打包 Windows 应用运行所需的桌面宿主、设置页、动画素材和 Electron Helper，不包含 DSH Pet 的 Web 客户端或插件注册文件。
+`build:exe` 默认构建大众版。Portable EXE 输出到 `dsh-pet\portable-dist\public\`。构建只打包 Windows 应用运行所需的桌面宿主、设置页、动画素材和 Electron Helper，不包含 DSH Pet 的 Web 客户端或插件注册文件。个人版通过 `build:exe:personal` 显式构建，仅供维护者本机使用，不上传到公开 Release。
 
 ## 工作状态桥接插件
 

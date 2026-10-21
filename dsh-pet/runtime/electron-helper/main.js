@@ -42,7 +42,7 @@ const { app, BrowserWindow, ipcMain, screen, shell, protocol } = electronApi;
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { execFileSync, spawn } = require('node:child_process');
-const { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } = require('node:fs');
+const { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } = require('node:fs');
 const fsPromises = require('node:fs/promises');
 // 点击穿透兜底通道的纯判定（不依赖 Electron 的 forward 鼠标钩子；见文件头注释）
 // 置顶看门狗：WS_EX_TOPMOST 只是样式位，不等于窗口真的在置顶带（见 topmost-watchdog.js 头部）
@@ -576,29 +576,172 @@ let petStateBroadcastTimer = null;
 const moveTargets = new MoveTargets();
 let lastMoveTargetsJSON = '';
 let lastMoveTargetFlags = new Map();
-// TEMPORARY MOVE DIAGNOSTICS: remove the JSONL persistence path before a formal release.
+// Movement diagnostics are opt-in. Keep diagnostic persistence off the Electron main-thread
+// hot path and cap both queued data and the resulting file.
+const MOVE_DIAGNOSTICS_ENABLED = process.env.DSH_PET_MOVE_DIAGNOSTICS === '1';
+const MOVE_DIAGNOSTICS_MAX_FILE_BYTES = 5 * 1024 * 1024;
+const MOVE_DIAGNOSTICS_MAX_RECORD_BYTES = 64 * 1024;
+const MOVE_DIAGNOSTICS_MAX_QUEUE_BYTES = 512 * 1024;
 const MOVE_DIAGNOSTICS_SESSION = `${Date.now()}-${process.pid}`;
+const moveDiagnosticsQueue = [];
+let moveDiagnosticsQueueBytes = 0;
+let moveDiagnosticsFileBytes = 0;
+let moveDiagnosticsFileSizeLoaded = false;
+let moveDiagnosticsDrainActive = false;
+let moveDiagnosticsWarningShown = false;
 
 function persistMoveDiagnostic(record, source) {
-  const file =
-    process.env.DSH_PET_MOVE_DIAGNOSTICS_FILE || path.join(app.getPath('userData'), 'logs', 'move-diagnostics.jsonl');
+  if (!MOVE_DIAGNOSTICS_ENABLED) return;
+
+  let line;
   try {
-    mkdirSync(path.dirname(file), { recursive: true });
-    appendFileSync(
-      file,
-      `${JSON.stringify({ ...record, at: new Date().toISOString(), sessionId: MOVE_DIAGNOSTICS_SESSION, source })}\n`,
-      'utf8',
-    );
+    line = `${JSON.stringify({ ...record, at: new Date().toISOString(), sessionId: MOVE_DIAGNOSTICS_SESSION, source })}\n`;
   } catch (error) {
-    console.error(`[dsh-pet-move] diagnostics-write-failed ${error instanceof Error ? error.message : String(error)}`);
+    warnMoveDiagnosticsError('serialize-failed', error);
+    return;
   }
+
+  const lineBytes = Buffer.byteLength(line, 'utf8');
+  if (lineBytes > MOVE_DIAGNOSTICS_MAX_RECORD_BYTES) return;
+  if (moveDiagnosticsQueueBytes + lineBytes > MOVE_DIAGNOSTICS_MAX_QUEUE_BYTES) return;
+  moveDiagnosticsQueue.push({ line, bytes: lineBytes });
+  moveDiagnosticsQueueBytes += lineBytes;
+  if (!moveDiagnosticsDrainActive) void drainMoveDiagnostics();
 }
 
 function traceMoveTarget(event, detail) {
+  if (!MOVE_DIAGNOSTICS_ENABLED) return;
   const record = { event, ...detail };
   console.error('[dsh-pet-move] ' + JSON.stringify(record));
-  // TEMPORARY MOVE DIAGNOSTICS: remove this persistence call with the writer above.
   persistMoveDiagnostic(record, 'helper-main');
+}
+
+function warnMoveDiagnosticsError(operation, error) {
+  if (moveDiagnosticsWarningShown) return;
+  moveDiagnosticsWarningShown = true;
+  console.error(
+    `[dsh-pet-move] diagnostics-${operation} ${error instanceof Error ? error.message : String(error)}`,
+  );
+}
+
+async function drainMoveDiagnostics() {
+  if (moveDiagnosticsDrainActive || !MOVE_DIAGNOSTICS_ENABLED) return;
+  moveDiagnosticsDrainActive = true;
+  try {
+    const file =
+      process.env.DSH_PET_MOVE_DIAGNOSTICS_FILE || path.join(app.getPath('userData'), 'logs', 'move-diagnostics.jsonl');
+    await fsPromises.mkdir(path.dirname(file), { recursive: true });
+
+    if (!moveDiagnosticsFileSizeLoaded) {
+      try {
+        moveDiagnosticsFileBytes = (await fsPromises.stat(file)).size;
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+      moveDiagnosticsFileSizeLoaded = true;
+    }
+
+    while (moveDiagnosticsQueue.length > 0) {
+      const batch = moveDiagnosticsQueue.splice(0);
+      const content = batch.map((entry) => entry.line).join('');
+      const batchBytes = batch.reduce((total, entry) => total + entry.bytes, 0);
+      moveDiagnosticsQueueBytes = 0;
+
+      if (moveDiagnosticsFileBytes + batchBytes > MOVE_DIAGNOSTICS_MAX_FILE_BYTES) {
+        await fsPromises.writeFile(file, content, 'utf8');
+        moveDiagnosticsFileBytes = batchBytes;
+      } else {
+        await fsPromises.appendFile(file, content, 'utf8');
+        moveDiagnosticsFileBytes += batchBytes;
+      }
+    }
+  } catch (error) {
+    moveDiagnosticsQueue.length = 0;
+    moveDiagnosticsQueueBytes = 0;
+    warnMoveDiagnosticsError('write-failed', error);
+  } finally {
+    moveDiagnosticsDrainActive = false;
+    if (moveDiagnosticsQueue.length > 0) void drainMoveDiagnostics();
+  }
+}
+
+// Work-status diagnostics retain their own opt-in file path and bounded async queue.
+const WORK_STATUS_DIAGNOSTICS_MAX_FILE_BYTES = 5 * 1024 * 1024;
+const WORK_STATUS_DIAGNOSTICS_MAX_RECORD_BYTES = 64 * 1024;
+const WORK_STATUS_DIAGNOSTICS_MAX_QUEUE_BYTES = 512 * 1024;
+const workStatusDiagnosticsQueue = [];
+const workStatusDiagnosticsFileBytes = new Map();
+let workStatusDiagnosticsQueueBytes = 0;
+let workStatusDiagnosticsDrainActive = false;
+let workStatusDiagnosticsWarningShown = false;
+
+function persistWorkStatusDiagnostic(record, file) {
+  let line;
+  try {
+    line = `${JSON.stringify(record)}\n`;
+  } catch (error) {
+    warnWorkStatusDiagnostics(error);
+    return;
+  }
+
+  const bytes = Buffer.byteLength(line, 'utf8');
+  if (bytes > WORK_STATUS_DIAGNOSTICS_MAX_RECORD_BYTES) return;
+  if (workStatusDiagnosticsQueueBytes + bytes > WORK_STATUS_DIAGNOSTICS_MAX_QUEUE_BYTES) return;
+  workStatusDiagnosticsQueue.push({ file, line, bytes });
+  workStatusDiagnosticsQueueBytes += bytes;
+  if (!workStatusDiagnosticsDrainActive) void drainWorkStatusDiagnostics();
+}
+
+function warnWorkStatusDiagnostics(error) {
+  if (workStatusDiagnosticsWarningShown) return;
+  workStatusDiagnosticsWarningShown = true;
+  console.error(`[dsh-pet-workdiag] file-write-failed ${error instanceof Error ? error.message : String(error)}`);
+}
+
+async function drainWorkStatusDiagnostics() {
+  if (workStatusDiagnosticsDrainActive) return;
+  workStatusDiagnosticsDrainActive = true;
+  try {
+    while (workStatusDiagnosticsQueue.length > 0) {
+      const file = workStatusDiagnosticsQueue[0].file;
+      const batch = [];
+      while (workStatusDiagnosticsQueue[0]?.file === file) {
+        const entry = workStatusDiagnosticsQueue.shift();
+        batch.push(entry);
+      }
+      const batchBytes = batch.reduce((total, entry) => total + entry.bytes, 0);
+
+      try {
+        await fsPromises.mkdir(path.dirname(file), { recursive: true });
+        let fileBytes = workStatusDiagnosticsFileBytes.get(file);
+        if (fileBytes === undefined) {
+          try {
+            fileBytes = (await fsPromises.stat(file)).size;
+          } catch (error) {
+            if (error?.code !== 'ENOENT') throw error;
+            fileBytes = 0;
+          }
+        }
+
+        const content = batch.map((entry) => entry.line).join('');
+        if (fileBytes + batchBytes > WORK_STATUS_DIAGNOSTICS_MAX_FILE_BYTES) {
+          await fsPromises.writeFile(file, content, 'utf8');
+          fileBytes = batchBytes;
+        } else {
+          await fsPromises.appendFile(file, content, 'utf8');
+          fileBytes += batchBytes;
+        }
+        workStatusDiagnosticsFileBytes.set(file, fileBytes);
+      } catch (error) {
+        warnWorkStatusDiagnostics(error);
+      } finally {
+        workStatusDiagnosticsQueueBytes -= batchBytes;
+      }
+    }
+  } finally {
+    workStatusDiagnosticsDrainActive = false;
+    if (workStatusDiagnosticsQueue.length > 0) void drainWorkStatusDiagnostics();
+  }
 }
 
 function broadcastMoveTargets() {
@@ -988,7 +1131,6 @@ function createPetOverlayWindow() {
     // A renderer reload must not retain endpoints claimed by its previous sprites.
     for (const [petId, petWin] of windows) {
       if (petWin !== win || !moveTargets.remove(petId)) continue;
-      // TEMPORARY MOVE DIAGNOSTICS: remove this record before a formal release.
       traceMoveTarget('remove-target', { petId, reason: 'renderer-reload' });
     }
     broadcastMoveTargets();
@@ -1006,16 +1148,15 @@ function createPetOverlayWindow() {
     // Forward work-status and movement diagnostics without requiring DevTools.
     if (message?.startsWith('[dsh-pet-workdiag]')) console.error(message);
     if (FRAME_DIAGNOSTICS && message?.startsWith('[dsh-pet-frame-diagnostics]')) console.error(message);
-    if (message?.startsWith('[dsh-pet-move]')) {
+    if (MOVE_DIAGNOSTICS_ENABLED && message?.startsWith('[dsh-pet-move]')) {
       console.error(message);
-      // TEMPORARY MOVE DIAGNOSTICS: remove JSONL forwarding with persistMoveDiagnostic.
       try {
         const record = JSON.parse(message.slice('[dsh-pet-move]'.length).trim());
         if (record && typeof record === 'object' && !Array.isArray(record)) {
           persistMoveDiagnostic(record, 'renderer');
         }
       } catch (error) {
-        console.error(`[dsh-pet-move] diagnostics-parse-failed ${error instanceof Error ? error.message : String(error)}`);
+        warnMoveDiagnosticsError('parse-failed', error);
       }
     }
   });
@@ -1023,12 +1164,7 @@ function createPetOverlayWindow() {
     if (event.sender !== win.webContents || !record || typeof record !== 'object') return;
     const diagnosticsFile = process.env.DSH_PET_WORK_STATUS_DIAGNOSTICS_FILE;
     if (!diagnosticsFile) return;
-    try {
-      mkdirSync(path.dirname(diagnosticsFile), { recursive: true });
-      appendFileSync(diagnosticsFile, `${JSON.stringify(record)}\n`, 'utf8');
-    } catch (error) {
-      console.error(`[dsh-pet-workdiag] file-write-failed ${error instanceof Error ? error.message : String(error)}`);
-    }
+    persistWorkStatusDiagnostic(record, diagnosticsFile);
   };
   ipcMain.on('pet:work-status-diagnostic', onWorkStatusDiagnostic);
   win.once('closed', () => ipcMain.removeListener('pet:work-status-diagnostic', onWorkStatusDiagnostic));
@@ -1098,7 +1234,6 @@ function createPetOverlayWindow() {
       petStates.delete(petId);
       overlayInputs.delete(petId);
       overlayPetBounds.delete(petId);
-      // TEMPORARY MOVE DIAGNOSTICS: remove this record before a formal release.
       if (moveTargets.remove(petId)) traceMoveTarget('remove-target', { petId, reason: 'window-closed' });
     }
     broadcastPetStates();

@@ -70,14 +70,16 @@
  * TODO(类型)：peer 依赖类型包本地暂不可解析，ctx/req/res 暂用 any；
  *             依赖可解析后替换为 DSH 官方类型。
  */
-import { createReadStream, existsSync, fstatSync, readFileSync } from 'node:fs';
-import { readFile, mkdir, rename, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { constants, createReadStream, existsSync, fstatSync, readFileSync } from 'node:fs';
+import { lstat, open, readFile, mkdir, rename, writeFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { dirname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
+import { writePrivateJsonAsync, writePrivateTextAsync } from '../standalone/ai-storage';
 import { createAssetRoute } from './asset-route';
 import { createReadonlyRoute, type ReadonlyRouteLlm } from './readonly-route';
 import { createConfigRoute, createHostConfigRouteDependencies } from './config-route';
@@ -463,35 +465,94 @@ export function apply(ctx: any): void {
   // 对话写操作串行队列：read-modify-write 排队执行，防两端同时对话时交错写盘
   let chatQueue: Promise<void> = Promise.resolve();
 
-  /** 读记忆文件：不存在 → 空；损坏 → 显式报错 + 备份原始文件（绝不静默丢数据）+ 重建空记忆 */
+  const assertRegularMemoryFile = (info: Awaited<ReturnType<typeof lstat>>): void => {
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) {
+      throw new Error('对话历史路径必须是未链接的普通文件。');
+    }
+  };
+  const sameMemoryFile = (
+    left: Awaited<ReturnType<typeof lstat>>,
+    right: Awaited<ReturnType<typeof lstat>>,
+  ): boolean =>
+    left.dev === right.dev && left.ino !== 0 && right.ino !== 0 && left.ino === right.ino;
+
+  /** 读记忆文件：仅不存在视为空；读取失败或损坏时拒绝继续，避免后续写入覆盖原数据。 */
   const readMemory = async (): Promise<Record<string, Record<string, { messages: ChatMemoryMessage[] }>>> => {
     let raw: string;
+    let beforeOpen: Awaited<ReturnType<typeof lstat>>;
     try {
-      raw = await readFile(memoryPath, 'utf8');
-    } catch {
-      return {}; // 文件不存在 = 尚无记忆
+      beforeOpen = await lstat(memoryPath);
+    } catch (e) {
+      if (typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT') {
+        return {}; // 文件不存在 = 尚无记忆
+      }
+      console.error(
+        `dsh-pet: 读取对话记忆失败，已阻止写入：${memoryPath}（${e instanceof Error ? e.message : String(e)}）`,
+      );
+      throw new Error('无法读取对话历史，原数据未更改；请检查文件权限后重试。', { cause: e });
     }
+
+    try {
+      assertRegularMemoryFile(beforeOpen);
+      // O_NOFOLLOW is unavailable on Windows; compare the pre-open path, opened handle,
+      // and post-open path identities there so a swapped symlink cannot redirect the read.
+      const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+      const handle = await open(memoryPath, flags);
+      try {
+        const opened = await handle.stat();
+        assertRegularMemoryFile(opened);
+        const afterOpen = await lstat(memoryPath);
+        assertRegularMemoryFile(afterOpen);
+        if (!sameMemoryFile(beforeOpen, opened) || !sameMemoryFile(opened, afterOpen)) {
+          throw new Error('对话历史文件在打开期间发生变化，已拒绝读取。');
+        }
+
+        raw = await handle.readFile({ encoding: 'utf8' });
+        const openedAfterRead = await handle.stat();
+        assertRegularMemoryFile(openedAfterRead);
+        if (!sameMemoryFile(opened, openedAfterRead)) {
+          throw new Error('对话历史文件在读取期间发生变化，已拒绝使用读取结果。');
+        }
+        const afterRead = await lstat(memoryPath);
+        assertRegularMemoryFile(afterRead);
+        if (!sameMemoryFile(opened, afterRead)) {
+          throw new Error('对话历史文件在读取期间发生变化，已拒绝使用读取结果。');
+        }
+      } finally {
+        await handle.close();
+      }
+    } catch (e) {
+      console.error(
+        `dsh-pet: 读取对话记忆失败，已阻止写入：${memoryPath}（${e instanceof Error ? e.message : String(e)}）`,
+      );
+      throw new Error('无法安全读取对话历史，原数据未更改；请检查文件类型和权限后重试。', { cause: e });
+    }
+
     try {
       const parsed = JSON.parse(raw) as Record<string, unknown>;
-      if (!parsed || typeof parsed !== 'object') throw new Error('not an object');
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
       return parsed as Record<string, Record<string, { messages: ChatMemoryMessage[] }>>;
     } catch (e) {
       console.error(
-        `dsh-pet: 记忆文件损坏已备份（对话将从头开始）：${memoryPath}（${e instanceof Error ? e.message : String(e)}）`,
+        `dsh-pet: 记忆文件损坏，已阻止本次读写以保护原数据：${memoryPath}（${e instanceof Error ? e.message : String(e)}）`,
       );
+      const backupPath = `${memoryPath}.bak-${Date.now()}-${randomUUID()}`;
       try {
         await mkdir(userRoot, { recursive: true });
-        await writeFile(`${memoryPath}.bak-${Date.now()}`, raw, 'utf8');
-      } catch {
-        /* 备份失败仅告警，不阻断 */
+        await writePrivateTextAsync(backupPath, raw);
+        console.warn(`dsh-pet: 对话历史原文已私密备份至：${backupPath}`);
+      } catch (backupError) {
+        console.warn(
+          `dsh-pet: 对话历史备份失败，原文件仍未更改：${backupPath}（${backupError instanceof Error ? backupError.message : String(backupError)}）`,
+        );
       }
-      return {};
+      throw new Error('对话历史文件损坏；原文件未更改，本次对话未写入历史。', { cause: e });
     }
   };
 
   const writeMemory = async (mem: Record<string, Record<string, { messages: ChatMemoryMessage[] }>>): Promise<void> => {
-    await mkdir(userRoot, { recursive: true });
-    await writeFile(memoryPath, JSON.stringify(mem, null, 2), 'utf8');
+    await mkdir(userRoot, { recursive: true, mode: 0o700 });
+    await writePrivateJsonAsync(memoryPath, mem, 2);
   };
 
   /** 把一次读写封进串行队列（同进程内防交错），返回 fn 的结果 */

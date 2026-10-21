@@ -7,6 +7,8 @@
  */
 'use strict';
 
+const MOVE_DIAGNOSTICS_ENABLED = window.petBridge?.moveDiagnosticsEnabled === true;
+
 function clampPetCenterToRegion(areas, cx, cy, halfW, halfH, sideAllow, topInset) {
   if (!Array.isArray(areas) || areas.length === 0) return { x: cx, y: cy };
   const bodyHalfW = Math.max(0, halfW - sideAllow);
@@ -948,7 +950,7 @@ class PetSprite {
     // 宠物固定（pets[].fixedEnabled）：掷骰时把「转向 / 移动」两档权重按 0 算（与浏览器同一份
     // 决策）——随机链不再让宠物自己翻朝向或走开。右键菜单点播与 /anim 接口不走这里，不受影响。
     const forceMove = this.canRelocate();
-    if (forceMove)
+    if (forceMove && MOVE_DIAGNOSTICS_ENABLED)
       console.info(
         '[dsh-pet-move] ' +
           JSON.stringify({ event: 'forced-move', petId: this.pet.id, reason: 'overlap-yield' }),
@@ -1212,8 +1214,8 @@ class PetSprite {
     // direction would hit a screen boundary. Automatic moves may still choose either axis.
     const mode = preferredDrag ? 'vertical' : manualMove ? 'horizontal' : 'any';
     let candidate = null;
-    // TEMPORARY MOVE DIAGNOSTICS: candidate detail and plan records are for overlap testing.
-    let candidateDiagnostics = [];
+    // Candidate scoring details are collected only when movement diagnostics are explicitly enabled.
+    let candidateDiagnostics = MOVE_DIAGNOSTICS_ENABLED ? [] : null;
     if (options.relocate) {
       // Sample a bounded, varied set of legal routes. Cover each route family, facing,
       // vertical direction, angle and the configured distance range, then score only distinct
@@ -1239,7 +1241,7 @@ class PetSprite {
       }
 
       const seen = new Set();
-      candidateDiagnostics = [];
+      candidateDiagnostics = MOVE_DIAGNOSTICS_ENABLED ? [] : null;
       let bestClearance = -Infinity;
       let bestIsFree = false;
       for (const heading of headings.slice(0, 32)) {
@@ -1250,71 +1252,75 @@ class PetSprite {
         seen.add(key);
         const clearance = this.endpointClearance(next);
         const isFree = clearance >= 0;
-        candidateDiagnostics.push({
-          x: Math.round(toScreen(next.targetRatio * VIEW.w)),
-          y: Math.round(toScreen(next.targetYRatio * VIEW.h)),
-          mode: heading.mode,
-          angleDegrees: heading.angleDegrees,
-          direction: heading.dir,
-          verticalDirection: heading.verticalDir,
-          distanceRatio: heading.distanceRatio,
-          clearancePx: Number.isFinite(clearance) ? Number(clearance.toFixed(3)) : null,
-          free: isFree,
-        });
+        if (MOVE_DIAGNOSTICS_ENABLED) {
+          candidateDiagnostics.push({
+            x: Math.round(toScreen(next.targetRatio * VIEW.w)),
+            y: Math.round(toScreen(next.targetYRatio * VIEW.h)),
+            mode: heading.mode,
+            angleDegrees: heading.angleDegrees,
+            direction: heading.dir,
+            verticalDirection: heading.verticalDir,
+            distanceRatio: heading.distanceRatio,
+            clearancePx: Number.isFinite(clearance) ? Number(clearance.toFixed(3)) : null,
+            free: isFree,
+          });
+        }
         if ((isFree && !bestIsFree) || (isFree === bestIsFree && clearance > bestClearance)) {
           candidate = next;
           bestClearance = clearance;
           bestIsFree = isFree;
         }
       }
-      // TEMPORARY MOVE DIAGNOSTICS: remove the detailed candidate scoring record before release.
-      console.info(
-        '[dsh-pet-move] ' +
-          JSON.stringify({
-            event: 'relocation-plan',
-            petId: this.pet.id,
-            reason: 'overlap-yield',
-            candidates: seen.size,
-            foundFreeEndpoint: bestIsFree,
-            fallbackReason: bestIsFree ? null : candidate ? 'all-candidates-overlap' : 'no-legal-endpoint',
-            clearancePx: Number.isFinite(bestClearance) ? Number(bestClearance.toFixed(3)) : null,
-            origin: {
-              x: Math.round(toScreen(this.currentCenterX())),
-              y: Math.round(toScreen(this.currentCenterY())),
-            },
-            chosen: candidate
-              ? {
-                  x: Math.round(toScreen(candidate.targetRatio * VIEW.w)),
-                  y: Math.round(toScreen(candidate.targetYRatio * VIEW.h)),
-                  mode: candidate.isVertical ? 'vertical' : 'horizontal',
-                  direction: candidate.dir,
-                  clearancePx: Number.isFinite(bestClearance) ? Number(bestClearance.toFixed(3)) : null,
-                }
-              : null,
-            evaluated: candidateDiagnostics,
-          }),
-      );
+      if (MOVE_DIAGNOSTICS_ENABLED) {
+        console.info(
+          '[dsh-pet-move] ' +
+            JSON.stringify({
+              event: 'relocation-plan',
+              petId: this.pet.id,
+              reason: 'overlap-yield',
+              candidates: seen.size,
+              foundFreeEndpoint: bestIsFree,
+              fallbackReason: bestIsFree ? null : candidate ? 'all-candidates-overlap' : 'no-legal-endpoint',
+              clearancePx: Number.isFinite(bestClearance) ? Number(bestClearance.toFixed(3)) : null,
+              origin: {
+                x: Math.round(toScreen(this.currentCenterX())),
+                y: Math.round(toScreen(this.currentCenterY())),
+              },
+              chosen: candidate
+                ? {
+                    x: Math.round(toScreen(candidate.targetRatio * VIEW.w)),
+                    y: Math.round(toScreen(candidate.targetYRatio * VIEW.h)),
+                    mode: candidate.isVertical ? 'vertical' : 'horizontal',
+                    direction: candidate.dir,
+                    clearancePx: Number.isFinite(bestClearance) ? Number(bestClearance.toFixed(3)) : null,
+                  }
+                : null,
+              evaluated: candidateDiagnostics,
+            }),
+        );
+      }
     } else {
       candidate = this.planMoveCandidate(mp, facingDir, mode);
     }
     if (!candidate) {
-      // TEMPORARY MOVE DIAGNOSTICS: remove this failed-route record before release.
-      console.info(
-        '[dsh-pet-move] ' +
-          JSON.stringify({
-            event: 'move-plan-failed',
-            petId: this.pet.id,
-            reason: options.relocate ? 'no-legal-relocation-endpoint' : 'no-screen-safe-route',
-            moveKind: options.relocate ? 'yield' : 'claim',
-            manualMove,
-            mode,
-            facing: this.facing,
-            x: Math.round(toScreen(this.currentCenterX())),
-            y: Math.round(toScreen(this.currentCenterY())),
-            size: toScreen(this.size),
-            evaluated: candidateDiagnostics,
-          }),
-      );
+      if (MOVE_DIAGNOSTICS_ENABLED) {
+        console.info(
+          '[dsh-pet-move] ' +
+            JSON.stringify({
+              event: 'move-plan-failed',
+              petId: this.pet.id,
+              reason: options.relocate ? 'no-legal-relocation-endpoint' : 'no-screen-safe-route',
+              moveKind: options.relocate ? 'yield' : 'claim',
+              manualMove,
+              mode,
+              facing: this.facing,
+              x: Math.round(toScreen(this.currentCenterX())),
+              y: Math.round(toScreen(this.currentCenterY())),
+              size: toScreen(this.size),
+              evaluated: candidateDiagnostics,
+            }),
+        );
+      }
       return false;
     }
     const moveAnimation = preferredDrag
@@ -1437,23 +1443,24 @@ class PetSprite {
     const moveKind = pm.relocate ? 'yield' : 'claim';
     const moveReason = pm.relocate ? 'overlap-yield' : pm.manualMove ? 'manual-movement' : 'automatic-movement';
     this.beginMoveTarget(targetRatio * VIEW.w, targetYRatio * VIEW.h, moveKind, moveReason);
-    // TEMPORARY MOVE DIAGNOSTICS: remove this detailed route-start record before release.
-    console.info(
-      '[dsh-pet-move] ' +
-        JSON.stringify({
-          event: 'move-drive-start',
-          petId: this.pet.id,
-          moveId: this.moveTargetId,
-          reason: moveReason,
-          kind: moveKind,
-          animation: pm.animationName || this.anim,
-          mode: pm.isVertical ? 'vertical' : 'horizontal',
-          direction: pm.dir,
-          from: { x: Math.round(toScreen(startRatio * VIEW.w)), y: Math.round(toScreen(startYRatio * VIEW.h)) },
-          to: { x: Math.round(toScreen(targetRatio * VIEW.w)), y: Math.round(toScreen(targetYRatio * VIEW.h)) },
-          duration,
-        }),
-    );
+    if (MOVE_DIAGNOSTICS_ENABLED) {
+      console.info(
+        '[dsh-pet-move] ' +
+          JSON.stringify({
+            event: 'move-drive-start',
+            petId: this.pet.id,
+            moveId: this.moveTargetId,
+            reason: moveReason,
+            kind: moveKind,
+            animation: pm.animationName || this.anim,
+            mode: pm.isVertical ? 'vertical' : 'horizontal',
+            direction: pm.dir,
+            from: { x: Math.round(toScreen(startRatio * VIEW.w)), y: Math.round(toScreen(startYRatio * VIEW.h)) },
+            to: { x: Math.round(toScreen(targetRatio * VIEW.w)), y: Math.round(toScreen(targetYRatio * VIEW.h)) },
+            duration,
+          }),
+      );
+    }
     this.anim = pm.animationName || this.anim;
     this.once = true;
     el.loop = false;

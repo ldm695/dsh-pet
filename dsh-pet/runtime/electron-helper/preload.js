@@ -19,8 +19,10 @@
 //       onPetHit：订阅「你被撞了」→ 用新初速 startThrow 抛出去（与浏览器 onHit 同语义）。
 const { contextBridge, ipcRenderer } = require('electron');
 const { MOVE_TARGETS_CHANNELS } = require('./move-ipc.js');
+const moveDiagnosticsEnabled = process.env.DSH_PET_MOVE_DIAGNOSTICS === '1';
 
 contextBridge.exposeInMainWorld('petBridge', {
+  moveDiagnosticsEnabled,
   setBounds(
     petId,
     x,

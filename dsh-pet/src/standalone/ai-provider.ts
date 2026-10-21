@@ -9,6 +9,8 @@ const PROVIDER = 'standalone';
 const MAX_INPUT_CHARS = 32_768;
 const MAX_OUTPUT_CHARS = 16_384;
 const MAX_EVENTS = 4096;
+const MAX_TEST_REPLY_CHARS = 256;
+const MAX_TEST_EVENTS = 128;
 const REQUESTS_PER_MINUTE = 6;
 const RATE_WINDOW_MS = 60_000;
 const testInputSchema = z
@@ -157,6 +159,14 @@ export function createStandaloneAi(
   let saving = false;
   let requests: ReadonlyArray<number> = [];
   let active: AbortController | undefined;
+  let testing = false;
+  let testController: AbortController | undefined;
+  const reserveRequestSlot = (): boolean => {
+    const recent = requests.filter((time) => now() - time < RATE_WINDOW_MS);
+    if (recent.length >= REQUESTS_PER_MINUTE) return false;
+    requests = [...recent, now()];
+    return true;
+  };
   const ready = () =>
     !disposed &&
     !paused &&
@@ -176,10 +186,8 @@ export function createStandaloneAi(
     const settings = store.current();
     const { request, signal: callerSignal } = parseRequest(options, settings);
     if (callerSignal?.aborted) throw new Error('Standalone AI request cancelled.');
-    if (active) throw new Error('Standalone AI is busy. Please wait.');
-    const recent = requests.filter((time) => now() - time < RATE_WINDOW_MS);
-    if (recent.length >= REQUESTS_PER_MINUTE) throw new Error('Standalone AI rate limit reached. Please wait.');
-    requests = [...recent, now()];
+    if (active || testing) throw new Error('Standalone AI is busy. Please wait.');
+    if (!reserveRequestSlot()) throw new Error('Standalone AI rate limit reached. Please wait.');
     const controller = new AbortController();
     active = controller;
     const abort = () => controller.abort();
@@ -267,6 +275,7 @@ export function createStandaloneAi(
       if (saving) throw new Error('Standalone AI settings are being saved.');
       saving = true;
       active?.abort();
+      testController?.abort();
       try {
         const result = await store.save(input);
         if (!disposed) paused = false;
@@ -316,8 +325,20 @@ export function createStandaloneAi(
         return { ok: false, message: '请先填写 API 密钥' };
       }
 
+      if (saving || active || testing) {
+        return { ok: false, message: 'AI 正在处理其他请求，请稍后重试。' };
+      }
+      if (!reserveRequestSlot()) {
+        return { ok: false, message: '请求过于频繁，请稍后再试。' };
+      }
+      testing = true;
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 15_000);
+      testController = controller;
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, 15_000);
       try {
         const testStream = sdkTextStream(
           testSettings,
@@ -326,14 +347,28 @@ export function createStandaloneAi(
           fetcher,
         );
         let reply = '';
+        let events = 0;
         for await (const chunk of testStream) {
+          if (controller.signal.aborted) {
+            return timedOut
+              ? { ok: false, message: '连接超时（15 秒未响应）：请检查网络连通性或服务器状态' }
+              : { ok: false, message: '连接测试已取消：设置已更改或服务已关闭。' };
+          }
+          if (++events > MAX_TEST_EVENTS) {
+            return { ok: false, message: '模型响应过大，连接测试已停止。' };
+          }
           if (chunk.refusal) {
             return { ok: false, message: '模型拒绝回答该测试请求' };
           }
           if (chunk.text) {
-            reply += chunk.text;
-            if (reply.length >= 40) break;
+            reply += chunk.text.slice(0, MAX_TEST_REPLY_CHARS - reply.length);
+            if (reply.length >= MAX_TEST_REPLY_CHARS) break;
           }
+        }
+        if (controller.signal.aborted) {
+          return timedOut
+            ? { ok: false, message: '连接超时（15 秒未响应）：请检查网络连通性或服务器状态' }
+            : { ok: false, message: '连接测试已取消：设置已更改或服务已关闭。' };
         }
         if (!reply.trim()) {
           return { ok: true, message: '连接成功！接口已成功响应。', reply: '(模型返回了空白内容)' };
@@ -341,7 +376,9 @@ export function createStandaloneAi(
         return { ok: true, message: '连接成功！模型响应正常。', reply: reply.trim() };
       } catch (error) {
         if (controller.signal.aborted) {
-          return { ok: false, message: '连接超时（15 秒未响应）：请检查网络连通性或服务器状态' };
+          return timedOut
+            ? { ok: false, message: '连接超时（15 秒未响应）：请检查网络连通性或服务器状态' }
+            : { ok: false, message: '连接测试已取消：设置已更改或服务已关闭。' };
         }
         if (isAuthenticationFailure(error)) {
           return { ok: false, message: '身份验证失败 (HTTP 401/403)：请检查 API 密钥是否正确' };
@@ -362,6 +399,9 @@ export function createStandaloneAi(
         return { ok: false, message: '连接失败：请检查接口兼容性、服务器状态与网络设置。' };
       } finally {
         clearTimeout(timer);
+        controller.abort();
+        if (testController === controller) testController = undefined;
+        testing = false;
       }
     },
     canWhisper: () => ready() && store.current().automaticWhispers,
@@ -372,6 +412,7 @@ export function createStandaloneAi(
     dispose() {
       disposed = true;
       active?.abort();
+      testController?.abort();
     },
   };
   function settingsModel(): string {

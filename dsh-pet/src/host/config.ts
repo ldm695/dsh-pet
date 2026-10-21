@@ -34,7 +34,7 @@
  * 本模块是 host 自包含实现（不 import src/shared —— 保持宿主边界简单）；
  * Electron 侧把成品拍平成渲染列表的纯逻辑在 src/shared/config.ts。
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 /** 位置角落白名单 */
@@ -203,13 +203,13 @@ function reportMigration(message: string, log: ((message: string) => void) | und
 }
 
 /**
- * 老用户一次性迁移：`main-config.json` → `main-config.jsonc`（**重命名**，内容一字不动）。
+ * 老用户一次性迁移：`main-config.json` → `main-config.jsonc`（内容一字不动）。
  *
  * 为什么改扩展名：用户层从「同步」起就是带 `//` 注释的 JSONC 原文，挂在 `.json` 名下名不副实
  * （编辑器会当严格 JSON 报错）。改成 `.jsonc` 后与包内默认 `config.jsonc` 同名同格式。
  *
  * 语义：新文件已存在 → 什么都不做（绝不用旧文件覆盖新文件，旧文件也保留）；
- * 旧文件不存在 → 什么都不做；重命名失败 → 保留旧文件并明确记录，本进程临时从旧路径读取，
+ * 旧文件不存在 → 什么都不做；迁移失败 → 保留旧文件并明确记录，本进程临时从旧路径读取，
  * 下一次启动重新尝试迁移。该回退仅用于迁移故障，不会成为长期双读。
  */
 export function migrateUserConfig(paths: ConfigPaths, log?: (message: string) => void): boolean {
@@ -225,7 +225,10 @@ export function migrateUserConfig(paths: ConfigPaths, log?: (message: string) =>
     return false;
   }
   try {
-    renameSync(legacy, paths.userFile);
+    // linkSync 在文件系统层原子创建目标名，并且目标已存在时必定失败；与 renameSync 不同，
+    // 它不会覆盖另一个进程刚创建的新配置。两个配置路径由调用方放在同一用户目录中，
+    // 因而位于同一卷，可用硬链接保留原文件内容/元数据，再移除旧名称完成迁移。
+    linkSync(legacy, paths.userFile);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     if (existsSync(paths.userFile)) {
@@ -235,6 +238,18 @@ export function migrateUserConfig(paths: ConfigPaths, log?: (message: string) =>
     failedUserConfigMigrations.add(migrationKey);
     reportMigration(
       `用户配置迁移失败；旧文件已保留，本进程将临时读取旧配置，下次启动会重试：${legacy} → ${paths.userFile}（${detail}）`,
+      log,
+      true,
+    );
+    return false;
+  }
+  try {
+    // 目标名已经安全创建；即使移除旧名称失败，用户数据仍在两个路径下可用。
+    unlinkSync(legacy);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    reportMigration(
+      `用户配置已安全迁移到新路径，但旧文件无法移除，已保留：${legacy}（${detail}）`,
       log,
       true,
     );

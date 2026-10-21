@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import {
   chmodSync,
   closeSync,
@@ -14,6 +14,7 @@ import {
   writeFileSync,
   constants,
 } from 'node:fs';
+import { chmod, lstat, open, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -37,6 +38,36 @@ function restrictFile(path: string): void {
     [path, '/inheritance:r', '/grant:r', `*${sid}:F`],
     { stdio: 'pipe', windowsHide: true },
   );
+}
+
+function runFile(file: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(file, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+    child.once('error', reject);
+    child.once('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`${file} failed: ${Buffer.concat(stderr).toString('utf8').trim() || `exit ${code}`}`));
+        return;
+      }
+      resolve(Buffer.concat(stdout).toString('utf8'));
+    });
+  });
+}
+
+async function restrictFileAsync(path: string): Promise<void> {
+  if (process.platform !== 'win32') {
+    await chmod(path, 0o600);
+    return;
+  }
+  const systemRoot = process.env.SystemRoot ?? 'C:\\Windows';
+  const identity = await runFile(join(systemRoot, 'System32', 'whoami.exe'), ['/user', '/fo', 'csv', '/nh']);
+  const sid = identity.match(/\bS-1-\d+(?:-\d+)+\b/)?.[0];
+  if (!sid) throw new Error('Cannot identify file owner');
+  await runFile(join(systemRoot, 'System32', 'icacls.exe'), [path, '/inheritance:r', '/grant:r', `*${sid}:F`]);
 }
 
 function configPath(home: string): string {
@@ -104,4 +135,58 @@ export function writePrivateJson(path: string, settings: unknown): void {
     unlinkSync(temporary);
     throw error;
   }
+}
+
+/** Atomically write a private file without blocking the event loop while bytes reach disk. */
+export async function writePrivateTextAsync(path: string, contents: string): Promise<void> {
+  const directoryPath = dirname(path);
+  const directory = await lstat(directoryPath);
+  if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error('Unsafe private file directory');
+
+  try {
+    const existing = await lstat(path);
+    if (!existing.isFile() || existing.isSymbolicLink() || existing.nlink > 1) {
+      throw new Error('Unsafe settings file');
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+
+  const temporary = join(directoryPath, `${process.pid}-${randomUUID()}.private-json.tmp`);
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+    // Lock down inherited Windows ACLs before writing any chat history to the file.
+    await restrictFileAsync(temporary);
+    await handle.writeFile(contents, 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+
+    // Recheck immediately before replacement; rename replaces the directory entry, not a link target.
+    try {
+      const existing = await lstat(path);
+      if (!existing.isFile() || existing.isSymbolicLink() || existing.nlink > 1) {
+        throw new Error('Unsafe settings file');
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    await rename(temporary, path);
+  } catch (error) {
+    if (handle) await handle.close().catch(() => {});
+    await unlink(temporary).catch(() => {});
+    throw error;
+  }
+}
+
+/** Atomically write a private JSON file without blocking the event loop while bytes reach disk. */
+export async function writePrivateJsonAsync(
+  path: string,
+  settings: unknown,
+  space?: string | number,
+): Promise<void> {
+  const serialized = JSON.stringify(settings, null, space);
+  if (serialized === undefined) throw new Error('Value is not serializable as JSON');
+  await writePrivateTextAsync(path, serialized);
 }

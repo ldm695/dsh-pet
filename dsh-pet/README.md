@@ -49,10 +49,10 @@ GitHub Releases 仅发布大众版。个人版及其专属图标保留在维护�
 
 ```powershell
 pnpm install --frozen-lockfile
-pnpm run build:exe:public
+pnpm run build:exe
 ```
 
-Portable EXE 输出到 `portable-dist/`。构建仅包含 EXE 使用的独立宿主、内嵌设置页、桌面 Helper 和素材；不生成 DSH Pet 浏览器客户端或 DSH 插件注册文件。
+`build:exe` 默认构建大众版，与 `build:exe:public` 等效。Portable EXE 输出到 `portable-dist/public/`。构建仅包含 EXE 使用的独立宿主、内嵌设置页、桌面 Helper 和素材；不生成 DSH Pet 浏览器客户端或 DSH 插件注册文件。个人版仍可通过维护者本机专用的 `build:exe:personal` 显式构建，产物不得上传到公开 Release。
 
 ## 相关文档
 
