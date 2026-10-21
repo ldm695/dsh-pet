@@ -7,6 +7,7 @@ directories:
 extraMetadata:
   main: desktop-main.cjs
   dshPetEdition: personal
+  description: 哦鲸鲸
 files:
   - desktop-main.cjs
   - package.json

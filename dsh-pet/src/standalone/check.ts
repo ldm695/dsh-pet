@@ -19,7 +19,6 @@ import {
 } from '../host/helper-process';
 import type { StandaloneLogger } from './context';
 import { configPathsFor, describePets, isDesktopVisible } from './options';
-import { deepseekApiKey, deepseekCurrentModel } from './deepseek';
 
 /** 包版本（读不到就 unknown）—— 体检报告与启动横幅共用 */
 export function packageVersion(root: string): string {
@@ -49,9 +48,8 @@ export function runCheck(logger: StandaloneLogger): number {
     `内置默认配置    ${paths.defaultFile}${existsSync(paths.defaultFile) ? '' : '  ✗ 缺失'}`,
     `Electron        ${electron ?? `未发现（首次运行会下载到 ${electronLandingDir()}）`}`,
     `图形显示环境    ${hasGraphicalDisplay() ? '有' : '无（桌面小窗会跳过；远程桌面/Xvfb 可设 DSH_PET_DESKTOP_FORCE=1）'}`,
-    `DeepSeek API    ${deepseekApiKey() ? `已配置（模型 ${deepseekCurrentModel()}）` : '未配置（余额 / 碎碎念 / 对话不可用）'}`,
+    '独立 AI         密钥、模型端点与模型由本机设置页管理；此体检不会读取密钥或测试连接',
   ];
-
   const fail = (message: string): number => {
     for (const line of lines) logger.info(line);
     logger.error(message);

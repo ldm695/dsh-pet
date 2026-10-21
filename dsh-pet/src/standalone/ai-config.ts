@@ -4,7 +4,7 @@ import { saveProtectedApiKey } from './api-key-store';
 import { readAiSettings, writeAiSettings } from './ai-storage';
 
 export interface StandaloneAiPublicSettings {
-  protocol: 'openai-compatible' | 'anthropic';
+  protocol: 'openai-compatible' | 'anthropic' | 'deepseek-official';
   baseUrl: string;
   model: string;
   enabled: boolean;
@@ -55,7 +55,7 @@ function containsControlChar(s: string): boolean {
 }
 
 const fields = {
-  protocol: z.enum(['openai-compatible', 'anthropic']),
+  protocol: z.enum(['openai-compatible', 'anthropic', 'deepseek-official']),
   baseUrl: z.string().max(2048).refine(safeEndpoint),
   model: z
     .string()
@@ -84,6 +84,9 @@ export function validateSettings(input: unknown, previous: Readonly<StandaloneAi
     const { clearApiKey, ...values } = patch;
     const apiKey = clearApiKey ? '' : values.apiKey || previous.apiKey;
     const next = persistedSchema.parse({ ...previous, ...values, apiKey });
+    if (next.protocol === 'deepseek-official' && next.baseUrl !== 'https://api.deepseek.com') {
+      throw new Error('DeepSeek official API must use its official endpoint.');
+    }
     if (next.enabled && (!next.model || !next.baseUrl || !next.apiKey)) throw new Error('Incomplete settings');
     return next;
   } catch {
@@ -122,14 +125,10 @@ export function createAiConfig(home: string, options: AiConfigOptions = {}): AiC
   try {
     const loaded = readAiSettings(home);
     if (loaded !== undefined) {
-      // Older experimental builds stored the key in the JSON file. Prefer the DPAPI key; only
-      // accept the legacy field as a one-time migration source, then the next save removes it.
-      const legacyKey =
-        loaded && typeof loaded === 'object' && typeof (loaded as Record<string, unknown>).apiKey === 'string'
-          ? String((loaded as Record<string, unknown>).apiKey)
-          : '';
+      // Legacy plaintext keys are migrated before the store is created. Never fall back to
+      // reading them here: a failed migration must not silently keep using an exposed secret.
       settings = Object.freeze(
-        validateSettings({ ...(loaded as Record<string, unknown>), apiKey: initial.apiKey || legacyKey }, initial),
+        validateSettings({ ...(loaded as Record<string, unknown>), apiKey: initial.apiKey }, initial),
       );
     }
   } catch {

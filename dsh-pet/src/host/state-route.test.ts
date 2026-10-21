@@ -28,7 +28,14 @@ describe('createStateRoute', () => {
     tempDirs.push(dir);
     const paths = { dsh: join(dir, 'dsh.json'), codex: join(dir, 'codex.json'), claude: join(dir, 'claude.json') };
     const now = Date.now();
-    writeFileSync(paths.codex, JSON.stringify({ updatedAt: now, state: 'thinking', revision: 1, eventAt: now - 100 }));
+    writeFileSync(
+      paths.codex,
+      JSON.stringify({
+        version: 2,
+        updatedAt: now,
+        agents: [{ key: 'root', state: 'thinking', revision: 1, startedAt: now - 100, eventAt: now - 100 }],
+      }),
+    );
     const state = new PollStateStore();
     const external = createExternalWorkStatusRoute(new WorkStatusStore(), () => {});
     const route = createStateRoute({ state, isStandalone: () => true, bridgePaths: paths, externalWorkSnapshot: external.snapshot });
@@ -92,6 +99,7 @@ describe('createStateRoute', () => {
     writeFileSync(
       paths.dsh,
       JSON.stringify({
+        version: 2,
         updatedAt: now,
         agents: [{ key: 'root', state: 'working', revision: 2, startedAt: now - 500, eventAt: now }],
         notification: { revision: 3, title: 'Done', body: 'Finished', createdAt: now, sourceForeground: false },
@@ -100,6 +108,7 @@ describe('createStateRoute', () => {
     writeFileSync(
       paths.codex,
       JSON.stringify({
+        version: 2,
         updatedAt: now,
         agents: [
           { key: 'root', state: 'working', revision: 4, startedAt: now - 400, eventAt: now - 50 },
@@ -107,7 +116,14 @@ describe('createStateRoute', () => {
         ],
       }),
     );
-    writeFileSync(paths.claude, JSON.stringify({ updatedAt: now, state: 'thinking', revision: 5, eventAt: now - 20 }));
+    writeFileSync(
+      paths.claude,
+      JSON.stringify({
+        version: 2,
+        updatedAt: now,
+        agents: [{ key: 'root', state: 'thinking', revision: 5, startedAt: now - 20, eventAt: now - 20 }],
+      }),
+    );
     const state = new PollStateStore();
     const route = createStateRoute({ state, isStandalone: () => true, bridgePaths: paths });
 

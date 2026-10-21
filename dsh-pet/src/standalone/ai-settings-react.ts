@@ -4,7 +4,7 @@ import { jsx } from 'react/jsx-runtime';
 import { SettingsCardHeader, SettingsHelp, SettingsPageHeader, SettingsPageTab, SettingsPageTabs } from './settings-components';
 import { AI_SETTINGS_LAYOUT_CSS, SETTINGS_COMPONENT_CSS } from './settings-style';
 
-type Protocol = 'openai-compatible' | 'anthropic';
+type Protocol = 'openai-compatible' | 'anthropic' | 'deepseek-official';
 interface AiForm {
   protocol: Protocol;
   baseUrl: string;
@@ -27,6 +27,7 @@ const INITIAL: AiForm = {
   chatMemoryRounds: 5, chatImageLimit: 10, hasKey: false,
 };
 const PROTOCOLS: Array<{ value: Protocol; label: string }> = [
+  { value: 'deepseek-official', label: 'DeepSeek' },
   { value: 'openai-compatible', label: 'OpenAI 兼容' },
   { value: 'anthropic', label: 'Anthropic' },
 ];
@@ -133,7 +134,7 @@ export function AiSettingsPage(): ReturnType<typeof jsx> {
       if (!alive) return;
       const next: AiForm = {
         ...INITIAL,
-        protocol: data.protocol === 'anthropic' ? 'anthropic' : 'openai-compatible',
+        protocol: data.protocol === 'anthropic' || data.protocol === 'deepseek-official' ? data.protocol : 'openai-compatible',
         baseUrl: typeof data.baseUrl === 'string' ? data.baseUrl : '',
         model: typeof data.model === 'string' ? data.model : '',
         enabled: data.enabled === true,
@@ -172,6 +173,15 @@ export function AiSettingsPage(): ReturnType<typeof jsx> {
 
   const update = <K extends keyof AiForm>(key: K, value: AiForm[K]): void => {
     setForm((current) => ({ ...current, [key]: value }));
+    setTest(null);
+  };
+
+  const updateProtocol = (protocol: Protocol): void => {
+    setForm((current) => ({
+      ...current,
+      protocol,
+      ...(protocol === 'deepseek-official' ? { baseUrl: 'https://api.deepseek.com' } : {}),
+    }));
     setTest(null);
   };
 
@@ -288,9 +298,12 @@ export function AiSettingsPage(): ReturnType<typeof jsx> {
                 children: [
                   jsx('div', {
                     className: 'dsh-pet-cfg__field',
-                    children: [jsx('span', { className: 'dsh-pet-cfg__flabel', children: '接口协议' }), jsx(ProtocolPicker, { value: form.protocol, disabled: busy, onChange: (value: Protocol) => update('protocol', value) })],
+                    children: [jsx('span', { className: 'dsh-pet-cfg__flabel', children: '接口协议' }), jsx(ProtocolPicker, { value: form.protocol, disabled: busy, onChange: updateProtocol })],
                   }),
-                  labelField('接口地址（Base URL）', textInput('baseUrl', { type: 'url', maxLength: 2048, placeholder: 'https://example.com/v1', spellCheck: false }), '填写服务商提供的基础接口地址（支持 HTTP 与 HTTPS，通常以 /v1 结尾）。不要把密钥放进地址。', true),
+                  labelField('接口地址（Base URL）', textInput('baseUrl', { type: 'url', maxLength: 2048, placeholder: form.protocol === 'deepseek-official' ? 'https://api.deepseek.com' : 'https://example.com/v1', spellCheck: false, readOnly: form.protocol === 'deepseek-official' }), form.protocol === 'deepseek-official' ? 'DeepSeek 使用固定官方地址。有效密钥可通过桌宠右键菜单查询余额。' : '填写服务商提供的基础接口地址（支持 HTTP 与 HTTPS，通常以 /v1 结尾）。不要把密钥放进地址。', true),
+                  form.protocol !== 'deepseek-official'
+                    ? jsx('p', { className: 'ai-settings__notice is-wide', role: 'status', children: '当前接口协议不支持余额查询。选择“DeepSeek”后，可使用桌宠右键菜单查询余额。' })
+                    : null,
                   labelField('模型名称', textInput('model', { type: 'text', maxLength: 200, placeholder: '填写服务商的模型 ID，例如 deepseek-chat', spellCheck: false })),
                   jsx('label', {
                     className: 'dsh-pet-cfg__field',

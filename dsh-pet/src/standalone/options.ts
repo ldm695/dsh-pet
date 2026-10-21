@@ -30,7 +30,9 @@ export const USAGE = `dsh-pet 独立模式（不需要 DSH）
 
 说明：
   桌宠在独立模式下以「透明置顶小窗」运行；浏览器内浮层需要有 DSH 网页，独立模式不提供。
-  设置 DSH_PET_STANDALONE_DEEPSEEK_API_KEY 后可用 DeepSeek API 余额、碎碎念与对话。
+  独立 AI 设置页支持 DeepSeek、OpenAI 兼容和 Anthropic；模型端点、密钥与模型在设置页管理。
+  DeepSeek 余额查询可使用环境变量 DSH_PET_STANDALONE_DEEPSEEK_API_KEY；通用 DEEPSEEK_API_KEY 不再读取。
+  应用专用变量可在首次配置时提供初始密钥；保存设置后密钥写入 DPAPI，而非明文 JSON。
   系统通知在宠物窗口失焦时提示对话回复；安装 dsh-pet-work-status-bridge 后，
   还可接收 DSH 当前选中对话的完成、失败、权限申请和待回答问题通知。
 `;
@@ -73,6 +75,7 @@ export function configPathsFor(root: string, home: string): ConfigPaths {
   return {
     defaultFile: join(root, 'assets', 'config.jsonc'),
     userFile: join(userRoot, 'main-config.jsonc'),
+    // 供 host/config.ts 迁移使用；仅迁移失败的当前进程会临时回退读取。
     legacyUserFile: join(userRoot, 'main-config.json'),
     petDir: join(userRoot, 'pet'),
   };

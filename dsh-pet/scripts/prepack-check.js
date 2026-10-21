@@ -16,7 +16,7 @@ const required = [
   'lib/standalone.js',
   'lib/standalone-settings.js',
   'runtime/electron-helper/main.js',
-  'runtime/electron-helper/pointer-target.js',
+  'runtime/electron-helper/pet-geometry.js',
   'runtime/electron-helper/host-liveness.js',
   'runtime/electron-helper/topmost-watchdog.js',
   'runtime/electron-helper/dpi-linearization.js',

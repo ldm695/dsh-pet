@@ -3,12 +3,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
-import {
-  LEGACY_WORK_STATUS_AGENT_KEY,
-  normalizeWorkStatusAgents,
-  WorkStatusAssignmentManager,
-} from './work-status-assignment.ts';
-import type { WorkStatusAgentSnapshot, WorkStatusSnapshot } from './work-status.ts';
+import { WorkStatusAssignmentManager } from './work-status-assignment.ts';
+import type { WorkStatusAgentSnapshot } from './work-status.ts';
 
 function agent(
   key: string,
@@ -125,28 +121,13 @@ describe('WorkStatusAssignmentManager', () => {
     assert.ok(next.assignments[0].assignmentRevision > previous.assignments[0].assignmentRevision);
   });
 
-  test('normalizes legacy snapshots and treats an explicit empty agents list as authoritative', () => {
-    const legacy: WorkStatusSnapshot = { state: 'working', task: 'legacy task', sourceName: 'DSH' };
-    assert.deepEqual(normalizeWorkStatusAgents(legacy, 19), [
-      {
-        key: LEGACY_WORK_STATUS_AGENT_KEY,
-        state: 'working',
-        sourceName: 'DSH',
-        revision: 19,
-        startedAt: 0,
-      },
-    ]);
-    assert.deepEqual(normalizeWorkStatusAgents({ ...legacy, agents: [] }, 20), []);
-    assert.deepEqual(normalizeWorkStatusAgents({ ...legacy, state: null }, 21), []);
-  });
-
-  test('the Electron shared-core bundle exposes the same assignment behavior as the browser source', () => {
+  test('the Electron shared-core bundle exposes the same assignment behavior without a legacy normalizer', () => {
     const source = readFileSync(new URL('../../runtime/electron-helper/shared-core.js', import.meta.url), 'utf8');
     const context = vm.createContext({});
     vm.runInContext(source, context);
     const bundledShared = context.PetShared as typeof import('./index.ts');
     assert.equal(typeof bundledShared.WorkStatusAssignmentManager, 'function');
-    assert.equal(typeof bundledShared.normalizeWorkStatusAgents, 'function');
+    assert.equal('normalizeWorkStatusAgents' in bundledShared, false);
 
     const agents = [agent('agent-a', 1), agent('agent-b', 2)];
     const sourceResult = new WorkStatusAssignmentManager(() => 0).reconcile(agents, ['pet-1', 'pet-2']);

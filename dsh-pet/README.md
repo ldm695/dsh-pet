@@ -12,7 +12,9 @@ GitHub Releases 仅发布大众版。个人版及其专属图标保留在维护�
 
 设置页和托盘菜单中的显示选项为「仅桌面」与「不显示」。旧配置会自动兼容：`both` 转为 `desktop`，`web` 转为 `none`。
 
-配置和用户数据默认位于 `%USERPROFILE%\.dsh\dsh-pet\`；若设置了 `DSH_HOME`，则使用对应目录。独立 AI 设置可配置 OpenAI 兼容或 Anthropic 接口。Windows 上的 API 密钥使用当前用户 DPAPI 加密；密钥不会从设置页回显。
+配置和用户数据默认位于 `%USERPROFILE%\.dsh\dsh-pet\`；若设置了 `DSH_HOME`，则使用对应目录。独立 AI 设置可配置 DeepSeek、OpenAI 兼容或 Anthropic 接口。Windows 上保存的 API 密钥使用当前用户 DPAPI 加密；密钥不会从设置页回显。旧版保存在 JSON 中的明文密钥会在成功迁移到 DPAPI 后移除；迁移失败时会保留原文件并记录提示。
+
+环境变量 `DSH_PET_STANDALONE_DEEPSEEK_API_KEY` 可作为 DeepSeek 余额查询的环境密钥；首次配置独立 AI 时也可作为初始密钥，保存后写入 DPAPI 加密存储。旧版通用环境变量 `DEEPSEEK_API_KEY` 已停止读取；请改用应用专用变量或独立 AI 设置页。
 
 设置页分为「桌宠设置」「全局设置」和「独立 AI 设置」。全局设置中的主题选项同时控制设置页和桌宠右键菜单；选择「自适应主题」时跟随 Windows 外观。
 
@@ -38,6 +40,8 @@ GitHub Releases 仅发布大众版。个人版及其专属图标保留在维护�
 - [Claude Code 工作状态桥接](./claude-code-pet-work-status-bridge/README.md)
 
 启用桌宠设置中的「工作状态联动」后即可使用。每个客户端将自己的多个会话与 Agent 合并为一个工作状态；桌宠数量不足时，未分配的客户端等待空位。DSH Desktop 桥接还可在窗口失焦时转发当前会话的通知。
+
+工作状态桥接使用 `version: 2` 和 `agents[]` 数据格式。旧版桥接文件不会再按单状态格式兼容；检测到旧版时，应用日志会提示更新对应插件。请升级 DSH Desktop、Codex 或 Claude Code 的桥接插件后再使用工作状态联动。
 
 ## 从源码构建
 

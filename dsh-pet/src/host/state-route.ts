@@ -13,8 +13,7 @@ interface StateStoreAccess {
 }
 
 interface StandaloneBridge {
-  revision?: unknown;
-  state?: unknown;
+  version?: unknown;
   eventAt?: unknown;
   updatedAt?: unknown;
   agents?: unknown;
@@ -41,6 +40,7 @@ export function createStateRoute(
   let lastStandaloneBridgeFingerprint = '';
   const standaloneAgentRevisions = new Map<string, { signature: string; revision: number }>();
   const lastStandaloneNotificationRevisions = new Map<string, string>();
+  const warnedBridgeContracts = new Map<string, string>();
 
   const stateResponse = (snapshot: PollState): StateSnapshot => ({
     ...snapshot,
@@ -59,15 +59,41 @@ export function createStateRoute(
     const codexBridge = readBridge(deps.bridgePaths.codex);
     const claudeBridge = readBridge(deps.bridgePaths.claude);
     const now = Date.now();
+    const sources = [
+      { source: 'dsh', bridge: dshBridge },
+      { source: 'codex', bridge: codexBridge },
+      { source: 'claude', bridge: claudeBridge },
+    ];
+    const supportsBridgeContract = (source: string, bridge: StandaloneBridge | undefined): boolean => {
+      if (!bridge) return false;
+      const reason =
+        bridge.version !== 2
+          ? `version=${String(bridge.version ?? 'missing')}`
+          : !Array.isArray(bridge.agents)
+            ? 'agents array is missing'
+            : '';
+      if (!reason) {
+        warnedBridgeContracts.delete(source);
+        return true;
+      }
+      if (warnedBridgeContracts.get(source) !== reason) {
+        warnedBridgeContracts.set(source, reason);
+        console.warn(
+          `[dsh-pet] 忽略 ${source} 工作状态桥接文件（${reason}）；请更新对应桥接插件到支持 version: 2 和 agents[] 的版本。`,
+        );
+      }
+      return false;
+    };
     const fresh = (bridge: StandaloneBridge | undefined): boolean => {
       const updatedAt = Number(bridge?.updatedAt);
       return Number.isFinite(updatedAt) && now - updatedAt < 3500 && now >= updatedAt;
     };
-    const freshBridges = [
-      { source: 'dsh', bridge: dshBridge },
-      { source: 'codex', bridge: codexBridge },
-      { source: 'claude', bridge: claudeBridge },
-    ].filter(({ bridge }) => fresh(bridge));
+    const compatibleSources = new Set(
+      sources.filter(({ source, bridge }) => supportsBridgeContract(source, bridge)).map(({ source }) => source),
+    );
+    const freshBridges = sources.filter(
+      ({ source, bridge }) => compatibleSources.has(source) && fresh(bridge),
+    );
     const activeStates = new Set(['thinking', 'working', 'result', 'waiting', 'success', 'error']);
     const allBridgeAgents: Array<{
       key: string;
@@ -80,45 +106,30 @@ export function createStateRoute(
       task?: string | null;
     }> = freshBridges.flatMap(({ source, bridge }) => {
       const bridgeAgentList = bridge?.agents;
-      if (Array.isArray(bridgeAgentList)) {
-        return bridgeAgentList.flatMap((rawAgent) => {
-          if (!rawAgent || typeof rawAgent !== 'object') return [];
-          const agent = rawAgent as Record<string, unknown>;
-          if (
-            typeof agent.key !== 'string' ||
-            typeof agent.state !== 'string' ||
-            !activeStates.has(agent.state) ||
-            !Number.isSafeInteger(agent.revision) ||
-            !Number.isFinite(agent.startedAt)
-          ) {
-            return [];
-          }
-          return [
-            {
-              key: `${source}:${agent.key}`,
-              state: agent.state as HostWorkStatusState,
-              sourceName: source === 'codex' ? 'Codex' : source === 'claude' ? 'Claude Code' : 'DeepSeek Harness',
-              revision: agent.revision as number,
-              startedAt: agent.startedAt as number,
-              eventAt: Number(agent.eventAt ?? bridge?.eventAt ?? bridge?.updatedAt) || now,
-              source,
-            },
-          ];
-        });
-      }
-      const state = bridge?.state;
-      if (typeof state !== 'string' || !activeStates.has(state)) return [];
-      return [
-        {
-          key: `legacy:${source}`,
-          state: state as HostWorkStatusState,
-          sourceName: source === 'codex' ? 'Codex' : source === 'claude' ? 'Claude Code' : 'DeepSeek Harness',
-          revision: Number(bridge?.revision) || 0,
-          startedAt: Number(bridge?.eventAt ?? bridge?.updatedAt) || now,
-          eventAt: Number(bridge?.eventAt ?? bridge?.updatedAt) || now,
-          source,
-        },
-      ];
+      return (bridgeAgentList as unknown[]).flatMap((rawAgent) => {
+        if (!rawAgent || typeof rawAgent !== 'object') return [];
+        const agent = rawAgent as Record<string, unknown>;
+        if (
+          typeof agent.key !== 'string' ||
+          typeof agent.state !== 'string' ||
+          !activeStates.has(agent.state) ||
+          !Number.isSafeInteger(agent.revision) ||
+          !Number.isFinite(agent.startedAt)
+        ) {
+          return [];
+        }
+        return [
+          {
+            key: `${source}:${agent.key}`,
+            state: agent.state as HostWorkStatusState,
+            sourceName: source === 'codex' ? 'Codex' : source === 'claude' ? 'Claude Code' : 'DeepSeek Harness',
+            revision: agent.revision as number,
+            startedAt: agent.startedAt as number,
+            eventAt: Number(agent.eventAt ?? bridge?.eventAt ?? bridge?.updatedAt) || now,
+            source,
+          },
+        ];
+      });
     });
     const external = deps.externalWorkSnapshot?.();
     if (external)
@@ -175,6 +186,7 @@ export function createStateRoute(
     const dshNotificationRevision = `${String(dshNotification?.createdAt ?? '')}:${String(dshNotification?.revision ?? '')}`;
     const dshNotificationCreatedAt = Number(dshNotification?.createdAt);
     if (
+      compatibleSources.has('dsh') &&
       fresh(dshBridge) &&
       dshNotificationRevision.length > 0 &&
       dshNotificationRevision !== lastStandaloneNotificationRevisions.get('dsh') &&

@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { buildDeskGeometry } = require('../../runtime/electron-helper/desktop-geometry.js');
-const { spriteHitRect, pointerZone } = require('../../runtime/electron-helper/pointer-target.js');
+const { HIT_BOX, CANVAS_H, STAGE_W, FEET_Y } = require('../../runtime/electron-helper/pet-geometry.js');
 
 const primary = {
   id: 1,
@@ -49,15 +49,11 @@ test('irregular multi-screen layouts retain per-screen boundaries, negative orig
   assert.equal(geo.areas.length, 2, 'never fill the gaps between physical screens');
 });
 
-test('physical top alignment includes bottomPad and matches the actual clickable body', () => {
+test('physical top alignment accounts for the pet body inset without window-margin hit testing', () => {
   const geo = buildDeskGeometry([primary], 1, 'darwin');
   const size = 150;
-  const margin = size / 2;
-  const y = geo.areas[0].y - size * geo.topInsetRatio;
-  const bounds = { x: 100, y: y - margin, width: size + 2 * margin, height: 242 };
-  const hit = spriteHitRect(bounds);
-  assert.equal(hit.top, 0);
-  const centerX = (hit.left + hit.right) / 2;
-  assert.equal(pointerZone(bounds, { x: centerX, y: hit.top - 1 }), 'margin');
-  assert.equal(pointerZone(bounds, { x: centerX, y: hit.top + 1 }), 'body');
+  const bodyTopOffset = (size * (HIT_BOX.y0 + CANVAS_H - FEET_Y)) / STAGE_W;
+  const petRootY = geo.areas[0].y - size * geo.topInsetRatio;
+  assert.equal(geo.topInsetRatio, (HIT_BOX.y0 + CANVAS_H - FEET_Y) / STAGE_W);
+  assert.equal(petRootY + bodyTopOffset, geo.areas[0].y);
 });

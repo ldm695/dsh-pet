@@ -33,15 +33,12 @@ export const deepseekOfficial: BalanceProvider = {
         ...(fullBalance === undefined ? {} : { fullBalance }),
       };
     });
-    const primary = wallets.find((wallet) => wallet.currency === 'CNY') ?? wallets[0];
     return {
       ok: true,
       provider,
       shape: 'money',
       data: {
-        ...(wallets.length > 1 ? { wallets } : {}),
-        // Additive compatibility for older renderers which only understand one wallet.
-        ...primary,
+        wallets,
         tier: deepseekPricingTier(),
       },
     };

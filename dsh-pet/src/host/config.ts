@@ -143,8 +143,10 @@ function readJsonc(path: string): Record<string, unknown> | undefined {
  * （这正是「保存把用户精调配置抹掉」那次老 bug 的复发路径）。
  *
  * 文件不存在 / 损坏 → undefined（调用方按「无既有字段」处理，不阻塞保存）。
+ * 旧路径只会在本进程迁移失败且新文件仍不存在时临时回退读取；下一进程会重新迁移。
  */
 export function readUserConfig(paths: ConfigPaths): Record<string, unknown> | undefined {
+  migrateUserConfig(paths);
   const file = effectiveUserFile(paths);
   return file ? readJsonc(file) : undefined;
 }
@@ -160,6 +162,7 @@ export function readUserConfig(paths: ConfigPaths): Record<string, unknown> | un
  * 文件不存在 → false（没有东西可丢，正常首次保存）。
  */
 export function userConfigUnparsable(paths: ConfigPaths): boolean {
+  migrateUserConfig(paths);
   const file = effectiveUserFile(paths);
   return file !== undefined && readJsonc(file) === undefined;
 }
@@ -170,18 +173,33 @@ export interface ConfigPaths {
   defaultFile: string;
   /** ~/.dsh/dsh-pet/main-config.jsonc（用户主配置，可编辑层；JSONC——允许注释） */
   userFile: string;
-  /** 旧版路径 ~/.dsh/dsh-pet/main-config.json：读取回落 + 启动时迁移（见 migrateUserConfig） */
+  /** 旧版路径 ~/.dsh/dsh-pet/main-config.json：迁移来源；仅迁移失败的当前进程临时回退读取 */
   legacyUserFile?: string;
   /** ~/.dsh/dsh-pet/pet（文件宠物目录） */
   petDir: string;
 }
 
-/** 实际生效的用户层文件：优先 .jsonc；不存在则回落到旧的 .json（迁移前的老用户）；
- *  两者都不存在 → undefined（首次使用，无用户层）。 */
+/** 迁移只在当前进程对同一对路径尝试一次；失败后旧文件原样保留，后续启动可再试。 */
+const attemptedUserConfigMigrations = new Set<string>();
+const failedUserConfigMigrations = new Set<string>();
+
+/** 实际生效的用户层文件：新 .jsonc 始终优先；只有本进程迁移失败时才临时回退旧 .json。 */
 function effectiveUserFile(paths: ConfigPaths): string | undefined {
   if (existsSync(paths.userFile)) return paths.userFile;
-  if (paths.legacyUserFile && existsSync(paths.legacyUserFile)) return paths.legacyUserFile;
-  return undefined;
+  const legacy = paths.legacyUserFile;
+  if (!legacy) return undefined;
+  const migrationKey = `${legacy}\0${paths.userFile}`;
+  return failedUserConfigMigrations.has(migrationKey) && existsSync(legacy) ? legacy : undefined;
+}
+
+function reportMigration(message: string, log: ((message: string) => void) | undefined, warning = false): void {
+  if (log) {
+    log(message);
+  } else if (warning) {
+    console.warn('dsh-pet: ' + message);
+  } else {
+    console.info('dsh-pet: ' + message);
+  }
 }
 
 /**
@@ -190,18 +208,39 @@ function effectiveUserFile(paths: ConfigPaths): string | undefined {
  * 为什么改扩展名：用户层从「同步」起就是带 `//` 注释的 JSONC 原文，挂在 `.json` 名下名不副实
  * （编辑器会当严格 JSON 报错）。改成 `.jsonc` 后与包内默认 `config.jsonc` 同名同格式。
  *
- * 语义：新文件已存在 → 什么都不做（绝不用旧文件覆盖新文件）；旧文件不存在 → 什么都不做；
- * 重命名失败（占用/权限）→ 静默放过，读取侧对旧路径有回落，功能不受影响。
+ * 语义：新文件已存在 → 什么都不做（绝不用旧文件覆盖新文件，旧文件也保留）；
+ * 旧文件不存在 → 什么都不做；重命名失败 → 保留旧文件并明确记录，本进程临时从旧路径读取，
+ * 下一次启动重新尝试迁移。该回退仅用于迁移故障，不会成为长期双读。
  */
 export function migrateUserConfig(paths: ConfigPaths, log?: (message: string) => void): boolean {
   const legacy = paths.legacyUserFile;
-  if (!legacy || !existsSync(legacy) || existsSync(paths.userFile)) return false;
+  if (!legacy || !existsSync(legacy)) return false;
+  const migrationKey = `${legacy}\0${paths.userFile}`;
+  if (attemptedUserConfigMigrations.has(migrationKey)) return false;
+  attemptedUserConfigMigrations.add(migrationKey);
+
+  // 必须先检查新路径；新文件始终优先，绝不覆盖或删除并存的旧文件。
+  if (existsSync(paths.userFile)) {
+    reportMigration(`检测到新旧用户配置并存；保留旧文件并以新配置为准：${legacy}`, log, true);
+    return false;
+  }
   try {
     renameSync(legacy, paths.userFile);
-  } catch {
-    return false; // 迁移失败：读取侧回落旧路径，不影响使用
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (existsSync(paths.userFile)) {
+      reportMigration(`迁移期间新配置文件已出现；保留旧文件并以新配置为准：${legacy}`, log, true);
+      return false;
+    }
+    failedUserConfigMigrations.add(migrationKey);
+    reportMigration(
+      `用户配置迁移失败；旧文件已保留，本进程将临时读取旧配置，下次启动会重试：${legacy} → ${paths.userFile}（${detail}）`,
+      log,
+      true,
+    );
+    return false;
   }
-  log?.(`用户配置已迁移到 JSONC：${legacy} → ${paths.userFile}`);
+  reportMigration(`用户配置已迁移到 JSONC：${legacy} → ${paths.userFile}`, log);
   return true;
 }
 
@@ -617,11 +656,12 @@ function petPersonaField(own: unknown, label: string, id: string): { whisperProm
 export function readAllConfig(paths: ConfigPaths): Record<string, Record<string, unknown>> {
   const base = readJsonc(paths.defaultFile);
   if (!base) throw new Error('dsh-pet: 内置默认配置缺失或解析失败（安装损坏）：' + paths.defaultFile);
+  migrateUserConfig(paths);
   const basePets = Array.isArray(base.pets) ? (base.pets as Record<string, unknown>[]) : [];
   const seenIds = new Set<string>();
   const out: Record<string, Record<string, unknown>> = {};
 
-  // main 条目：内置默认 ← main-config.jsonc（可编辑层；迁移前的老用户回落到 main-config.json）
+  // main 条目：内置默认 ← main-config.jsonc（旧 .json 只在本进程迁移失败时临时回退）
   const userFile = effectiveUserFile(paths);
   const mainOverlay = userFile ? readJsonc(userFile) : undefined;
   if (userFile && !mainOverlay) {

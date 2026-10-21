@@ -22,6 +22,8 @@
 
 桥接文件默认位于 `%USERPROFILE%\.dsh\dsh-pet\codex-work-status-bridge.json`，与 DSH 桥接文件分开保存。若 DSH 使用自定义目录，可为 Codex 进程设置 `DSH_HOME`；也可通过 `CODEX_PET_BRIDGE_PATH` 指定完整文件路径。Codex 插件 hooks 需要在插件安装后由用户审核并信任。
 
+桥接协议要求写入 `version: 2` 和 `agents[]`。若桌宠应用日志提示忽略旧版桥接文件，请更新此 Codex 插件；旧版单状态文件不再兼容。
+
 ## 本地安装
 
 先克隆本仓库，并在 Codex CLI 中把仓库根目录添加为本地 marketplace：

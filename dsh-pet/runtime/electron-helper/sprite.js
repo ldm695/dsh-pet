@@ -451,9 +451,6 @@ class PetSprite {
         toScreen(this.bottomPad),
         fly ? toScreen(fly.vx) : 0,
         fly ? toScreen(fly.vy) : 0,
-        // Window margins define the body hit target and remain asymmetric when the tooltip expands upward.
-        toScreen(this.margin.l),
-        toScreen(this.margin.t),
         // The shared transparent overlay's native mouse-passthrough poll runs in screen pixels.
         // Keep its per-pet hit rectangle current even before any menu/drag input-region update;
         // otherwise the poll sees no body and can immediately undo setInteractive(true).
@@ -1995,9 +1992,8 @@ class PetSprite {
       petX: this.pos.x,
       petY: this.pos.y,
     };
-    // 拖拽信号（桌面端专有）：主进程的兜底穿透通道按**光标与窗口矩形**判定，而窗口比宠物身体大一圈；
-    // 拖拽中宠物滞后于光标，光标可能跑到窗口外→窗口翻回穿透→本窗口收不到 pointermove/pointerup
-    // （宠物"飞"出去，见 pointer-target.js）。这里上报"我正在用输入"，主进程据此绝不翻回穿透。
+    // 拖拽信号（桌面端专有）：宠物会滞后于光标移动；上报输入占用，让共享 overlay 保持捕获，
+    // 确保拖拽中的 pointermove/pointerup 持续送达。
     this.syncInputBusy();
     // 弹弓：把「本次是否拉弓」与按下时的宠物中心（anchorX/Y）补进同一次拖拽状态。
     // 放在上报之后是为了不稀释上面那条源码守卫（它要求 busy 必须在建立状态后紧跟着上报）。
@@ -2022,7 +2018,7 @@ class PetSprite {
       if (this.animations.drag.length) {
         this.playOnce(S.pick(this.animations.drag));
       }
-      this.syncInputBusy(); // 拖拽成立：主进程兜底通道闭嘴（见 inputBusy）
+      this.syncInputBusy(); // 拖拽成立：通知共享 overlay 保持输入捕获
     }
     // 记录指针轨迹（screenX/Y 采样：与视口坐标只差常数偏移，速度一致；初速估算用；÷scale 进 CSS 系）
     const now = performance.now();
@@ -2045,7 +2041,7 @@ class PetSprite {
     this.syncInputBusy(); // 拖拽结束：交还给常规判定（幂等，非拖拽时多调一次不发 IPC）
     // 提示复位：点击/拖拽期间收起的悬浮提示，指针仍在命中区内就恢复（与浏览器 handlePointerUp 同一处理）。
     // 用 hitRect 几何判定而不是 getBoundingClientRect：命中区是窗口坐标里的权威几何，与 onMouseMove 同源。
-    // 位置有讲究：必须留在 syncInputBusy() 之后——pointer-target.test.ts 只扫本函数开头 400 字符
+    // 位置有讲究：必须留在 syncInputBusy() 之后——pointer-target.test.ts 会检查本函数的上报顺序
     // 来找上报调用，插到它前面会把上报挤出窗口（该断言守的是"松手必上报，否则窗口粘在可交互"）。
     if (e && Number.isFinite(e.clientX)) {
       const r = this.hitRect;
@@ -2402,6 +2398,7 @@ class PetSprite {
         if (response.ok) {
           const latest = await response.json();
           config.aiChatEnabled = !(latest && latest.main && latest.main.dshPetAiChatEnabled === false);
+          config.balanceQuerySupported = !(latest && latest.main && latest.main.dshPetBalanceQuerySupported === false);
         }
       } catch {}
     }
@@ -2411,7 +2408,9 @@ class PetSprite {
     const tools = STANDALONE
       ? []
       : [{ label: OPEN_TARGET === 'desktop' ? '打开 DeepSeek Harness' : '打开网站', action: 'open-site' }];
-    tools.push({ label: '查看余额', action: 'show-balance' });
+    if (!STANDALONE || config.balanceQuerySupported !== false) {
+      tools.push({ label: '查看余额', action: 'show-balance' });
+    }
     tools.push(
       { label: '碎碎念', action: 'whisper' },
       { label: '回到初始位置', action: 'home' },

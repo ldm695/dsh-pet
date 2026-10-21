@@ -1,7 +1,7 @@
 /** Keep the overlay hull separate from the pet's per-display movement areas. */
 'use strict';
 
-const { HIT_BOX, STAGE_W, CANVAS_H, FEET_Y } = require('./pointer-target.js');
+const { HIT_BOX, STAGE_W, CANVAS_H, FEET_Y } = require('./pet-geometry.js');
 
 function buildDeskGeometry(displays, primaryId, platform) {
   const workAreas = displays.map((d) => ({ ...d.workArea }));

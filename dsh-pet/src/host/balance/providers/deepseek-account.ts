@@ -60,14 +60,12 @@ export function parseAccountBalance(
       ...(fullBalance === undefined ? {} : { fullBalance }),
     };
   });
-  const primary = walletBalances.find((wallet) => wallet.currency === 'CNY') ?? walletBalances[0];
   return {
     ok: true,
     provider,
     shape: 'money',
     data: {
-      ...(walletBalances.length > 1 ? { wallets: walletBalances } : {}),
-      ...primary,
+      wallets: walletBalances,
       tier: deepseekPricingTier(),
     },
   };

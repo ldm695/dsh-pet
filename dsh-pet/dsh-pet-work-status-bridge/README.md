@@ -17,6 +17,8 @@ DSH Desktop 客户端每两秒报告当前选中的会话和焦点状态，并�
 
 桌宠应用会分别读取 DSH、Codex 和 Claude Code 的桥接文件；同一客户端的多个会话和 Agent 会合并为一个工作状态。
 
+桥接数据协议为 `version: 2`，并要求包含 `agents[]`。请使用当前版本的桌宠应用；旧版单状态桥接文件会被忽略，应用日志会提示更新插件。
+
 ## 安装到 DSH Desktop
 
 请在 DSH Desktop 使用的 PowerShell 终端中安装，并将路径替换为本仓库内此目录的绝对路径：

@@ -64,7 +64,3 @@ export async function saveProtectedApiKey(path: string, key: string | undefined)
   await writeFile(temporary, encrypted, { encoding: 'utf8', mode: 0o600 });
   await rename(temporary, path);
 }
-
-/** Backwards-compatible names for the legacy DeepSeek balance credential. */
-export const loadDeepSeekApiKey = loadProtectedApiKey;
-export const saveDeepSeekApiKey = saveProtectedApiKey;

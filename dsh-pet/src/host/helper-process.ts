@@ -1,11 +1,11 @@
 /**
  * 桌面 Helper 进程管理器 —— 拉起/守护 Electron 透明窗口进程。
  *
- * 架构：Helper 与宿主之间除了日志，还有一条 **stdin/stdout JSON 行协议**（bridge）：
+ * 架构：Helper 与宿主之间使用 **stdout JSON 请求行 + 本地 HTTP 回调响应**（bridge）：
  *   - 渲染端不再直接访问 DSH WebServer（DSH Desktop 2.0.3+ 会拦截桌宠 Helper 子进程的
  *     裸 HTTP 请求），改走自定义 scheme `dsh-pet-bridge://` → Electron 主进程
- *     （main.js 的 protocol.handle）→ 本模块的管道 → 宿主 handlePetRoute（与 HTTP 路由同一份逻辑）。
- *   - 协议行统一前缀 `dsh-pet-bridge:`，与普通日志行区分（main.js 的 console 输出也走 stdout）。
+ *     （main.js 的 protocol.handle）→ stdout 请求管道 → 宿主 handlePetRoute（与 HTTP 路由同一份逻辑）。
+ *   - 请求行统一前缀 `dsh-pet-bridge:`，与普通日志行区分（main.js 的 console 输出也走 stdout）。
  *   - 素材（webm/字体/光标）不把二进制过管道：宿主返回文件绝对路径，main.js 自行读盘应答。
  * 本文件负责解析 Electron 可执行文件、以子进程方式拉起 electron-helper/main.js、
  * 守护协议通道、并在异常退出时自动重启。
@@ -23,8 +23,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const packageRoot = resolve(process.env.DSH_PET_PACKAGE_ROOT || resolve(here, '..'));
 export const defaultHelperMain = resolve(packageRoot, 'runtime', 'electron-helper', 'main.js');
 
-/** stdout 中以此前缀开头的整行 JSON 属于 bridge 协议。 */
+/** stdout 中以此前缀开头的整行 JSON 属于 bridge 请求。 */
 export const BRIDGE_PREFIX = 'dsh-pet-bridge:';
+const BRIDGE_CALLBACK_URL = /^http:\/\/127\.0\.0\.1:\d+\/respond$/;
 /** Helper reports a one-time, standalone-only renderer startup failure through stdout. */
 export const RENDER_STARTUP_CONTROL_PREFIX = 'dsh-pet-render-watchdog:';
 
@@ -38,14 +39,13 @@ export interface RenderStartupTimeout {
 }
 
 /** 渲染端（经 main.js 转发）的一次请求：URL 是 /dsh-pet-7340/... 路径 + 查询串；
- *  cb = main.js 本地回调服务器地址（宿主把应答 POST 回去；Electron 主进程读不到 piped stdin，
- *  故应答不走 0 号管道 —— electron#4218） */
+ *  cb 是 main.js 已监听的本地回调服务器地址，宿主将应答 POST 回去。 */
 export interface BridgeRequest {
   id: number;
   method: string;
   url: string;
   body?: string;
-  cb?: string;
+  cb: string;
 }
 
 /** 宿主对一次请求的应答：json/text 走 body；素材走 file（文件绝对路径，main.js 自行读盘） */
@@ -348,7 +348,7 @@ export class HelperProcess {
       // 环境变量统一经 helperSpawnEnv 构造：它会删掉会劫持 Electron 启动模式的 ELECTRON_RUN_AS_NODE
       // （issue #63，详见该函数注释）。
       env: helperSpawnEnv(process.pid, this.options.env),
-      stdio: ['pipe', 'pipe', 'pipe'], // stdin 也要：bridge 协议响应回写（main.js 请求经 stdout 上来）
+      stdio: ['ignore', 'pipe', 'pipe'], // bridge 请求经 stdout 上报；响应通过 main.js 本地 HTTP 回调返回
       windowsHide: true,
     });
     this.child = child;
@@ -378,9 +378,6 @@ export class HelperProcess {
     child.stderr.on('data', (chunk) => {
       const line = String(chunk).trim();
       if (line) this.logger.warn?.(`[dsh-pet desktop helper] ${line}`);
-    });
-    child.stdin?.on('error', () => {
-      /* EPIPE 等：进程退出/重启期间回写失败静默（下一轮 start 重建管道） */
     });
     return child;
   }
@@ -434,10 +431,9 @@ export class HelperProcess {
   }
 
   /** 处理一条协议请求：交给宿主 bridgeHandler，结果按 id POST 回 main.js 的回调服务器
-   *  （cb 由请求行携带；不走 stdin —— Electron 主进程收不到 piped stdin） */
+   *  （cb 在创建渲染窗口前已绑定到成功监听的本地 HTTP 服务） */
   private async handleBridgeLine(line: string): Promise<void> {
-    const child = this.child;
-    if (!child?.stdin || !this.options.bridgeHandler) return;
+    if (!this.child || !this.options.bridgeHandler) return;
     let req: BridgeRequest;
     try {
       req = JSON.parse(line.slice(BRIDGE_PREFIX.length)) as BridgeRequest;
@@ -446,6 +442,10 @@ export class HelperProcess {
       return;
     }
     if (typeof req.id !== 'number') return;
+    if (!BRIDGE_CALLBACK_URL.test(req.cb)) {
+      this.logger.warn?.('[dsh-pet desktop helper] bridge 回调地址无效，已忽略请求');
+      return;
+    }
     try {
       // bridgeHandler 返回完整 BridgeResponse（含 id）；异常时兜底 500
       const resp = await this.options.bridgeHandler(req);
@@ -460,26 +460,15 @@ export class HelperProcess {
     }
   }
 
-  /** 把应答发回 main.js：优先 POST 到请求行携带的 cb（本地回调服务器）；无 cb 时回写 stdin（低版本兼容） */
+  /** 把应答 POST 回 main.js 的本地回调服务器。 */
   private sendBridgeResponse(req: BridgeRequest, resp: BridgeResponse): void {
-    const cb = typeof req.cb === 'string' && /^https?:[/][/]/.test(req.cb) ? req.cb : '';
-    if (cb) {
-      void fetch(cb, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(resp),
-      }).catch(() => {
-        /* 回调失败（main.js 已退出等）：请求端会超时降级，这里静默 */
-      });
-      return;
-    }
-    const child = this.child;
-    if (!child?.stdin || child.stdin.destroyed) return;
-    try {
-      child.stdin.write(BRIDGE_PREFIX + JSON.stringify(resp) + '\n');
-    } catch {
-      /* ignore */
-    }
+    void fetch(req.cb, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(resp),
+    }).catch(() => {
+      /* 回调失败（main.js 已退出等）：请求端会超时降级，这里静默 */
+    });
   }
 
   /** 停止 helper：发 SIGTERM 即返回，**不等它退出**。宿主退出/插件卸载路径用它——

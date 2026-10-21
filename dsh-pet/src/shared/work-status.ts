@@ -37,7 +37,7 @@ export interface WorkStatusSnapshot {
   state: WorkStatusState | null; // null = 空闲
   task: string | null; // 当前任务详情（todo/write 提供，可 null）
   sourceName?: string; // DeepSeek Harness / Codex / Claude Code；终态气泡用于标明完成来源
-  agents?: WorkStatusAgentSnapshot[]; // DSH/Codex/Claude 并行会话与 Agent；未提供时使用传统单状态模式
+  agents: WorkStatusAgentSnapshot[]; // 每个会话/Agent 的状态；空数组表示当前没有活动状态
 }
 
 /** Serialized `sections.workStatus.data` payload written by the host. */
@@ -46,46 +46,45 @@ export interface WorkStatusSnapshotWire {
   task: string | null;
   /** The host currently serializes null when no source is active. */
   sourceName?: string | null;
-  agents?: WorkStatusAgentSnapshot[];
+  agents: WorkStatusAgentSnapshot[];
 }
 
-/** 快照解析：档位不认识 → 归一成 null（空闲）；形状非法 → null（消费端跳过这一拍，不抛） */
+/** 快照解析：必须包含 agents 数组；缺少新契约字段或形状非法时跳过，不回退单状态格式。 */
 export function toWorkStatus(raw: unknown): WorkStatusSnapshot | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as { state?: unknown; task?: unknown; sourceName?: unknown; agents?: unknown };
+  if (!Array.isArray(r.agents)) return null;
   const state: WorkStatusState | null =
     r.state === null || (typeof r.state === 'string' && (WORK_STATUS_STATES as readonly string[]).includes(r.state))
       ? (r.state as WorkStatusState | null)
       : null;
-  const agents = Array.isArray(r.agents)
-    ? r.agents.flatMap((item) => {
-        if (!item || typeof item !== 'object') return [];
-        const agent = item as Record<string, unknown>;
-        if (
-          typeof agent.key !== 'string' ||
-          typeof agent.state !== 'string' ||
-          !(WORK_STATUS_STATES as readonly string[]).includes(agent.state) ||
-          !Number.isSafeInteger(agent.revision) ||
-          !Number.isFinite(agent.startedAt)
-        ) {
-          return [];
-        }
-        return [
-          {
-            key: agent.key,
-            state: agent.state as WorkStatusState,
-            ...(typeof agent.sourceName === 'string' ? { sourceName: agent.sourceName } : {}),
-            ...(typeof agent.task === 'string' || agent.task === null ? { task: agent.task } : {}),
-            revision: agent.revision as number,
-            startedAt: agent.startedAt as number,
-          },
-        ];
-      })
-    : undefined;
+  const agents = r.agents.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const agent = item as Record<string, unknown>;
+    if (
+      typeof agent.key !== 'string' ||
+      typeof agent.state !== 'string' ||
+      !(WORK_STATUS_STATES as readonly string[]).includes(agent.state) ||
+      !Number.isSafeInteger(agent.revision) ||
+      !Number.isFinite(agent.startedAt)
+    ) {
+      return [];
+    }
+    return [
+      {
+        key: agent.key,
+        state: agent.state as WorkStatusState,
+        ...(typeof agent.sourceName === 'string' ? { sourceName: agent.sourceName } : {}),
+        ...(typeof agent.task === 'string' || agent.task === null ? { task: agent.task } : {}),
+        revision: agent.revision as number,
+        startedAt: agent.startedAt as number,
+      },
+    ];
+  });
   return {
     state,
     task: typeof r.task === 'string' ? r.task : null,
     ...(typeof r.sourceName === 'string' ? { sourceName: r.sourceName } : {}),
-    ...(agents ? { agents } : {}),
+    agents,
   };
 }

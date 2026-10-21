@@ -1,7 +1,4 @@
-import type { WorkStatusAgentSnapshot, WorkStatusSnapshot } from './work-status';
-
-/** Legacy single-source snapshots are represented as one ordinary assignment. */
-export const LEGACY_WORK_STATUS_AGENT_KEY = 'legacy:client';
+import type { WorkStatusAgentSnapshot } from './work-status';
 
 export interface WorkStatusPetAssignment {
   agentKey: string;
@@ -25,27 +22,6 @@ export interface WorkStatusAssignmentResult {
 interface AssignmentOwner {
   petId: string;
   assignmentRevision: number;
-}
-
-/**
- * Normalize the legacy one-state payload into the same agent list used by modern bridges.
- * An explicit `agents: []` is authoritative and means that all previous assignments ended.
- */
-export function normalizeWorkStatusAgents(
-  snapshot: WorkStatusSnapshot,
-  legacyRevision: number,
-): WorkStatusAgentSnapshot[] {
-  if (Array.isArray(snapshot.agents)) return snapshot.agents;
-  if (!snapshot.state) return [];
-  return [
-    {
-      key: LEGACY_WORK_STATUS_AGENT_KEY,
-      state: snapshot.state,
-      ...(snapshot.sourceName ? { sourceName: snapshot.sourceName } : {}),
-      revision: legacyRevision,
-      startedAt: 0,
-    },
-  ];
 }
 
 /**

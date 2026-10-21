@@ -103,7 +103,7 @@
  * 反过来，`moveTop()`（`HWND_TOP`）对已沉底的窗口**无效**（实测仍在普通带里），
  * 不能拿来当兜底。
  *
- * 本文件只放纯判定：不 require('electron')，可被 node:test 直接加载单测（同 pointer-target.js）。
+ * 本文件只放纯判定：不 require('electron')，可被 node:test 直接加载单测（同 pet-geometry.js）。
  */
 
 'use strict';

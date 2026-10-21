@@ -2,7 +2,7 @@
  * dsh-pet desktop helper —— 托盘的平台差异（纯判定，不 require('electron')）
  *
  * 为什么单独一份：三平台的托盘行为不一样，而这些差异全是「规则」；规则必须住在可被 node:test
- * 直接加载的纯模块里，main.js 只接线（同 pointer-target.js / topmost-watchdog.js /
+ * 直接加载的纯模块里，main.js 只接线（同 pet-geometry.js / topmost-watchdog.js /
  * dpi-linearization.js）。源码守卫见 src/host/dpi-linearization.test.ts
  * 「平台例外只允许住在模块里（main.js 不得出现 darwin 分支）」。
  *

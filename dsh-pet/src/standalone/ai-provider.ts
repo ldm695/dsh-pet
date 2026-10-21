@@ -13,7 +13,7 @@ const REQUESTS_PER_MINUTE = 6;
 const RATE_WINDOW_MS = 60_000;
 const testInputSchema = z
   .object({
-    protocol: z.enum(['openai-compatible', 'anthropic']).optional(),
+    protocol: z.enum(['openai-compatible', 'anthropic', 'deepseek-official']).optional(),
     baseUrl: z.string().max(2048).optional(),
     model: z.string().max(200).optional(),
     apiKey: z.string().max(4096).optional(),
@@ -51,6 +51,7 @@ export interface StandaloneAiService {
     apiKey?: string;
   }): Promise<{ ok: boolean; message: string; reply?: string }>;
   isReady(): boolean;
+  supportsBalance(): boolean;
   canWhisper(): boolean;
   deepSeekApiKey(): string | undefined;
   dispose(): void;
@@ -71,12 +72,12 @@ function parseRequest(
 ): { request: AiRequest; signal?: AbortSignal } {
   const parsed = inputSchema.safeParse(options);
   const endpoint = parsed.success ? new URL(settings.baseUrl) : undefined;
-  const legacyDeepSeek =
+  const deepSeekProvider =
     parsed.success &&
     parsed.data.provider === 'deepseek-official' &&
     endpoint?.hostname === 'api.deepseek.com' &&
-    settings.protocol === 'openai-compatible';
-  if (!parsed.success || parsed.data.model !== settings.model || (parsed.data.provider !== PROVIDER && !legacyDeepSeek))
+    (settings.protocol === 'deepseek-official' || settings.protocol === 'openai-compatible');
+  if (!parsed.success || parsed.data.model !== settings.model || (parsed.data.provider !== PROVIDER && !deepSeekProvider))
     throw new Error('Invalid standalone AI model selection or input.');
   const { data } = parsed;
   const messages = data.messages
@@ -164,7 +165,11 @@ export function createStandaloneAi(
     !!store.current().model &&
     !!store.current().baseUrl &&
     !!store.current().apiKey;
-  const selection = () => ({ provider: PROVIDER, model: ready() ? store.current().model : '' });
+  const selection = () => ({
+    // Balance checks use the selected provider and saved credential even when chat is disabled.
+    provider: store.current().protocol === 'deepseek-official' ? 'deepseek-official' : PROVIDER,
+    model: ready() ? store.current().model : '',
+  });
 
   async function* stream(options: unknown): AsyncIterable<{ type: 'text'; text: string }> {
     if (!ready()) throw new Error('Standalone AI is not ready. Configure and enable the model first.');
@@ -238,22 +243,20 @@ export function createStandaloneAi(
     listProviders: () => {
       if (!ready()) return [];
       const providers = [{ id: PROVIDER, name: '独立模式 AI' }];
-      if (new URL(store.current().baseUrl).hostname === 'api.deepseek.com') {
-        providers.push({ id: 'deepseek-official', name: 'DeepSeek API（兼容旧配置）' });
+      if (store.current().protocol === 'deepseek-official') {
+        providers.push({ id: 'deepseek-official', name: 'DeepSeek' });
       }
       return providers;
     },
     listModels: async (provider) =>
       ready() &&
-      (provider === PROVIDER ||
-        (provider === 'deepseek-official' && new URL(store.current().baseUrl).hostname === 'api.deepseek.com'))
+      (provider === PROVIDER || (provider === 'deepseek-official' && store.current().protocol === 'deepseek-official'))
         ? [{ id: settingsModel(), name: settingsModel() }]
         : [],
     resolveModelInfo: async (provider = PROVIDER, model = settingsModel(), signal) =>
       ready() &&
       !signal?.aborted &&
-      (provider === PROVIDER ||
-        (provider === 'deepseek-official' && new URL(store.current().baseUrl).hostname === 'api.deepseek.com')) &&
+      (provider === PROVIDER || (provider === 'deepseek-official' && store.current().protocol === 'deepseek-official')) &&
       model === settingsModel()
         ? { id: model, name: model }
         : undefined,
@@ -276,6 +279,7 @@ export function createStandaloneAi(
       }
     },
     isReady: ready,
+    supportsBalance: () => store.current().protocol === 'deepseek-official',
     async testConnection(input: { protocol?: string; baseUrl?: string; model?: string; apiKey?: string }) {
       if (disposed) return { ok: false, message: '服务已关闭' };
       const current = store.current();
@@ -362,8 +366,7 @@ export function createStandaloneAi(
     },
     canWhisper: () => ready() && store.current().automaticWhispers,
     deepSeekApiKey: () =>
-      store.current().protocol === 'openai-compatible' &&
-      new URL(store.current().baseUrl || 'https://invalid.local').hostname === 'api.deepseek.com'
+      store.current().protocol === 'deepseek-official'
         ? store.current().apiKey
         : undefined,
     dispose() {

@@ -13,21 +13,14 @@
  * 独立服务的边界（都是显式失败，不假装成功）：
  *   - `agentDefaultModel.currentSelection()` → 已启用时使用用户配置的独立 AI 模型，否则模型未就绪
  *   - `credentials.resolve()` → 仅提供 DeepSeek 官方 API Key，供兼容的余额路由使用
- *   - `llm.*` → 有独立 AI 服务时走用户配置的 OpenAI 兼容 / Anthropic 接口；无 AI 注入时保留旧 DeepSeek 适配
+ *   - `llm.*` → 有独立 AI 服务时走用户配置的模型接口；未注入时仅提供明确失败的空服务
  *   - `on(...)` → 不订阅任何事件：独立模式没有 DSH 会话，工作状态因此保持空闲
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { saveDeepSeekApiKey } from './api-key-store';
-import {
-  deepseekApiKey,
-  deepseekApiKeySource,
-  deepseekModels,
-  setSavedDeepSeekApiKey,
-  streamDeepSeekChat,
-} from './deepseek';
+import { deepseekApiKey } from './deepseek';
 import type { StandaloneAiService } from './ai-provider';
 
 /** 独立模式下模型及余额路由使用的 DeepSeek 官方 API 服务商 id。 */
@@ -121,8 +114,6 @@ export interface StandaloneContextOptions {
   logger: StandaloneLogger;
   /** 注入路由收集数组（独立模式先起服务拿到端口，再 `apply`，两者共用同一个数组） */
   routes?: RegisteredRoute[];
-  /** Windows DPAPI 加密凭据文件；不配置时 API Key 只能来自环境变量 */
-  apiKeyStorePath?: string;
   /** Electron 硬件/软件合成偏好文件；保存后需重启 Electron Helper 生效 */
   renderModeStorePath?: string;
   ai?: StandaloneAiService;
@@ -164,7 +155,7 @@ export function createStandaloneLogger(): StandaloneLogger {
 export function createStandaloneContext(options: StandaloneContextOptions): StandaloneContext {
   const { logger } = options;
   const ai = options.ai;
-  let apiKey = deepseekApiKey();
+  const apiKey = deepseekApiKey();
   const routes = options.routes ?? [];
   const failures: string[] = [];
   /** effect 释放函数（后注册先释放，与 Cordis 的逆序释放一致） */
@@ -228,77 +219,6 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
         },
       },
     );
-  }
-
-  if (options.apiKeyStorePath) {
-    routes.push({
-      kind: 'exact',
-      path: '/dsh-pet-7340/api-key',
-      handler: async (req, res) => {
-        const send = (status: number, body: unknown): void => {
-          const payload = JSON.stringify(body);
-          res.writeHead(status, {
-            'content-type': 'application/json; charset=utf-8',
-            'content-length': Buffer.byteLength(payload),
-            'cache-control': 'no-store',
-          });
-          res.end(payload);
-        };
-        if (req.method === 'GET') {
-          send(200, { configured: Boolean(apiKey), source: deepseekApiKeySource() });
-          return;
-        }
-        if (req.method !== 'POST') {
-          send(405, { error: 'Method not allowed' });
-          return;
-        }
-        if (deepseekApiKeySource() === 'environment') {
-          send(409, { error: '当前 API Key 由环境变量提供，请修改启动环境变量。' });
-          return;
-        }
-        const contentLength = Number(req.headers['content-length'] ?? 0);
-        if (contentLength > 8192) {
-          send(413, { error: 'API Key 请求内容过大。' });
-          req.resume();
-          return;
-        }
-        const rawBody = await new Promise<string | undefined>((resolve, reject) => {
-          let body = '';
-          let tooLarge = false;
-          req.setEncoding('utf8');
-          req.on('data', (chunk: string) => {
-            if (tooLarge) return;
-            body += chunk;
-            if (Buffer.byteLength(body) > 8192) {
-              tooLarge = true;
-              body = '';
-            }
-          });
-          req.once('end', () => resolve(tooLarge ? undefined : body));
-          req.once('error', reject);
-        });
-        if (rawBody === undefined) {
-          send(413, { error: 'API Key 请求内容过大。' });
-          return;
-        }
-        let request: { apiKey?: unknown };
-        try {
-          request = JSON.parse(rawBody) as { apiKey?: unknown };
-        } catch {
-          send(400, { error: '无效的 JSON 请求。' });
-          return;
-        }
-        const next = typeof request.apiKey === 'string' ? request.apiKey.trim() : '';
-        if (next.length > 4096) {
-          send(400, { error: 'API Key 长度超出限制。' });
-          return;
-        }
-        await saveDeepSeekApiKey(options.apiKeyStorePath as string, next || undefined);
-        apiKey = next || undefined;
-        setSavedDeepSeekApiKey(apiKey);
-        send(200, { configured: Boolean(apiKey), source: deepseekApiKeySource() });
-      },
-    });
   }
 
   if (options.renderModeStorePath) {
@@ -524,6 +444,7 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
       ? {
           standaloneAi: {
             isReady: () => ai.isReady(),
+            balanceQuerySupported: () => ai.supportsBalance(),
             canWhisper: () => ai.canWhisper(),
             chatEnabled: () => ai.getSettings().enabled,
             whisperIntervalSec: () => ai.getSettings().whisperIntervalSec,
@@ -541,35 +462,14 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
           stream: (request: unknown): AsyncIterable<unknown> => ai.stream(request),
         }
       : {
-          listProviders: (): unknown[] =>
-            apiKey ? [{ id: 'deepseek-official', name: 'DeepSeek API', models: [] }] : [],
-          listModels: async (provider: string): Promise<unknown[]> =>
-            provider === 'deepseek-official' && apiKey ? deepseekModels(apiKey) : [],
-      /**
-       * 模型元数据查询。DSH 的契约是
-       * `resolveModelInfo(provider, model, signal?): Promise<LlmResolvedModelInfo>` —— **异步**。
-       * 替身必须同样返回 Promise：同步返回 undefined 时，任何 `.then()` 或不带 `?.` 的取值
-       * 都会立刻炸（与 stream 同一类形状错误）。
-       *
-       * 目前唯一消费方 `supportsReasoningOff` 用 `await` + `?.` + try/catch 包着，所以不炸——
-       * 但那是靠消费方防御，不是靠形状正确。形状对不上，就不该指望下一个消费方也这么写。
-       */
+          listProviders: (): unknown[] => [],
+          listModels: async (): Promise<unknown[]> => [],
           resolveModelInfo: async (): Promise<undefined> => undefined,
-      /**
-       * 生成入口：独立模式将调用转发到 DeepSeek 官方 API；未配置密钥时迭代时报错。
-       *
-       * 必须是 **AsyncIterable**——DSH 的契约是 `stream(options): AsyncIterable<StreamChunk>`，
-       * 调用方一律 `for await (const chunk of llm.stream(...))` 消费。错误在首次 `next()` 时抛出，
-       * 正好落在调用方已有的 try/catch 里，转成 `ok:false / generate-error` 的结构化失败。
-       *
-       * **不能**写成 `async () => { throw ... }`：那返回 Promise 而非 AsyncIterable，
-       * `for await` 会立刻抛 TypeError（文案由 V8 生成，形如 "llm.stream(...) is not a function
-       * or its return value is not async iterable"），同时那个 rejected promise 无人接管，
-       * 以 unhandled rejection **直接终止进程**。0.3.4 的崩溃根因即此：配置里设了
-       * whisperModel/chatModel 就必崩，因为只有配了模型才会真的走到这里。
-       */
-      // 委托给 async generator，保证该 API 代理始终符合 AsyncIterable 契约。
-          stream: (request: unknown): AsyncIterable<unknown> => streamDeepSeekChat(apiKey, request),
+          stream: (): AsyncIterable<unknown> => ({
+            async *[Symbol.asyncIterator](): AsyncGenerator<unknown> {
+              throw new Error('独立模式未接入模型');
+            },
+          }),
         },
   };
 

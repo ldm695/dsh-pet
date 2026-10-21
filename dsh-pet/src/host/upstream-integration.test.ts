@@ -63,7 +63,7 @@ test('外部工作状态在独立模式的重复桥接轮询后保留，并可�
     const payload = json<WorkPayload>(await route(request('state'))).sections.workStatus.data;
     assert.equal(payload.state, 'working');
     assert.equal(payload.task, '构建');
-    assert.equal(payload.agents?.[0].key, 'api:client');
+    assert.equal(payload.agents?.[0].key, 'dsh:api');
   }
   await external.handle(request('work-status', 'POST', { state: 'result' }));
   assert.equal(json<WorkPayload>(await route(request('state'))).sections.workStatus.data.task, '构建');

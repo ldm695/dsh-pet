@@ -263,10 +263,17 @@ describe('migrateUserConfig —— 老用户 main-config.json → main-config.js
     }
   });
 
-  test('未迁移（迁移失败/未跑）时读取回落旧路径：配置照样生效', () => {
+  test('迁移失败时当前运行周期回落旧路径：旧文件保留且配置照样生效', () => {
     const { paths, dir } = legacyOnly('{ "physics": ' + JSON.stringify(BASE.physics) + ' }\n');
+    // 让目标目录不存在，稳定触发 rename 失败，不依赖机器上的权限设置。
+    paths.userFile = join(dir, 'missing', 'main-config.jsonc');
     try {
-      assert.equal(readUserConfig(paths)?.physics !== undefined, true, '读回落旧 .json');
+      const logs: string[] = [];
+      assert.equal(migrateUserConfig(paths, (message) => logs.push(message)), false);
+      assert.ok(logs.some((message) => message.includes('本进程将临时读取旧配置')));
+      assert.equal(existsSync(paths.legacyUserFile as string), true, '迁移失败时旧文件应保留');
+      assert.equal(existsSync(paths.userFile), false, '失败迁移不应创建新文件');
+      assert.equal(readUserConfig(paths)?.physics !== undefined, true, '本进程临时读取旧 .json');
       assert.equal(userConfigUnparsable(paths), false, '旧路径合法 → 不是损坏');
       assert.deepEqual(readAllConfig(paths).main.physics, BASE.physics);
     } finally {

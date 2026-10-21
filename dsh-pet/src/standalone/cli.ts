@@ -15,7 +15,7 @@
  *   node lib/standalone.js --port 6952
  *   node lib/standalone.js --check      # 只体检，不开窗口
  *
- * 独立模式可配置 OpenAI 兼容或 Anthropic 模型用于对话与碎碎念；桌面通知只覆盖
+ * 独立模式可配置 DeepSeek、OpenAI 兼容或 Anthropic 模型用于对话与碎碎念；桌面通知只覆盖
  * 独立模式自己的对话回复；若 DSH 同时运行且安装了 dsh-pet，可选中对话状态经本地文件桥接同步。
  */
 import { existsSync, readFileSync } from 'node:fs';
@@ -24,10 +24,10 @@ import { join } from 'node:path';
 import { flattenPetList, readAllConfig } from '../host/config';
 import { dshHomeDir, packageRoot } from '../host/helper-process';
 import { apply } from '../host/index';
-import { loadDeepSeekApiKey, loadProtectedApiKey } from './api-key-store';
 import { createStandaloneAi } from './ai-provider';
 import { settingsPage as standaloneAiPage } from './ai-settings-page';
 import { runCheck, packageVersion } from './check';
+import { migrateLegacyStandaloneAiCredentials } from './credential-migration';
 import {
   createStandaloneContext,
   createStandaloneLogger,
@@ -37,33 +37,19 @@ import {
 import { configPathsFor, describePets, isDesktopVisible, parseArgs, USAGE } from './options';
 import { STANDALONE_SETTINGS_HTML } from './settings-page';
 import { listenStandaloneServer } from './server';
-import { deepseekApiKey, initializeSavedDeepSeekApiKey } from './deepseek';
+import { standaloneAiEnvironmentApiKey } from './deepseek';
 import { createRequestSecurity } from './request-security';
 
 /** 启动独立模式：先起服务拿到端口，再 `apply`（插件据此拼桌面 Helper 的 configUrl） */
 async function run(logger: StandaloneLogger, options: { port: number }): Promise<void> {
   const home = dshHomeDir();
   const paths = configPathsFor(packageRoot, home);
-  const legacyApiKeyStorePath = join(home, 'dsh-pet', 'deepseek-api-key.dpapi');
   const aiApiKeyStorePath = join(home, 'dsh-pet', 'standalone-ai-key.dpapi');
   const aiSettingsPath = join(home, 'dsh-pet', 'standalone-ai.json');
-  let legacyApiKey: string | undefined;
-
-  try {
-    legacyApiKey = await loadDeepSeekApiKey(legacyApiKeyStorePath);
-    initializeSavedDeepSeekApiKey(legacyApiKey);
-  } catch (error) {
-    logger.warn(`读取已保存的 DeepSeek API Key 失败：${error instanceof Error ? error.message : String(error)}`);
-  }
-
-  let storedAiApiKey: string | undefined;
-  try {
-    storedAiApiKey = await loadProtectedApiKey(aiApiKeyStorePath);
-  } catch (error) {
-    logger.warn(`读取已保存的 AI API 密钥失败：${error instanceof Error ? error.message : String(error)}`);
-  }
+  const credentials = await migrateLegacyStandaloneAiCredentials(home, logger);
+  // Do not import the generic DEEPSEEK_API_KEY environment value into persisted AI settings.
   const aiInitialApiKey =
-    storedAiApiKey ?? (!existsSync(aiSettingsPath) ? (legacyApiKey ?? deepseekApiKey()) : undefined);
+    credentials.apiKey ?? (!existsSync(aiSettingsPath) ? standaloneAiEnvironmentApiKey() : undefined);
   const legacyAiConfig = readAllConfig(paths).main ?? {};
   const security = createRequestSecurity();
   const standaloneAi = createStandaloneAi(home, logger, {

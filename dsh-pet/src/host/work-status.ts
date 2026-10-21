@@ -12,7 +12,7 @@
  *   0 thinking / 1 working / 2 result / 3 waiting / 4 success / 5 error
  */
 
-import type { WorkStatusState } from '../shared/work-status';
+import type { WorkStatusAgentSnapshot, WorkStatusState } from '../shared/work-status';
 
 /** 工作状态档位（数组索引 = events.workStatus 档位） */
 export type HostWorkStatusState = WorkStatusState;
@@ -140,6 +140,7 @@ export interface WorkStatusStoreSnapshot {
   state: HostWorkStatusState | null; // null = 尚无会话活动（空闲）
   task: string | null; // 当前任务详情（todo/write 提供，可 null）
   ts: number; // 最近一次变化的时间戳（轮询侧检测变化用）
+  agents: WorkStatusAgentSnapshot[];
 }
 
 /** 每会话聚合条目：state（档位）+ seq（该会话最近事件的序号，同档位按它取最近）+ task（任务详情文案） */
@@ -147,6 +148,8 @@ export interface SessionWorkEntry {
   state: HostWorkStatusState;
   seq: number;
   task: string | null;
+  revision: number;
+  startedAt: number;
 }
 
 /** 展示优先级：waiting > error > working > thinking > result > success
@@ -198,7 +201,7 @@ export class WorkStatusStore {
 
   constructor() {
     this.sessions = new Map();
-    this.snap = { state: null, task: null, ts: 0 };
+    this.snap = { state: null, task: null, ts: 0, agents: [] };
   }
 
   /** 该会话当前是否有活动条目（决定 todo/write 是否还值得更新它的文案） */
@@ -220,7 +223,13 @@ export class WorkStatusStore {
   setState(sessionId: string, state: HostWorkStatusState, seq = 0): boolean {
     const prev = this.sessions.get(sessionId);
     if (prev?.state === state && prev.seq >= seq) return false;
-    this.sessions.set(sessionId, { state, seq, task: prev?.task ?? null });
+    this.sessions.set(sessionId, {
+      state,
+      seq,
+      task: prev?.task ?? null,
+      revision: prev ? prev.revision + (prev.state === state ? 0 : 1) : 1,
+      startedAt: prev?.startedAt ?? Date.now(),
+    });
     this.refresh();
     return true;
   }
@@ -229,7 +238,7 @@ export class WorkStatusStore {
   setTask(sessionId: string, task: string | null): boolean {
     const prev = this.sessions.get(sessionId);
     if (!prev || prev.task === task) return false;
-    this.sessions.set(sessionId, { ...prev, task });
+    this.sessions.set(sessionId, { ...prev, task, revision: prev.revision + 1 });
     this.refresh();
     return true;
   }
@@ -246,14 +255,37 @@ export class WorkStatusStore {
     return this.snap;
   }
 
-  /** 重算展示：state 与 task **任一**变化才更新 ts（轮询侧据此触发，两端都靠它刷新） */
+/** 重算展示：展示快照或任一会话项变化时更新 ts（轮询侧据此触发，两端都靠它刷新） */
   private refresh(): void {
     const best = pickDisplayed(this.sessions.values());
     const nextState = best?.state ?? null;
     const nextTask = best?.task ?? null;
-    if (nextState === this.snap.state && nextTask === this.snap.task) return;
+    const nextAgents = [...this.sessions.entries()]
+      .map(([sessionId, entry]): WorkStatusAgentSnapshot => ({
+        key: `dsh:${sessionId}`,
+        state: entry.state,
+        sourceName: 'DeepSeek Harness',
+        task: entry.task,
+        revision: entry.revision,
+        startedAt: entry.startedAt,
+      }))
+      .sort((a, b) => a.startedAt - b.startedAt || a.key.localeCompare(b.key));
+    const agentsChanged =
+      nextAgents.length !== this.snap.agents.length ||
+      nextAgents.some((agent, index) => {
+        const previous = this.snap.agents[index];
+        return (
+          agent.key !== previous.key ||
+          agent.state !== previous.state ||
+          agent.task !== previous.task ||
+          agent.revision !== previous.revision ||
+          agent.startedAt !== previous.startedAt
+        );
+      });
+    if (nextState === this.snap.state && nextTask === this.snap.task && !agentsChanged) return;
     this.snap.state = nextState;
     this.snap.task = nextTask;
     this.snap.ts = Date.now();
+    this.snap.agents = nextAgents;
   }
 }

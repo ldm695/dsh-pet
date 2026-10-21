@@ -65,10 +65,10 @@ const OPEN_TARGET = params.get('openTarget') === 'desktop' ? 'desktop' : 'site';
 // 字段可变：显示器分辨率/缩放变化、插拔屏、旋转时由 applyDeskGeometry 就地重挂（#P4）。
 // 主进程下发的视口（**物理像素**，原样保留给首帧 applyDeskGeometry）；VIEW 才是 ÷scale 后的 CSS 系
 const VIEW_SCREEN = {
-  x: Number(params.get('viewX') || params.get('workAreaX') || 0),
-  y: Number(params.get('viewY') || params.get('workAreaY') || 0),
-  w: Number(params.get('viewW') || params.get('workAreaW') || (window.screen && window.screen.availWidth) || 1920),
-  h: Number(params.get('viewH') || params.get('workAreaH') || (window.screen && window.screen.availHeight) || 1080),
+  x: Number(params.get('viewX') || 0),
+  y: Number(params.get('viewY') || 0),
+  w: Number(params.get('viewW') || (window.screen && window.screen.availWidth) || 1920),
+  h: Number(params.get('viewH') || (window.screen && window.screen.availHeight) || 1080),
 };
 const VIEW = {
   x: toLocal(VIEW_SCREEN.x),

@@ -13,7 +13,7 @@
  *   - 动画素材经宿主 /dsh-pet-7340/thumb/<素材根>/<name>.<webm|mov>（素材根 = 条目 key；扩展名由共享常量 ANIMATION_EXT 决定）；
  *   - 几何模型：所有 sprite 同处一个全桌面透明画布；petBridge.setBounds 上报每只宠物的位置，
  *     主进程更新碰撞状态；原生窗口的绘制区域覆盖整个虚拟桌面，拖动只更新 DOM，不移动原生窗口。
- *     视口 = 全部显示器工作区外接矩形（workAreaX/Y/W/H 由主进程注入），漫游/抛掷/角落/位置换算
+ *     视口 = 覆盖窗口外接矩形（viewX/Y/W/H 由主进程注入），漫游/抛掷/角落/位置换算
  *     都跨屏（#43，宠物可被甩/拖到其它显示器）；单显示器时即主屏工作区，行为不变。
  *     外扩区透明且点击穿透（只有身体命中区可交互），不挡下层应用。
  *   - 右键级联菜单（与浏览器共用同一份组件：树+渲染+样式来自 shared-core 的 menu 模块）：
@@ -141,6 +141,7 @@ async function loadConfig() {
         : 'system',
     notificationsEnabled: !(merged && merged.main && merged.main.notificationsEnabled === false),
     aiChatEnabled: !(merged && merged.main && merged.main.dshPetAiChatEnabled === false),
+    balanceQuerySupported: !(merged && merged.main && merged.main.dshPetBalanceQuerySupported === false),
   };
 }
 

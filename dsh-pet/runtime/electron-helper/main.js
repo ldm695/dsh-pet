@@ -13,7 +13,7 @@
  * 数据通道（bridge 模式，DSH_PET_BRIDGE=1 由宿主注入）：
  * 渲染端不再直连宿主 WebServer（DSH Desktop 2.0.3+ 的浏览器访问闸门会拦无令牌裸 HTTP）——
  * 本进程注册自定义 scheme `dsh-pet-bridge://`，protocol.handle 收到渲染端请求后
- * 经 stdin/stdout JSON 行协议转发宿主（helper-process.ts 的 BridgeHandler），
+ * 经 stdout JSON 请求行转发宿主（helper-process.ts 的 BridgeHandler），宿主通过本地 HTTP 回调返回应答，
  * 宿主用与 HTTP 路由同一份 handlePetRoute 应答；素材应答带文件绝对路径，本进程读盘返回。
  * 无 DSH_PET_BRIDGE（手动 start-desktop / 开发流）时保持旧路径：渲染端直接 HTTP 访问宿主。
  *
@@ -45,7 +45,6 @@ const { execFileSync, spawn } = require('node:child_process');
 const { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } = require('node:fs');
 const fsPromises = require('node:fs/promises');
 // 点击穿透兜底通道的纯判定（不依赖 Electron 的 forward 鼠标钩子；见文件头注释）
-const { decideWindowIgnore, pointerZone } = require('./pointer-target.js');
 // 置顶看门狗：WS_EX_TOPMOST 只是样式位，不等于窗口真的在置顶带（见 topmost-watchdog.js 头部）
 const {
   TOPMOST_WATCHDOG_TICK_MS,
@@ -76,6 +75,7 @@ const RENDER_STARTUP_CONTROL_PREFIX = 'dsh-pet-render-watchdog:';
 // "Electron"，userData 便落到 %APPDATA%\Electron —— 那是所有这么跑的 Electron 脚本的公共目录，
 // 我们的 DPI 缓存与 Chromium profile 都会和别人混在一起。必须赶在任何 getPath('userData') 之前设。
 const APP_EDITION = process.env.DSH_PET_EDITION === 'public' ? 'public' : 'personal';
+const APP_DISPLAY_NAME = process.env.DSH_PET_DISPLAY_NAME || (APP_EDITION === 'public' ? 'DSH Pet' : '哦鲸鲸');
 const helperAppName = APP_EDITION === 'public' ? 'dsh-pet-public-electron-helper' : 'dsh-pet-electron-helper';
 app.setName(helperAppName);
 if (process.env.DSH_PET_STANDALONE === '1' && process.env.DSH_PET_APP_DATA_DIR) {
@@ -445,10 +445,6 @@ function applyFullscreenVisibility() {
       // Renderer-hidden pets must not leave stale native hit targets behind.
       setWindowIgnore(overlayWindow, true);
     }
-    inputBusy.set(
-      overlayWindow.id,
-      [...overlayInputs].some(([petId, entry]) => !fullscreenHiddenPets.has(petId) && entry.busy),
-    );
     overlayWindow.webContents.send('pet:fullscreen-visibility', hidden);
     for (const refresh of fullscreenWatcherRefreshers) refresh();
     updateOverlayShape();
@@ -566,13 +562,6 @@ function stopFullscreenWatcher() {
 
 /** win.id -> 上一次请求的窗口矩形；宠物窗口尺寸固定，只在位置变化时移动原生窗口。 */
 const lastRequestedBounds = new Map();
-
-/**
- * win.id -> 渲染端上报的窗口余量 `{ l, t }`（DIP）。
- * 上边距按气泡最大高度加高后**余量不再四边相等**，命中区不能再按「窗口宽/4」反推——
- * 这里存下来交给 pointer-target 的 spriteHitRect（见那里的注释）。
- */
-const winMargins = new Map();
 
 /**
  * 宠物间碰撞 broker 状态：petId -> { x, y, vx, vy, size, bottomPad }。
@@ -743,21 +732,7 @@ const POINTER_POLL_MS = 60;
 /** 冒烟期间暂停兜底轮询：它按**真实光标**翻转 windowIgnore，会干扰冒烟对渲染端通道的断言 */
 let pointerFallbackPaused = false;
 
-/**
- * 每窗口「渲染端正拿着鼠标输入」标记（win.id → true/false），由渲染端经 `pet:input-busy` 上报。
- *
- * 为什么必须由渲染端说了算：兜底通道判定的是"光标与**窗口矩形**"的关系，而窗口矩形比宠物身体大
- * 一圈（四周各半只宠物的余量）。拖拽时宠物由 rAF 弹簧追赶光标、**滞后**于光标；甩得快时滞后量
- * 超过那一圈余量，光标就落在矩形外 → 判成"窗外" → 翻回穿透 → 渲染端正在拖拽的 window 级
- * pointermove/pointerup 全断（鼠标还按着，宠物却按旧速度"飞"出去，连松手都没人报）。
- *
- * 主进程**无法自行判断**这件事（光看光标位置和窗口位移分不清"拖拽跟手"与"漫游/抛掷"），
- * 而渲染端知道（拖拽中 / 菜单开着 / 对话弹窗开着）。所以只由它上报，busy 期间本进程绝不翻回穿透。
- */
-const inputBusy = new Map();
-/** 新渲染端把菜单/聊天框局部矩形单独上报，避免忙碌态下整窗透明余量吞点击。 */
-const inputRegions = new Map();
-/** 单窗口模式下每只宠物独立上报命中区、UI 区域与画布 bounds。 */
+/** 共享窗口中每只宠物上报命中区、UI 区域、输入占用状态与画布 bounds。 */
 const overlayInputs = new Map();
 const overlayPetBounds = new Map();
 const fullscreenHiddenPets = new Set();
@@ -878,9 +853,6 @@ function overlayPointIsInteractive(win, point) {
   return false;
 }
 
-/** 旧版局部窗口路径使用的余量停留计时；共享画布路径按交互矩形并集判定。 */
-const offBodyMs = new Map();
-
 /**
  * 桌面宠物列表（[{id,size}]）：宿主经 DSH_PET_PETS 透传到共享桌面 renderer。
  * 解析失败/未透传（手动 start-desktop）时回落到单个默认宠物；显式空数组用于托盘常驻时隐藏全部宠物。
@@ -941,6 +913,7 @@ function createPetOverlayWindow() {
   const win = new BrowserWindow({
     width: Math.round(area.width),
     height: Math.round(area.height),
+    title: `${APP_DISPLAY_NAME} 桌宠（桌面模式）`,
     x: area.x,
     y: area.y,
     show: false,
@@ -969,6 +942,12 @@ function createPetOverlayWindow() {
       paintWhenInitiallyHidden: true,
       spellcheck: false,
     },
+  });
+  // Keep the taskbar/Task Manager window label consistent with the selected edition.
+  // index.html has a generic fallback title; prevent it from replacing the branded title.
+  win.on('page-title-updated', (event) => {
+    event.preventDefault();
+    win.setTitle(`${APP_DISPLAY_NAME} 桌宠（桌面模式）`);
   });
   overlayWindow = win;
   overlayFirstFrameReady = false;
@@ -1135,9 +1114,6 @@ function createPetOverlayWindow() {
     overlayInitialCompositionReady = false;
     lastRequestedBounds.delete(win.id);
     windowIgnore.delete(win.id);
-    inputBusy.delete(win.id);
-    inputRegions.delete(win.id);
-    offBodyMs.delete(win.id);
   });
 
   const notificationIcons = Object.fromEntries(
@@ -1180,11 +1156,10 @@ function createPetOverlayWindow() {
     });
   for (const pet of pets) windows.set(pet.id, win);
 }
-// ---------- bridge 协议（渲染端 custom scheme → 本进程 → 宿主 stdout JSON 行 + 本地回调） ----------
+// ---------- bridge 协议（渲染端 custom scheme → 本进程 → 宿主 stdout 请求行 + 本地 HTTP 回调） ----------
 // 渲染端的每个 fetch 都落到 dsh-pet-bridge://，protocol.handle 把请求以一行 JSON 写 stdout 转发宿主。
-// 宿主应答**不走近 0 号管道**：Electron 主进程在 Windows 上收不到 piped stdin（electron#4218），
-// 所以本进程开一个 127.0.0.1 随机端口 HTTP 回调（DSH 闸门只拦 DSH WebServer 路由，管不到这里）；
-// 请求行携带回调 URL，宿主处理完 POST 应答回来，按 id 唤醒等待中的请求。
+// 本进程先监听 127.0.0.1 随机端口，再创建渲染窗口；请求行携带回调 URL，宿主处理完 POST 应答回来。
+// 该本地 HTTP 回调绕过 DSH WebServer 的浏览器访问闸门，按 id 唤醒对应请求。
 // 素材（webm/字体/光标）：宿主只回文件绝对路径，本进程自行读盘应答（二进制不过管道）。
 // 协议行统一前缀 BRIDGE_PREFIX，宿主侧按前缀区分协议与日志（console 输出也走 stdout）。
 
@@ -1196,6 +1171,10 @@ let bridgeCallbackUrl = '';
 /** 渲染端请求 → 宿主（请求行带回调 URL）；返回宿主应答（{status, contentType?, body?, file?}），超时抛错 */
 function bridgeRequest(method, url, body) {
   return new Promise((resolve, reject) => {
+    if (!bridgeCallbackUrl) {
+      reject(new Error('bridge callback server is not ready'));
+      return;
+    }
     const id = ++bridgeSeq;
     bridgePending.set(id, { resolve, reject });
     process.stdout.write(BRIDGE_PREFIX + JSON.stringify({ id, method, url, body, cb: bridgeCallbackUrl }) + '\n');
@@ -1217,8 +1196,8 @@ function bridgeResolve(resp) {
   p.resolve(resp);
 }
 
-/** 本地回调服务器：宿主把应答 POST 到这里（127.0.0.1 随机端口，绕开 stdin/DSH 闸门） */
-function startBridgeCallback() {
+/** 本地回调服务器：监听成功后才允许注册 bridge handler 和创建渲染窗口。 */
+async function startBridgeCallback() {
   const http = require('node:http');
   const server = http.createServer((req, res) => {
     if (req.method !== 'POST' || req.url !== '/respond') {
@@ -1246,11 +1225,17 @@ function startBridgeCallback() {
   server.on('error', (e) => {
     console.error('[dsh-pet-desktop-helper] bridge callback server error:', String(e && e.message ? e.message : e));
   });
-  server.listen(0, '127.0.0.1', () => {
-    const addr = server.address();
-    bridgeCallbackUrl = 'http://127.0.0.1:' + (addr && typeof addr === 'object' ? addr.port : 0) + '/respond';
-    console.error('[dsh-pet-desktop-helper] bridge callback: ' + bridgeCallbackUrl);
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
   });
+  const addr = server.address();
+  if (!addr || typeof addr !== 'object' || !Number.isInteger(addr.port) || addr.port <= 0) {
+    server.close();
+    throw new Error('bridge callback server did not bind a local port');
+  }
+  bridgeCallbackUrl = 'http://127.0.0.1:' + addr.port + '/respond';
+  console.error('[dsh-pet-desktop-helper] bridge callback: ' + bridgeCallbackUrl);
   return server;
 }
 
@@ -1280,7 +1265,7 @@ async function handleBridgeRequest(request) {
 
 // Tray icon and menu are owned by desktop-main.cjs, outside the scaled pet helper.
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // 探测子进程：此时没有 force-device-scale-factor，读到的是 Windows 的真实主屏缩放。
   // 退出推迟一拍——在 ready 回调里直接 app.exit() 会赶在 stdout 落盘前拆掉进程
   if (DPI_PROBE) {
@@ -1300,6 +1285,16 @@ app.whenReady().then(() => {
   );
 
   if (BRIDGE) {
+    try {
+      await startBridgeCallback();
+    } catch (e) {
+      console.error(
+        '[dsh-pet-desktop-helper] bridge callback server failed to start:',
+        String(e && e.message ? e.message : e),
+      );
+      app.exit(1);
+      return;
+    }
     // 自定义 scheme 接住渲染端全部请求（配置/余额/碎碎念/广播/素材）
     protocol.handle('dsh-pet-bridge', (request) =>
       handleBridgeRequest(request).catch((e) => {
@@ -1310,7 +1305,6 @@ app.whenReady().then(() => {
         });
       }),
     );
-    startBridgeCallback(); // 宿主应答回调服务器（stdin 在 Electron 主进程不可用，改走本地 HTTP）
   }
 
   // macOS：桌面宠物 Helper 不该单独占 Dock；常驻入口由 desktop-main.cjs 提供。
@@ -1359,10 +1353,6 @@ app.whenReady().then(() => {
       updateOverlayShape();
       if (!win.isVisible() && win.__petShapeKey) showPetWindow(win);
     }
-    // 窗口余量（左右/上）：命中区判定的依据，余量四边不再相等（上边距按气泡最大高度加高）
-    const ml = Number(bounds?.marginL);
-    const mt = Number(bounds?.marginT);
-    if (Number.isFinite(ml) && Number.isFinite(mt)) winMargins.set(win.id, { l: ml, t: mt });
     // 碰撞站场：位置必须用**包围盒左上角**（renderer 显式上报 boxX/boxY）——
     // 窗口坐标 = 包围盒 − margin（半只宠物宽），直接拿窗口坐标会让跨窗检测整体错位
     {
@@ -1447,30 +1437,14 @@ app.whenReady().then(() => {
       return;
     }
     const point = screen.getCursorScreenPoint();
-    const busy =
-      win === overlayWindow
-        ? [...overlayInputs].some(([petId, entry]) => !fullscreenHiddenPets.has(petId) && entry.busy)
-        : inputBusy.get(win.id) === true;
-    const ignoringNow = windowIgnore.get(win.id) !== false;
+    const busy = [...overlayInputs].some(([petId, entry]) => !fullscreenHiddenPets.has(petId) && entry.busy);
     const captureRequested = interactive === true || busy;
-    const ignoring =
-      !captureRequested &&
-      (win === overlayWindow
-        ? !overlayPointIsInteractive(win, point)
-        : decideWindowIgnore(
-            win.getBounds(),
-            point,
-            ignoringNow,
-            false,
-            offBodyMs.get(win.id) || 0,
-            inputRegions.get(win.id),
-            winMargins.get(win.id),
-          ));
+    const ignoring = !captureRequested && !overlayPointIsInteractive(win, point);
     setWindowIgnore(win, ignoring);
   });
 
-  // 拖拽持有完整输入租约；菜单/对话则由 inputRegions 把交互限制在实际控件矩形内。
-  // 只存标记、不直接翻转窗口——**唯一出口**仍是 setWindowIgnore（在兜底轮询里按完整规则判定），
+  // 拖拽、菜单与对话状态更新共享窗口里的逐宠物输入信息。
+  // 只存标记、不直接翻转窗口——**唯一出口**仍是 setWindowIgnore（由共享窗口轮询统一判定），
   // 否则会出现"两条通道抢着翻同一个窗口"的竞态。
   ipcMain.on('pet:input-busy', (event, payload) => {
     const win = BrowserWindow.fromWebContents(event.sender);
@@ -1479,10 +1453,6 @@ app.whenReady().then(() => {
     if (!petId || windows.get(petId) !== win) return;
     const prior = overlayInputs.get(petId) || { dragging: false, rects: [], bodyRects: [] };
     overlayInputs.set(petId, { ...prior, busy: payload.busy === true });
-    inputBusy.set(
-      win.id,
-      [...overlayInputs].some(([id, entry]) => !fullscreenHiddenPets.has(id) && entry.busy),
-    );
   });
 
   ipcMain.on('pet:input-regions', (event, input) => {
@@ -1498,9 +1468,6 @@ app.whenReady().then(() => {
     );
     const prior = overlayInputs.get(petId) || { busy: false };
     overlayInputs.set(petId, { ...prior, dragging: input.dragging === true, rects, bodyRects });
-    inputRegions.set(win.id, {
-      rects: win === overlayWindow ? [...overlayInputs.values()].flatMap((entry) => entry.rects || []) : rects,
-    });
     updateOverlayShape();
   });
 

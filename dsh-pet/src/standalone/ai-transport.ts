@@ -25,7 +25,8 @@ export function isolatedFetch(settings: Readonly<StandaloneAiSettings>, fetcher:
       settings.model === 'claude-opus-5-5';
     const urlStr = String(url);
     const validOpenAi =
-      settings.protocol === 'openai-compatible' &&
+      (settings.protocol === 'openai-compatible' ||
+        (settings.protocol === 'deepseek-official' && base === 'https://api.deepseek.com')) &&
       (urlStr === expected || urlStr === base + '/chat/completions' || urlStr === base + '/v1/chat/completions');
     const validAnthropic =
       settings.protocol === 'anthropic' &&
@@ -60,7 +61,7 @@ export async function* sdkTextStream(
     logger: quiet,
     logLevel: 'off' as const,
   };
-  if (settings.protocol === 'openai-compatible') {
+  if (settings.protocol === 'openai-compatible' || settings.protocol === 'deepseek-official') {
     const client = new OpenAI({ ...shared, organization: null, project: null, webhookSecret: null });
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
       ...(request.system ? [{ role: 'system' as const, content: request.system }] : []),

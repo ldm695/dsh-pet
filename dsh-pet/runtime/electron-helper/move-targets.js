@@ -1,6 +1,6 @@
 'use strict';
 
-const { HIT_BOX, CANVAS_H, STAGE_W, FEET_Y } = require('./pointer-target.js');
+const { HIT_BOX, CANVAS_H, STAGE_W, FEET_Y } = require('./pet-geometry.js');
 
 // Expected endpoints use the same screen coordinate system and size as pet:set-bounds.
 // Occupancy uses the physics HIT_BOX body rectangle; crossing another pet's route is allowed.

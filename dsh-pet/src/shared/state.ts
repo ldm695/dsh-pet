@@ -14,15 +14,13 @@ import type { StateLeaf } from './state-contract';
 export type { PetLeafName, StateLeaf, StateSectionName, StateSnapshot, StateStoreSnapshot } from './state-contract';
 
 /**
- * 兼容旧宿主后的客户端视图（叶子已规范化：counter 必为数字）。
- * 精确的 HTTP 响应契约见 `StateSnapshot`；这里保留可选版本号与开放键集合，
- * 以便仍能读取尚未支持长轮询或新增叶子的旧宿主。
+ * 当前宿主的客户端视图（叶子与整份状态都带递增 counter）。
+ * 精确的 HTTP 响应契约见 `StateSnapshot`；开放键集合保留给后续新增叶子。
  */
 export interface PollState {
   /** 整份 S 的版本号（= 最后一次写入的编号）。回传成 `?since=` 表达"我手里这份是哪个版本"。
-   *  **老宿主不带此字段** → undefined：消费端据此退回定时轮询——老宿主不认识 since/timeout，
-   *  会立刻返回，不退避就变成狂打。 */
-  counter?: number;
+   * 独立模式仍提供 counter，只是通过 `longPoll: false` 标明不支持挂起请求。 */
+  counter: number;
   /** `false` means the host is a file-bridge standalone runtime and cannot hold long-poll requests. */
   longPoll?: boolean;
   sections: Record<string, StateLeaf>;
@@ -65,6 +63,7 @@ export async function fetchState(
       pets?: unknown;
     } | null;
     if (!raw || typeof raw !== 'object') return null;
+    if (typeof raw.counter !== 'number' || !Number.isFinite(raw.counter)) return null;
     const sections: Record<string, StateLeaf> = {};
     const rawSections =
       raw.sections && typeof raw.sections === 'object' ? (raw.sections as Record<string, unknown>) : {};
@@ -84,7 +83,7 @@ export async function fetchState(
       pets[petId] = leaves;
     }
     return {
-      counter: typeof raw.counter === 'number' && Number.isFinite(raw.counter) ? raw.counter : undefined,
+      counter: raw.counter,
       ...(raw.longPoll === false ? { longPoll: false } : {}),
       sections,
       pets,

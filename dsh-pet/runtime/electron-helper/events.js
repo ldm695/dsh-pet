@@ -341,7 +341,7 @@ function applyBalanceNotice(state, explicit, targetPetId) {
 let stateBaseline = null;
 /** 我手里这份 S 的版本号（undefined = 首拉，不带参数 → 立刻拿全量） */
 let stateSince;
-/** 宿主支持长轮询吗？响应带 counter = 支持；不带 = 老宿主（会立刻返回全量，必须退避） */
+/** 独立模式不能挂起请求；本机服务器通过响应的 longPoll: false 明确标识。 */
 let stateLongPoll = true;
 
 /** 余额叶子 → 展示（成功播档位动画 + 气泡；不可用按 shared 判定弹文字说明） */
@@ -410,8 +410,8 @@ function logWorkStatusDiagnostic(event, details) {
   }
 }
 
-function applyWorkStatusAgents(snapshot, leafRevision) {
-  const agents = S.normalizeWorkStatusAgents(snapshot, leafRevision);
+function applyWorkStatusAgents(snapshot) {
+  const agents = snapshot.agents;
   const eligibleSprites = sprites.filter((sprite) => sprite.pet.workStatusEnabled);
   const eligiblePetIds = eligibleSprites.map((sprite) => sprite.pet.id);
   const result = workStatusAssignments.reconcile(agents, eligiblePetIds);
@@ -474,7 +474,7 @@ function applyWorkStatusAgents(snapshot, leafRevision) {
     sprite.onWorkTick(
       {
         state: agent.state,
-        task: agent.task ?? (agentKey === S.LEGACY_WORK_STATUS_AGENT_KEY ? snapshot.task : null),
+        task: agent.task ?? null,
         sourceName: agent.sourceName,
       },
       `${agentKey}:${agent.revision}:${assignmentRevision}`,
@@ -487,7 +487,7 @@ function applyWorkStatusAgents(snapshot, leafRevision) {
 function applyWorkStatusLeaf(leaf) {
   const snap = S.toWorkStatus(leaf.data);
   if (!snap) return;
-  applyWorkStatusAgents(snap, leaf.counter);
+  applyWorkStatusAgents(snap);
 }
 
 /** DSH 桥接通知 → 系统通知（总开关与宠物对话回复共用 notificationsEnabled）。 */
@@ -583,10 +583,8 @@ async function pollStateOnce() {
       stateLongPoll && stateSince !== undefined ? { since: stateSince, timeoutMs: STATE_WAIT_MS } : undefined,
     );
     if (!s) return false;
-    // 响应带 counter = 宿主支持长轮询；不带 = 老宿主（不认识 since/timeout，会立刻返回全量），
-    // 这时必须退回固定间隔轮询，否则这个循环就是忙等。
-    stateLongPoll = typeof s.counter === 'number' && s.longPoll !== false;
-    if (stateLongPoll) stateSince = s.counter;
+    stateLongPoll = s.longPoll !== false;
+    stateSince = s.counter;
     if (stateBaseline === null) {
       stateBaseline = S.flattenCounters(s); // 首拉：只记基线，不渲染（避免启动/重载时重放旧气泡）
       // 锁是持续租约而非一次性动作；Helper 单独重启时也要恢复宿主中仍有效的锁。

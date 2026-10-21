@@ -800,14 +800,33 @@ describe('/pet-display —— 业务失败一律 200 + ok:false（不用 400/404
 });
 
 describe('/work-status —— 外部写入工作状态', () => {
-  type StateBody = { sections: { workStatus: { data: { state: string | null; task: string | null } } } };
+  type StateBody = {
+    sections: {
+      workStatus: {
+        data: {
+          state: string | null;
+          task: string | null;
+          sourceName: string | null;
+          agents: Array<{ key: string; state: string; task?: string | null; revision: number; startedAt: number }>;
+        };
+      };
+    };
+  };
   const work = async () => JSON.parse((await call('/dsh-pet-7340/state')).body) as StateBody;
 
   test('POST 写入 state/task，/state 同步可见', async () => {
     const r = await call('/dsh-pet-7340/work-status', 'POST', JSON.stringify({ state: 'working', task: '编译中' }));
     assert.equal(r.status, 200);
     assert.deepEqual(JSON.parse(r.body), { state: 'working', task: '编译中' });
-    assert.deepEqual((await work()).sections.workStatus.data, { state: 'working', task: '编译中', sourceName: 'DeepSeek Harness' });
+    const payload = (await work()).sections.workStatus.data;
+    assert.equal(payload.state, 'working');
+    assert.equal(payload.task, '编译中');
+    assert.equal(payload.sourceName, 'DeepSeek Harness');
+    assert.deepEqual(payload.agents.map(({ key }) => key), ['dsh:api']);
+    assert.equal(payload.agents[0].state, 'working');
+    assert.equal(payload.agents[0].task, '编译中');
+    assert.equal(Number.isSafeInteger(payload.agents[0].revision), true);
+    assert.equal(Number.isFinite(payload.agents[0].startedAt), true);
   });
 
   test('省略 task 保留上一次；显式 null / 空串清空', async () => {
@@ -829,7 +848,11 @@ describe('/work-status —— 外部写入工作状态', () => {
     const del = await call('/dsh-pet-7340/work-status', 'DELETE');
     assert.equal(del.status, 204);
     assert.equal(del.body, '');
-    assert.deepEqual((await work()).sections.workStatus.data, { state: null, task: null, sourceName: 'DeepSeek Harness' });
+    const payload = (await work()).sections.workStatus.data;
+    assert.equal(payload.state, null);
+    assert.equal(payload.task, null);
+    assert.equal(payload.sourceName, 'DeepSeek Harness');
+    assert.deepEqual(payload.agents, []);
 
     const again = await call('/dsh-pet-7340/work-status', 'DELETE');
     assert.equal(again.status, 204);

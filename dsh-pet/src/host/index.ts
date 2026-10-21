@@ -259,7 +259,7 @@ export function apply(ctx: any): void {
   const userRoot = join(dshHome, 'dsh-pet');
   // 用户主配置（可编辑层）与文件宠物目录；配置读取/合并统一走 readAllConfig（./config）。
   // 主配置是 **JSONC**（main-config.jsonc）——与包内默认 config.jsonc 同名同格式：
-  // 「同步」写进去的就是带注释的原文，扩展名如实反映内容（旧版 main-config.json 只读回落 + 启动迁移）
+  // 「同步」写进去的就是带注释的原文，扩展名如实反映内容。
   const userConfigPath = join(userRoot, 'main-config.jsonc');
   const legacyUserConfigPath = join(userRoot, 'main-config.json');
   const petConfigDir = join(userRoot, 'pet');
@@ -271,7 +271,7 @@ export function apply(ctx: any): void {
     petDir: petConfigDir,
   };
   // 老用户一次性迁移：main-config.json → main-config.jsonc（重命名，内容一字不动；
-  // 新文件已存在则不动旧文件）。失败不影响运行——读取侧对旧路径有回落。
+  // 新文件已存在则不动旧文件）。只有迁移失败的当前进程会临时读取旧路径。
   migrateUserConfig(configPaths, (msg) => console.log('[dsh-pet] ' + msg));
   // 用户动画目录（thumb 播放时优先于包内素材；webm 放 main-animation/webm/，mov（macOS 定制）放 main-animation/mov/）
   const thumbUserRoot = join(userRoot, 'main-animation');
@@ -342,7 +342,7 @@ export function apply(ctx: any): void {
   let workFlushTimer: ReturnType<typeof setTimeout> | null = null;
   const publishWorkStatus = (): void => {
     const snap = workStatus.snapshot();
-    const key = String(snap.state) + '\u0000' + String(snap.task) + '\u0000DSH';
+    const key = JSON.stringify([snap.state, snap.task, snap.agents]);
     if (key === publishedWork) return;
     // 抖动判定：文案没变、且前后都是忙碌档（同档已被上面的 key 短路掉，这里必是互切）
     const churn = snap.task === publishedTask && isBusyTier(publishedState) && isBusyTier(snap.state);
@@ -367,6 +367,7 @@ export function apply(ctx: any): void {
       state: snap.state,
       task: snap.task,
       sourceName: 'DeepSeek Harness',
+      agents: snap.agents,
     };
     state.writeSection('workStatus', payload);
   };
@@ -1018,7 +1019,11 @@ export function apply(ctx: any): void {
       process.env.DSH_PET_STANDALONE === '1'
         ? {
             ...config,
-            main: { ...(config.main ?? {}), dshPetAiChatEnabled: ctx.standaloneAi?.chatEnabled() === true },
+            main: {
+              ...(config.main ?? {}),
+              dshPetAiChatEnabled: ctx.standaloneAi?.chatEnabled() === true,
+              dshPetBalanceQuerySupported: ctx.standaloneAi?.balanceQuerySupported() === true,
+            },
           }
         : config;
     if (process.env.DSH_PET_STANDALONE !== '1' || process.env.DSH_PET_FORCE_MOVE_PROBABILITY !== '100') {

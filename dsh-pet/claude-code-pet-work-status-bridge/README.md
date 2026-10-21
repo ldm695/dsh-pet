@@ -32,6 +32,8 @@ Claude Code 的用户中断不会触发 `Stop`。收到带 `is_interrupt=true` �
 
 桥接文件默认位于 `<DSH_HOME>/dsh-pet/claude-code-work-status-bridge.json`，`DSH_HOME` 缺省为 `~/.dsh`。可使用 `CLAUDE_CODE_PET_BRIDGE_PATH` 指定完整路径。插件每秒刷新桥接时间戳，以满足桌宠的状态新鲜度窗口。
 
+桥接协议要求写入 `version: 2` 和 `agents[]`。若桌宠应用日志提示忽略旧版桥接文件，请更新此 Claude Code 插件；旧版单状态文件不再兼容。
+
 插件会从 Hook 输入读取事件名、session ID、agent ID，以及状态映射所需的 `source` / `notification_type` / `transcript_path`。监听器在本机增量读取会话记录，并在内存中识别中断标记；不保存或上传提示词、对话正文。桥接文件仅保存 session/agent ID 的哈希、状态和时间戳；并发 Hook 与心跳更新使用文件锁，避免同时写入时覆盖彼此的状态。
 
 诊断日志写入 `CLAUDE_PLUGIN_DATA` 下的 `bridge.log`；若环境变量缺失，则写入 `<DSH_HOME>/dsh-pet/dsh-pet-work-status-bridge-claude-code/bridge.log`。日志记录事件名、状态及错误代码，不记录 Hook 输入或异常消息内容。
