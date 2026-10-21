@@ -80,7 +80,6 @@ const server = createServer((req, res) => {
         readAllConfig({
           defaultFile: CONFIG_FILE,
           userFile: join(USER_CONFIG_ROOT, 'main-config.jsonc'),
-          legacyUserFile: join(USER_CONFIG_ROOT, 'main-config.json'),
           petDir: join(USER_CONFIG_ROOT, 'pet'),
         }),
       );

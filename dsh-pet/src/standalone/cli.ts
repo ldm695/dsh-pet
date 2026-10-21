@@ -24,10 +24,11 @@ import { join } from 'node:path';
 import { flattenPetList, readAllConfig } from '../host/config';
 import { dshHomeDir, packageRoot } from '../host/helper-process';
 import { apply } from '../host/index';
+import { loadProtectedApiKey, saveProtectedApiKey } from './api-key-store';
 import { createStandaloneAi } from './ai-provider';
+import { migrateMissingChatContextSettings } from './ai-config';
 import { settingsPage as standaloneAiPage } from './ai-settings-page';
 import { runCheck, packageVersion } from './check';
-import { migrateLegacyStandaloneAiCredentials } from './credential-migration';
 import {
   createStandaloneContext,
   createStandaloneLogger,
@@ -46,17 +47,48 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
   const paths = configPathsFor(packageRoot, home);
   const aiApiKeyStorePath = join(home, 'dsh-pet', 'standalone-ai-key.dpapi');
   const aiSettingsPath = join(home, 'dsh-pet', 'standalone-ai.json');
-  const credentials = await migrateLegacyStandaloneAiCredentials(home, logger);
-  // Do not import the generic DEEPSEEK_API_KEY environment value into persisted AI settings.
-  const aiInitialApiKey =
-    credentials.apiKey ?? (!existsSync(aiSettingsPath) ? standaloneAiEnvironmentApiKey() : undefined);
+  const hadAiSettings = existsSync(aiSettingsPath);
+  let storedApiKey: string | undefined;
+  let apiKeyStoreReadFailed = false;
+  try {
+    // .11's current DPAPI credential remains the supported persisted key source.
+    storedApiKey = await loadProtectedApiKey(aiApiKeyStorePath);
+  } catch (error) {
+    apiKeyStoreReadFailed = true;
+    logger.warn(`读取独立 AI DPAPI 密钥失败：${error instanceof Error ? error.message : String(error)}`);
+  }
+  const environmentApiKey = !hadAiSettings ? standaloneAiEnvironmentApiKey() : undefined;
+  let keepEnvironmentKeyBootstrap = false;
+  if (!storedApiKey && environmentApiKey && !apiKeyStoreReadFailed) {
+    try {
+      // The context migration creates standalone-ai.json. Persist the app-specific env key
+      // first so that creating that file cannot make this one-time bootstrap disappear.
+      await saveProtectedApiKey(aiApiKeyStorePath, environmentApiKey);
+      const verifiedApiKey = await loadProtectedApiKey(aiApiKeyStorePath);
+      if (verifiedApiKey !== environmentApiKey) throw new Error('DPAPI read-back verification failed');
+      storedApiKey = verifiedApiKey;
+      logger.info('已将应用环境密钥安全保存到当前 DPAPI 存储。');
+    } catch (error) {
+      // Keep the env key usable for this run, but leave standalone-ai.json absent so the
+      // same app-specific bootstrap remains available on the next run.
+      keepEnvironmentKeyBootstrap = true;
+      logger.warn(`无法安全保存应用环境密钥，跳过聊天上下文迁移以保留环境变量回退：${error instanceof Error ? error.message : String(error)}`);
+    }
+  } else if (!storedApiKey && environmentApiKey && apiKeyStoreReadFailed) {
+    // Do not overwrite an unreadable key store, and do not create the settings file that
+    // would disable the environment fallback on the next launch.
+    keepEnvironmentKeyBootstrap = true;
+    logger.warn('DPAPI 密钥存储读取失败，已跳过聊天上下文迁移以保留环境变量回退。');
+  }
   const legacyAiConfig = readAllConfig(paths).main ?? {};
+  if (!keepEnvironmentKeyBootstrap) migrateMissingChatContextSettings(home, legacyAiConfig, logger);
+  // Preserve the documented app-specific environment key behavior based on whether the
+  // settings file existed before the one-time context migration writes it.
+  const aiInitialApiKey = storedApiKey ?? environmentApiKey;
   const security = createRequestSecurity();
   const standaloneAi = createStandaloneAi(home, logger, {
     initialApiKey: aiInitialApiKey,
     apiKeyStorePath: aiApiKeyStorePath,
-    initialChatMemoryRounds: Number(legacyAiConfig.chatMemoryRounds ?? 5),
-    initialChatImageLimit: Number(legacyAiConfig.chatImageLimit ?? 10),
   });
 
   // 预检：包内默认配置读不到时宿主半边必然每请求失败；早给可操作的诊断，别让用户对着空桌面猜

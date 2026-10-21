@@ -15,7 +15,6 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
-  migrateUserConfig,
   readAllConfig,
   readUserConfig,
   saveUserConfig,
@@ -124,7 +123,7 @@ describe('readAllConfig —— events 槽位 string | string[] 校验', () => {
     });
   });
 
-  test('旧显示配置映射到桌面应用支持的值', () => {
+  test('.11 未落盘的显示值会在 .12 首次读取时一次性转换并保存', () => {
     const legacyPets = [
       { ...BASE.pets[0], id: 'browser-only', display: 'web' },
       { ...BASE.pets[0], id: 'both-ends', display: 'both' },
@@ -139,6 +138,8 @@ describe('readAllConfig —— events 槽位 string | string[] 校验', () => {
           ['both-ends', 'desktop'],
         ],
       );
+      const persisted = JSON.parse(readFileSync(paths.userFile, 'utf8')) as { pets: Array<{ display: string }> };
+      assert.deepEqual(persisted.pets.map((pet) => pet.display), ['none', 'desktop']);
     } finally {
       rmSync(dirname(paths.defaultFile), { recursive: true, force: true });
     }
@@ -208,79 +209,12 @@ function pathsWithUser(raw: string | null): { paths: ConfigPaths; dir: string } 
   const paths: ConfigPaths = {
     defaultFile: join(dir, 'default.jsonc'),
     userFile: join(dir, 'main-config.jsonc'),
-    legacyUserFile: join(dir, 'main-config.json'),
     petDir: join(dir, 'pet'),
   };
   writeFileSync(paths.defaultFile, JSON.stringify(BASE));
   if (raw !== null) writeFileSync(paths.userFile, raw);
   return { paths, dir };
 }
-
-describe('migrateUserConfig —— 老用户 main-config.json → main-config.jsonc', () => {
-  /** 只在旧路径写一份用户层（模拟升级前的老用户） */
-  function legacyOnly(raw: string): { paths: ConfigPaths; dir: string } {
-    const { paths, dir } = pathsWithUser(null);
-    writeFileSync(paths.legacyUserFile as string, raw);
-    return { paths, dir };
-  }
-
-  test('旧文件存在、新文件不存在 → 重命名（内容一字不动），旧文件消失', () => {
-    const raw = '// 老用户的配置\n{\n  "physics": ' + JSON.stringify(BASE.physics) + '\n}\n';
-    const { paths, dir } = legacyOnly(raw);
-    try {
-      const logs: string[] = [];
-      assert.equal(
-        migrateUserConfig(paths, (m) => logs.push(m)),
-        true,
-      );
-      assert.equal(existsSync(paths.legacyUserFile as string), false, '旧文件应已重命名走');
-      assert.equal(readFileSync(paths.userFile, 'utf8'), raw, '新文件内容必须与旧文件逐字节一致');
-      assert.equal(logs.length, 1, '迁移应留一条日志');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test('新文件已存在 → 什么都不做（绝不用旧文件覆盖新文件）', () => {
-    const { paths, dir } = pathsWithUser('{ "physics": ' + JSON.stringify(BASE.physics) + ' }\n');
-    try {
-      writeFileSync(paths.legacyUserFile as string, '{ "physics": { "gravity": 1 } }');
-      assert.equal(migrateUserConfig(paths), false);
-      assert.equal(existsSync(paths.legacyUserFile as string), true, '旧文件保持原样');
-      assert.equal(readUserConfig(paths)?.physics !== undefined, true, '生效的仍是新文件');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test('旧文件不存在 → 什么都不做（首次使用）', () => {
-    const { paths, dir } = pathsWithUser(null);
-    try {
-      assert.equal(migrateUserConfig(paths), false);
-      assert.equal(existsSync(paths.userFile), false, '不凭空造文件');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test('迁移失败时当前运行周期回落旧路径：旧文件保留且配置照样生效', () => {
-    const { paths, dir } = legacyOnly('{ "physics": ' + JSON.stringify(BASE.physics) + ' }\n');
-    // 让目标目录不存在，稳定触发 rename 失败，不依赖机器上的权限设置。
-    paths.userFile = join(dir, 'missing', 'main-config.jsonc');
-    try {
-      const logs: string[] = [];
-      assert.equal(migrateUserConfig(paths, (message) => logs.push(message)), false);
-      assert.ok(logs.some((message) => message.includes('本进程将临时读取旧配置')));
-      assert.equal(existsSync(paths.legacyUserFile as string), true, '迁移失败时旧文件应保留');
-      assert.equal(existsSync(paths.userFile), false, '失败迁移不应创建新文件');
-      assert.equal(readUserConfig(paths)?.physics !== undefined, true, '本进程临时读取旧 .json');
-      assert.equal(userConfigUnparsable(paths), false, '旧路径合法 → 不是损坏');
-      assert.deepEqual(readAllConfig(paths).main.physics, BASE.physics);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-});
 
 describe('userConfigUnparsable —— 保存前的损坏预检（损坏时必须弹窗，不许静默丢配置）', () => {
   test('真损坏（语法错误）→ true：宿主据此回 409，不写盘', () => {
@@ -734,15 +668,15 @@ describe('saveUserConfig —— 对话配图张数上限 chatImageLimit（白名
   });
 });
 
-describe('saveUserConfig —— 旧显示配置归一化', () => {
-  test('保存时 both 映射为 desktop，web 映射为 none', () => {
+describe('saveUserConfig —— 只接受当前显示位置', () => {
+  test('旧值不再被静默归一化', () => {
     const savePet = (display: string) => {
       const pet = { ...(PETS[0] as Record<string, unknown>), display };
       const out = saveOnce({ pets: [pet] });
       return ((out?.pets as Array<{ display: string }>)[0]?.display);
     };
-    assert.equal(savePet('both'), 'desktop');
-    assert.equal(savePet('web'), 'none');
+    assert.equal(savePet('both'), null);
+    assert.equal(savePet('web'), null);
   });
 });
 
@@ -920,7 +854,7 @@ describe('文件宠物条目 —— 全局默认（用户层作基座）+ 种类
         name: '小猪',
         size: 300,
         balanceEnabled: false,
-        display: 'web',
+        display: 'none',
         position: { corner: 'top-left', marginX: 10, marginY: 10 },
       },
     ],

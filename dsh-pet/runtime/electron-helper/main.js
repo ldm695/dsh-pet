@@ -1136,15 +1136,8 @@ function createPetOverlayWindow() {
     broadcastMoveTargets();
   });
   win.webContents.on('context-menu', (event) => event.preventDefault());
-  win.webContents.on('console-message', (_event, detailsOrLevel, legacyMessage) => {
-    // Electron 旧签名为 (event, level, message, line, sourceId)，新版把消息
-    // 放进 details.message。当前打包所用 Electron 仍走旧签名。
-    const message =
-      typeof legacyMessage === 'string'
-        ? legacyMessage
-        : typeof detailsOrLevel === 'string'
-          ? detailsOrLevel
-          : detailsOrLevel?.message;
+  win.webContents.on('console-message', (_event, details) => {
+    const message = typeof details?.message === 'string' ? details.message : undefined;
     // Forward work-status and movement diagnostics without requiring DevTools.
     if (message?.startsWith('[dsh-pet-workdiag]')) console.error(message);
     if (FRAME_DIAGNOSTICS && message?.startsWith('[dsh-pet-frame-diagnostics]')) console.error(message);

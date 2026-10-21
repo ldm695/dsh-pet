@@ -104,7 +104,6 @@ import {
   findPetInstance,
   flattenPetList,
   ID_FORBIDDEN,
-  migrateUserConfig,
   readAllConfig,
   sliceMemoryRounds,
   type ConfigPaths,
@@ -263,18 +262,13 @@ export function apply(ctx: any): void {
   // 主配置是 **JSONC**（main-config.jsonc）——与包内默认 config.jsonc 同名同格式：
   // 「同步」写进去的就是带注释的原文，扩展名如实反映内容。
   const userConfigPath = join(userRoot, 'main-config.jsonc');
-  const legacyUserConfigPath = join(userRoot, 'main-config.json');
   const petConfigDir = join(userRoot, 'pet');
   // 配置路径集（readAllConfig 的唯一输入：内置默认 + 用户主配置 + 文件宠物目录）
   const configPaths: ConfigPaths = {
     defaultFile: join(PACKAGE_ROOT, 'assets', 'config.jsonc'),
     userFile: userConfigPath,
-    legacyUserFile: legacyUserConfigPath,
     petDir: petConfigDir,
   };
-  // 老用户一次性迁移：main-config.json → main-config.jsonc（重命名，内容一字不动；
-  // 新文件已存在则不动旧文件）。只有迁移失败的当前进程会临时读取旧路径。
-  migrateUserConfig(configPaths, (msg) => console.log('[dsh-pet] ' + msg));
   // 用户动画目录（thumb 播放时优先于包内素材；webm 放 main-animation/webm/，mov（macOS 定制）放 main-animation/mov/）
   const thumbUserRoot = join(userRoot, 'main-animation');
   // 用户表情包目录（碎碎念/对话配图的图片：优先于包内 assets/memes，加图不必改包）
@@ -1236,7 +1230,7 @@ export function apply(ctx: any): void {
     if (poseResult !== undefined) return poseResult;
     const chatResult = await chatRoute(routeRequest);
     if (chatResult !== undefined) return chatResult;
-    // Final fallback handles font/pic/thumb and preserves the legacy unknown-path response.
+    // The asset handler serves font/pic/thumb requests and returns the established response for unknown paths.
     return assetRoute(routeRequest);
   };
 

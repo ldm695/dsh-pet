@@ -2,7 +2,6 @@ import { z } from 'zod';
 import { join } from 'node:path';
 import { saveProtectedApiKey } from './api-key-store';
 import { readAiSettings, writeAiSettings } from './ai-storage';
-import { markLegacyStandaloneAiCredentialsConsumed } from './credential-migration';
 
 export interface StandaloneAiPublicSettings {
   protocol: 'openai-compatible' | 'anthropic' | 'deepseek-official';
@@ -107,27 +106,66 @@ export interface AiConfigStore {
 }
 
 export interface AiConfigOptions {
-  /** Loaded from the per-user DPAPI store (or migrated from the previous DeepSeek-only store). */
+  /** Loaded from the current per-user DPAPI store. */
   initialApiKey?: string;
   apiKeyStorePath?: string;
-  initialChatMemoryRounds?: number;
-  initialChatImageLimit?: number;
+}
+
+function contextSetting(value: unknown, fallback: number): number {
+  const parsed = Number(value ?? fallback);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+/** Copy .11's global chat context values into standalone AI settings exactly once. */
+export function migrateMissingChatContextSettings(
+  home: string,
+  legacy: Record<string, unknown>,
+  logger: { warn(message: string): void; info?(message: string): void },
+): void {
+  try {
+    const loaded = readAiSettings(home);
+    const hasCurrentFile = loaded !== undefined;
+    if (hasCurrentFile && (!loaded || typeof loaded !== 'object' || Array.isArray(loaded))) {
+      throw new Error('Current standalone AI settings are not an object');
+    }
+    const current = hasCurrentFile ? (loaded as Record<string, unknown>) : {};
+    if (typeof current.apiKey === 'string' && current.apiKey.trim()) {
+      throw new Error('Legacy plaintext API key requires migration by version .11');
+    }
+    if (current.apiKey !== undefined && current.apiKey !== '') {
+      throw new Error('Unexpected legacy API key value');
+    }
+    const missingRounds = !Object.prototype.hasOwnProperty.call(current, 'chatMemoryRounds');
+    const missingImageLimit = !Object.prototype.hasOwnProperty.call(current, 'chatImageLimit');
+    if (!missingRounds && !missingImageLimit) return;
+
+    const next: Record<string, unknown> = hasCurrentFile ? { ...current } : { ...DEFAULT_AI_SETTINGS };
+    if (missingRounds) {
+      next.chatMemoryRounds = contextSetting(legacy.chatMemoryRounds, DEFAULT_AI_SETTINGS.chatMemoryRounds);
+    }
+    if (missingImageLimit) {
+      next.chatImageLimit = contextSetting(legacy.chatImageLimit, DEFAULT_AI_SETTINGS.chatImageLimit);
+    }
+    writeAiSettings(home, next);
+    logger.info?.('已将缺失的聊天上下文设置写入独立 AI 配置。');
+  } catch (error) {
+    logger.warn(`迁移独立 AI 聊天上下文设置失败，原配置保留：${error instanceof Error ? error.message : String(error)}`);
+    throw new Error('Cannot migrate standalone AI chat context settings.');
+  }
 }
 
 export function createAiConfig(home: string, options: AiConfigOptions = {}): AiConfigStore {
   const apiKeyStorePath = options.apiKeyStorePath ?? join(home, 'dsh-pet', 'standalone-ai-key.dpapi');
   const initial = {
     ...DEFAULT_AI_SETTINGS,
-    chatMemoryRounds: Number.isFinite(options.initialChatMemoryRounds) && (options.initialChatMemoryRounds as number) >= 0 ? options.initialChatMemoryRounds as number : DEFAULT_AI_SETTINGS.chatMemoryRounds,
-    chatImageLimit: Number.isFinite(options.initialChatImageLimit) && (options.initialChatImageLimit as number) >= 0 ? options.initialChatImageLimit as number : DEFAULT_AI_SETTINGS.chatImageLimit,
     apiKey: options.initialApiKey?.trim() ?? '',
   };
   let settings: Readonly<StandaloneAiSettings> = Object.freeze(initial);
   try {
     const loaded = readAiSettings(home);
     if (loaded !== undefined) {
-      // Legacy plaintext keys are migrated before the store is created. Never fall back to
-      // reading them here: a failed migration must not silently keep using an exposed secret.
+      // Never fall back to a key from JSON; only the current DPAPI store or allowed
+      // environment bootstrap may supply the credential.
       settings = Object.freeze(
         validateSettings({ ...(loaded as Record<string, unknown>), apiKey: initial.apiKey }, initial),
       );
@@ -141,11 +179,6 @@ export function createAiConfig(home: string, options: AiConfigOptions = {}): AiC
     async save(input) {
       const next = validateSettings(input, settings);
       try {
-        // Persist the opt-out before deleting the current key so startup migration cannot
-        // restore the old DeepSeek-only credential after an explicit clear.
-        if (input && typeof input === 'object' && (input as { clearApiKey?: unknown }).clearApiKey === true) {
-          await markLegacyStandaloneAiCredentialsConsumed(home);
-        }
         // Keep the credential protected by Windows DPAPI. If settings persistence fails after
         // changing the key, restore the prior credential before surfacing the error.
         await saveProtectedApiKey(apiKeyStorePath, next.apiKey || undefined);

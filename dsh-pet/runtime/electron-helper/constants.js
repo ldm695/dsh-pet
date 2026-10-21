@@ -57,19 +57,52 @@ const STANDALONE = params.get('standalone') === '1';
 const OPEN_TARGET = params.get('openTarget') === 'desktop' ? 'desktop' : 'site';
 // 视口 = 覆盖窗口外接矩形（Windows 使用完整面板，确保透明窗口覆盖任务栏区域）。
 // 它只是**坐标系原点与比例换算基准**：位置比例（customPos）、漫游 ratio 都按它算。
-// x/y = 外接矩形左上角（多显示器时原点非 0）——visibleClampRect 计算「窗口 ∩ 工作区」需要它；
-// 缺省 0（单显示器原点即 0）。注意：缺失会令夹取矩形变 NaN，菜单将飞到窗口左上角（#41 回归）。
+// x/y = 外接矩形左上角（多显示器时原点非 0）——visibleClampRect 计算「窗口 ∩ 工作区」需要它。
 //
 // **宠物边界判定不用它**，改用下面 AREAS 的并集：显示器摆放不规则时外接矩形里有大片空洞
 // （实测右倒 T 型双屏 23.7% 的面积不属于任何屏），拿它当边界会让宠物走进/飞进不可见区域。
 // 字段可变：显示器分辨率/缩放变化、插拔屏、旋转时由 applyDeskGeometry 就地重挂（#P4）。
 // 主进程下发的视口（**物理像素**，原样保留给首帧 applyDeskGeometry）；VIEW 才是 ÷scale 后的 CSS 系
+function requiredNumberParam(name) {
+  const raw = params.get(name);
+  const value = raw === null || raw.trim() === '' ? NaN : Number(raw);
+  if (!Number.isFinite(value)) throw new Error('Missing or invalid desktop geometry parameter: ' + name);
+  return value;
+}
+
+function requiredRectListParam(name) {
+  const raw = params.get(name);
+  if (raw === null) throw new Error('Missing desktop geometry parameter: ' + name);
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new Error('Invalid desktop geometry parameter: ' + name);
+  }
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error('Invalid desktop geometry parameter: ' + name);
+  }
+  return value;
+}
+
+function requiredIndexParam(name) {
+  const raw = params.get(name);
+  const value = raw === null || raw.trim() === '' ? NaN : Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error('Missing or invalid desktop geometry parameter: ' + name);
+  }
+  return value;
+}
+
 const VIEW_SCREEN = {
-  x: Number(params.get('viewX') || 0),
-  y: Number(params.get('viewY') || 0),
-  w: Number(params.get('viewW') || (window.screen && window.screen.availWidth) || 1920),
-  h: Number(params.get('viewH') || (window.screen && window.screen.availHeight) || 1080),
+  x: requiredNumberParam('viewX'),
+  y: requiredNumberParam('viewY'),
+  w: requiredNumberParam('viewW'),
+  h: requiredNumberParam('viewH'),
 };
+if (VIEW_SCREEN.w <= 0 || VIEW_SCREEN.h <= 0) {
+  throw new Error('Invalid desktop geometry: viewW and viewH must be positive');
+}
 const VIEW = {
   x: toLocal(VIEW_SCREEN.x),
   y: toLocal(VIEW_SCREEN.y),
@@ -88,8 +121,31 @@ let PRIMARY_AREA = null;
 /** 把主进程给的桌面几何（{hull, areas, workAreas, panels, primaryIndex}，屏幕坐标）挂到渲染坐标系 */
 function applyDeskGeometry(geo) {
   const hull = geo && geo.hull;
-  const list = geo && Array.isArray(geo.areas) ? geo.areas.filter((a) => a && a.width > 0 && a.height > 0) : [];
-  if (!hull || !(hull.width > 0) || !(hull.height > 0) || list.length === 0) return false;
+  const list = geo && geo.areas;
+  const workAreas = geo && geo.workAreas;
+  const panels = geo && geo.panels;
+  const isRect = (rect) =>
+    rect &&
+    Number.isFinite(rect.x) &&
+    Number.isFinite(rect.y) &&
+    Number.isFinite(rect.width) &&
+    Number.isFinite(rect.height) &&
+    rect.width > 0 &&
+    rect.height > 0;
+  const isRectList = (rects) => Array.isArray(rects) && rects.length > 0 && rects.every(isRect);
+  if (
+    !isRect(hull) ||
+    !isRectList(list) ||
+    !isRectList(workAreas) ||
+    !isRectList(panels) ||
+    workAreas.length !== list.length ||
+    panels.length !== list.length ||
+    !Number.isInteger(geo.primaryIndex) ||
+    geo.primaryIndex < 0 ||
+    geo.primaryIndex >= list.length
+  ) {
+    return false;
+  }
   // 主进程几何是物理像素：hull/areas 逐个 ÷scale 进 CSS 系（§3.5 收口约定——几何导入唯一入口）
   VIEW.x = toLocal(hull.x);
   VIEW.y = toLocal(hull.y);
@@ -100,20 +156,14 @@ function applyDeskGeometry(geo) {
     -VIEW.x,
     -VIEW.y,
   );
-  const workAreas = geo && Array.isArray(geo.workAreas) && geo.workAreas.length === list.length ? geo.workAreas : list;
   WORK_AREAS = S.translateRects(
     workAreas.map((a) => ({ x: toLocal(a.x), y: toLocal(a.y), width: toLocal(a.width), height: toLocal(a.height) })),
     -VIEW.x,
     -VIEW.y,
   );
   CONFIG.topInsetRatio = Number(geo.topInsetRatio) || 0;
-  // 面板与工作区同序；缺失/长度不符（老主进程）退化为工作区，保持旧行为
-  const panelsList =
-    geo && Array.isArray(geo.panels) && geo.panels.length === list.length
-      ? geo.panels.filter((p) => p && p.width > 0 && p.height > 0)
-      : null;
   PANELS = S.translateRects(
-    (panelsList || list).map((a) => ({
+    panels.map((a) => ({
       x: toLocal(a.x),
       y: toLocal(a.y),
       width: toLocal(a.width),
@@ -122,43 +172,22 @@ function applyDeskGeometry(geo) {
     -VIEW.x,
     -VIEW.y,
   );
-  const pi = Number(geo.primaryIndex);
-  PRIMARY_AREA = AREAS[Number.isInteger(pi) && pi >= 0 && pi < AREAS.length ? pi : 0];
+  PRIMARY_AREA = AREAS[geo.primaryIndex];
   return true;
 }
 
-// 首帧几何走 URL query（position() 定角落时就要用）；运行期变化再经 pet:displays 推送。
-// areas/panels 缺失（手动 start-desktop / 老版本主进程）时退化为「整个视口就是一块屏」= 旧行为。
-applyDeskGeometry({
+// 首帧几何由当前 Electron 主进程通过 URL query 提供；运行期变化再经 pet:displays 推送。
+const initialDeskGeometry = {
   hull: { x: VIEW_SCREEN.x, y: VIEW_SCREEN.y, width: VIEW_SCREEN.w, height: VIEW_SCREEN.h },
-  areas: (() => {
-    try {
-      const parsed = JSON.parse(params.get('areas') || '[]');
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-    } catch {
-      /* 落到下面的单矩形兜底 */
-    }
-    return [{ x: VIEW_SCREEN.x, y: VIEW_SCREEN.y, width: VIEW_SCREEN.w, height: VIEW_SCREEN.h }];
-  })(),
-  panels: (() => {
-    try {
-      const parsed = JSON.parse(params.get('panels') || '[]');
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-    } catch {
-      /* 落到下面的面板兜底（= 工作区） */
-    }
-    return null;
-  })(),
-  primaryIndex: Number(params.get('primaryIndex') || 0),
-  workAreas: (() => {
-    try {
-      return JSON.parse(params.get('workAreas') || 'null');
-    } catch {
-      return null;
-    }
-  })(),
+  areas: requiredRectListParam('areas'),
+  panels: requiredRectListParam('panels'),
+  workAreas: requiredRectListParam('workAreas'),
+  primaryIndex: requiredIndexParam('primaryIndex'),
   topInsetRatio: CONFIG.topInsetRatio,
-});
+};
+if (!applyDeskGeometry(initialDeskGeometry)) {
+  throw new Error('Invalid desktop geometry supplied by the Electron main process');
+}
 const ORIGIN = new URL(CONFIG.configUrl).origin;
 /** 宿主 /dsh-pet-7340 前缀：bridge 走自定义 scheme（主进程转发），否则 HTTP 直连宿主 */
 const BASE = BRIDGE ? 'dsh-pet-bridge://dsh-pet/dsh-pet-7340' : ORIGIN + '/dsh-pet-7340';

@@ -34,14 +34,14 @@
  * 本模块是 host 自包含实现（不 import src/shared —— 保持宿主边界简单）；
  * Electron 侧把成品拍平成渲染列表的纯逻辑在 src/shared/config.ts。
  */
-import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 /** 位置角落白名单 */
 const CORNERS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'] as const;
 const CORNER_SET: ReadonlySet<string> = new Set(CORNERS);
 
-/** display 白名单（Web overlay 已移除；旧 web/both 值只在配置读取时映射） */
+/** display 白名单（Web overlay 已移除） */
 const PET_DISPLAYS = ['desktop', 'none'] as const;
 export const PET_DISPLAY_SET: ReadonlySet<string> = new Set(PET_DISPLAYS);
 
@@ -143,12 +143,9 @@ function readJsonc(path: string): Record<string, unknown> | undefined {
  * （这正是「保存把用户精调配置抹掉」那次老 bug 的复发路径）。
  *
  * 文件不存在 / 损坏 → undefined（调用方按「无既有字段」处理，不阻塞保存）。
- * 旧路径只会在本进程迁移失败且新文件仍不存在时临时回退读取；下一进程会重新迁移。
  */
 export function readUserConfig(paths: ConfigPaths): Record<string, unknown> | undefined {
-  migrateUserConfig(paths);
-  const file = effectiveUserFile(paths);
-  return file ? readJsonc(file) : undefined;
+  return readJsonc(paths.userFile);
 }
 
 /**
@@ -162,9 +159,7 @@ export function readUserConfig(paths: ConfigPaths): Record<string, unknown> | un
  * 文件不存在 → false（没有东西可丢，正常首次保存）。
  */
 export function userConfigUnparsable(paths: ConfigPaths): boolean {
-  migrateUserConfig(paths);
-  const file = effectiveUserFile(paths);
-  return file !== undefined && readJsonc(file) === undefined;
+  return existsSync(paths.userFile) && readJsonc(paths.userFile) === undefined;
 }
 
 /** 配置路径集（宿主组装好后传入，单一事实来源） */
@@ -173,90 +168,154 @@ export interface ConfigPaths {
   defaultFile: string;
   /** ~/.dsh/dsh-pet/main-config.jsonc（用户主配置，可编辑层；JSONC——允许注释） */
   userFile: string;
-  /** 旧版路径 ~/.dsh/dsh-pet/main-config.json：迁移来源；仅迁移失败的当前进程临时回退读取 */
-  legacyUserFile?: string;
   /** ~/.dsh/dsh-pet/pet（文件宠物目录） */
   petDir: string;
 }
 
-/** 迁移只在当前进程对同一对路径尝试一次；失败后旧文件原样保留，后续启动可再试。 */
-const attemptedUserConfigMigrations = new Set<string>();
-const failedUserConfigMigrations = new Set<string>();
-
-/** 实际生效的用户层文件：新 .jsonc 始终优先；只有本进程迁移失败时才临时回退旧 .json。 */
-function effectiveUserFile(paths: ConfigPaths): string | undefined {
-  if (existsSync(paths.userFile)) return paths.userFile;
-  const legacy = paths.legacyUserFile;
-  if (!legacy) return undefined;
-  const migrationKey = `${legacy}\0${paths.userFile}`;
-  return failedUserConfigMigrations.has(migrationKey) && existsSync(legacy) ? legacy : undefined;
-}
-
-function reportMigration(message: string, log: ((message: string) => void) | undefined, warning = false): void {
-  if (log) {
-    log(message);
-  } else if (warning) {
-    console.warn('dsh-pet: ' + message);
-  } else {
-    console.info('dsh-pet: ' + message);
-  }
-}
-
 /**
- * 老用户一次性迁移：`main-config.json` → `main-config.jsonc`（内容一字不动）。
- *
- * 为什么改扩展名：用户层从「同步」起就是带 `//` 注释的 JSONC 原文，挂在 `.json` 名下名不副实
- * （编辑器会当严格 JSON 报错）。改成 `.jsonc` 后与包内默认 `config.jsonc` 同名同格式。
- *
- * 语义：新文件已存在 → 什么都不做（绝不用旧文件覆盖新文件，旧文件也保留）；
- * 旧文件不存在 → 什么都不做；迁移失败 → 保留旧文件并明确记录，本进程临时从旧路径读取，
- * 下一次启动重新尝试迁移。该回退仅用于迁移故障，不会成为长期双读。
+ * .11 曾在读取时转换这两个旧值，但没有写回文件。
+ * .12 只做一次数据落盘转换；后续配置读取和保存只接受当前值。
  */
-export function migrateUserConfig(paths: ConfigPaths, log?: (message: string) => void): boolean {
-  const legacy = paths.legacyUserFile;
-  if (!legacy || !existsSync(legacy)) return false;
-  const migrationKey = `${legacy}\0${paths.userFile}`;
-  if (attemptedUserConfigMigrations.has(migrationKey)) return false;
-  attemptedUserConfigMigrations.add(migrationKey);
-
-  // 必须先检查新路径；新文件始终优先，绝不覆盖或删除并存的旧文件。
-  if (existsSync(paths.userFile)) {
-    reportMigration(`检测到新旧用户配置并存；保留旧文件并以新配置为准：${legacy}`, log, true);
-    return false;
-  }
-  try {
-    // linkSync 在文件系统层原子创建目标名，并且目标已存在时必定失败；与 renameSync 不同，
-    // 它不会覆盖另一个进程刚创建的新配置。两个配置路径由调用方放在同一用户目录中，
-    // 因而位于同一卷，可用硬链接保留原文件内容/元数据，再移除旧名称完成迁移。
-    linkSync(legacy, paths.userFile);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    if (existsSync(paths.userFile)) {
-      reportMigration(`迁移期间新配置文件已出现；保留旧文件并以新配置为准：${legacy}`, log, true);
-      return false;
+function rewriteLegacyPetDisplays(source: string): string | undefined {
+  const edits: Array<{ start: number; end: number; value: string }> = [];
+  let index = 0;
+  const skipTrivia = (): void => {
+    while (index < source.length) {
+      if (/\s/.test(source[index]!)) {
+        index++;
+      } else if (source.startsWith('//', index)) {
+        const newline = source.indexOf('\n', index + 2);
+        index = newline < 0 ? source.length : newline + 1;
+      } else if (source.startsWith('/*', index)) {
+        const end = source.indexOf('*/', index + 2);
+        if (end < 0) throw new Error('Unterminated JSONC comment');
+        index = end + 2;
+      } else {
+        break;
+      }
     }
-    failedUserConfigMigrations.add(migrationKey);
-    reportMigration(
-      `用户配置迁移失败；旧文件已保留，本进程将临时读取旧配置，下次启动会重试：${legacy} → ${paths.userFile}（${detail}）`,
-      log,
-      true,
-    );
-    return false;
-  }
+  };
+  const readString = (): { start: number; end: number; value: string } => {
+    const start = index;
+    if (source[index] !== '"') throw new Error('Expected JSON string');
+    index++;
+    let escaped = false;
+    while (index < source.length) {
+      const char = source[index++]!;
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') {
+        return { start, end: index, value: JSON.parse(source.slice(start, index)) as string };
+      }
+    }
+    throw new Error('Unterminated JSON string');
+  };
+  const parseValue = (petObject = false): void => {
+    skipTrivia();
+    const char = source[index];
+    if (char === '{') {
+      index++;
+      skipTrivia();
+      while (source[index] !== '}') {
+        const key = readString().value;
+        skipTrivia();
+        if (source[index++] !== ':') throw new Error('Expected JSON property separator');
+        skipTrivia();
+        if (petObject && key === 'display' && source[index] === '"') {
+          const token = readString();
+          if (token.value === 'both' || token.value === 'web') {
+            edits.push({ ...token, value: token.value === 'both' ? 'desktop' : 'none' });
+          }
+        } else if (key === 'pets' && source[index] === '[') {
+          parseValue(true);
+        } else {
+          parseValue(false);
+        }
+        skipTrivia();
+        if (source[index] === ',') {
+          index++;
+          skipTrivia();
+          if (source[index] === '}') break;
+        } else if (source[index] !== '}') {
+          throw new Error('Expected JSON object delimiter');
+        }
+      }
+      if (source[index++] !== '}') throw new Error('Expected JSON object end');
+      return;
+    }
+    if (char === '[') {
+      index++;
+      skipTrivia();
+      while (source[index] !== ']') {
+        parseValue(petObject);
+        skipTrivia();
+        if (source[index] === ',') {
+          index++;
+          skipTrivia();
+          if (source[index] === ']') break;
+        } else if (source[index] !== ']') {
+          throw new Error('Expected JSON array delimiter');
+        }
+      }
+      if (source[index++] !== ']') throw new Error('Expected JSON array end');
+      return;
+    }
+    if (char === '"') {
+      readString();
+      return;
+    }
+    const start = index;
+    while (index < source.length && !/[\s,}\]]/.test(source[index]!)) index++;
+    if (index === start) throw new Error('Expected JSON value');
+  };
+
   try {
-    // 目标名已经安全创建；即使移除旧名称失败，用户数据仍在两个路径下可用。
-    unlinkSync(legacy);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    reportMigration(
-      `用户配置已安全迁移到新路径，但旧文件无法移除，已保留：${legacy}（${detail}）`,
-      log,
-      true,
-    );
-    return false;
+    parseValue();
+    skipTrivia();
+    if (index !== source.length || edits.length === 0) return undefined;
+  } catch {
+    return undefined;
   }
-  reportMigration(`用户配置已迁移到 JSONC：${legacy} → ${paths.userFile}`, log);
-  return true;
+  let output = source;
+  for (const edit of edits.reverse()) {
+    output = output.slice(0, edit.start) + JSON.stringify(edit.value) + output.slice(edit.end);
+  }
+  return output;
+}
+
+const migratedDisplayConfigSets = new Set<string>();
+
+function migrateLegacyPetDisplays(paths: ConfigPaths): void {
+  const key = `${paths.userFile}\0${paths.petDir}`;
+  if (migratedDisplayConfigSets.has(key)) return;
+  const files = [paths.userFile, ...scanPetFiles(paths.petDir).map((entry) => entry.path)];
+  for (const path of files) {
+    let source: string;
+    try {
+      source = readFileSync(path, 'utf8');
+    } catch {
+      continue;
+    }
+    if (!readJsonc(path)) continue;
+    const rewritten = rewriteLegacyPetDisplays(source);
+    if (rewritten === undefined) continue;
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`配置不是普通文件，无法升级：${path}`);
+    const temporary = `${path}.${process.pid}.ldm12.tmp`;
+    try {
+      writeFileSync(temporary, rewritten, { encoding: 'utf8', flag: 'wx', mode: stat.mode });
+      renameSync(temporary, path);
+      console.info(`dsh-pet: 已将桌宠显示配置迁移到当前版本：${path}`);
+    } catch (error) {
+      try {
+        unlinkSync(temporary);
+      } catch {
+        // Nothing to clean up when the exclusive temporary file was not created.
+      }
+      throw new Error(`无法升级桌宠显示配置；原文件已保留，请检查文件权限：${path}`, { cause: error });
+    }
+  }
+  migratedDisplayConfigSets.add(key);
 }
 
 interface PetFileEntry {
@@ -594,13 +653,6 @@ function petEnum(
   return typeof def === 'string' ? def : '';
 }
 
-/** Old configs can be read without losing desktop visibility or retaining a browser-only value. */
-function normalizePetDisplay(value: unknown): unknown {
-  if (value === 'both') return 'desktop';
-  if (value === 'web') return 'none';
-  return value;
-}
-
 /** 一只实例 → 完成品实例（id 必须自己的且全局唯一；其余字段没写/非法 → 默认 + 告警） */
 function mergePet(
   base: Record<string, unknown>,
@@ -632,7 +684,7 @@ function mergePet(
     whisperEnabled: petBool(p.whisperEnabled, base.whisperEnabled, label, 'whisperEnabled', id),
     workStatusEnabled: petBool(p.workStatusEnabled, base.workStatusEnabled, label, 'workStatusEnabled', id),
     fixedEnabled: petBool(p.fixedEnabled, base.fixedEnabled, label, 'fixedEnabled', id),
-    display: petEnum(normalizePetDisplay(p.display), PET_DISPLAY_SET, base.display, label, 'display', id),
+    display: petEnum(p.display, PET_DISPLAY_SET, base.display, label, 'display', id),
     position: {
       corner: petEnum(ownPos.corner, CORNER_SET, basePos.corner, label, 'position.corner', id),
       marginX: petNumber(ownPos.marginX, basePos.marginX, -Infinity, label, 'position.marginX', id),
@@ -669,18 +721,17 @@ function petPersonaField(own: unknown, label: string, id: string): { whisperProm
  * 消费端直接读，不做任何校验/兜底。每次调用重新读文件：修改配置刷新/重启即生效。
  */
 export function readAllConfig(paths: ConfigPaths): Record<string, Record<string, unknown>> {
+  migrateLegacyPetDisplays(paths);
   const base = readJsonc(paths.defaultFile);
   if (!base) throw new Error('dsh-pet: 内置默认配置缺失或解析失败（安装损坏）：' + paths.defaultFile);
-  migrateUserConfig(paths);
   const basePets = Array.isArray(base.pets) ? (base.pets as Record<string, unknown>[]) : [];
   const seenIds = new Set<string>();
   const out: Record<string, Record<string, unknown>> = {};
 
-  // main 条目：内置默认 ← main-config.jsonc（旧 .json 只在本进程迁移失败时临时回退）
-  const userFile = effectiveUserFile(paths);
-  const mainOverlay = userFile ? readJsonc(userFile) : undefined;
-  if (userFile && !mainOverlay) {
-    warnOnce('file:' + userFile, '用户主配置解析失败，已按无用户配置处理：' + userFile);
+  // main 条目：内置默认 ← main-config.jsonc
+  const mainOverlay = readJsonc(paths.userFile);
+  if (existsSync(paths.userFile) && !mainOverlay) {
+    warnOnce('file:' + paths.userFile, '用户主配置解析失败，已按无用户配置处理：' + paths.userFile);
   }
   out.main = mergeEntry(base, mainOverlay, 'main-config.jsonc', basePets, seenIds);
 
@@ -766,7 +817,7 @@ export function saveUserConfig(
     // 传了必须是布尔，没传则走下面的读取侧默认值（内置默认 false = 保持原行为）。
     const fixedEnabled = pp.fixedEnabled;
     if (fixedEnabled !== undefined && typeof fixedEnabled !== 'boolean') return null;
-    const display = String(normalizePetDisplay(pp.display) ?? '');
+    const display = String(pp.display ?? '');
     if (!PET_DISPLAY_SET.has(display)) return null;
     const pos = pp.position && typeof pp.position === 'object' ? (pp.position as Record<string, unknown>) : {};
     const corner = String(pos.corner ?? '');

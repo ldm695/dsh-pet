@@ -17,7 +17,7 @@ import type {
   Weights,
 } from './types';
 
-/** Windows EXE 支持的显示位置。旧值 web/both 只在 host 配置读取边界兼容。 */
+/** Windows EXE 支持的显示位置。 */
 export const PET_DISPLAYS: PetDisplay[] = ['desktop', 'none'];
 
 /** 桌面窗口层级白名单 */
@@ -27,9 +27,6 @@ export const PET_DISPLAY_PRIORITIES: PetDisplayPriority[] = [
   'hide-on-fullscreen-or-maximized',
   'normal',
 ];
-
-/** 仅保留给未打包的旧客户端源码；Windows EXE 和正式配置不再支持 Web overlay。 */
-export const isWebVisible = (display: PetDisplay): boolean => display === 'web' || display === 'both';
 
 /** 该宠物是否参与桌面模式（Electron 透明窗）渲染 */
 export const isDesktopVisible = (display: PetDisplay): boolean => display === 'desktop';

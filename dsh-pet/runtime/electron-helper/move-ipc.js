@@ -3,7 +3,7 @@
 /**
  * IPC contract for renderer/main-process endpoint coordination.
  * Coordinates and sizes are screen pixels; points describe the pet's visual center.
- * The channel strings are intentionally stable for compatibility with existing preload clients.
+ * The channel names define the current preload/main-process contract.
  *
  * @typedef {{ x: number, y: number, size: number }} MovePoint
  * @typedef {'claim' | 'yield'} MoveKind

@@ -75,8 +75,6 @@ export function configPathsFor(root: string, home: string): ConfigPaths {
   return {
     defaultFile: join(root, 'assets', 'config.jsonc'),
     userFile: join(userRoot, 'main-config.jsonc'),
-    // 供 host/config.ts 迁移使用；仅迁移失败的当前进程会临时回退读取。
-    legacyUserFile: join(userRoot, 'main-config.json'),
     petDir: join(userRoot, 'pet'),
   };
 }

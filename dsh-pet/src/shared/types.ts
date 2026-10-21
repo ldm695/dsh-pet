@@ -16,10 +16,8 @@ export interface Rect {
   height: number;
 }
 
-/**
- * 桌宠显示位置。旧配置中的 `web` 和 `both` 会在 host 入口处迁移为 `none` / `desktop`。
- */
-export type PetDisplay = 'web' | 'desktop' | 'both' | 'none';
+/** 桌宠显示位置。 */
+export type PetDisplay = 'desktop' | 'none';
 
 /** 桌面宠物窗口的显示层级（全局设置）。 */
 export type PetDisplayPriority =

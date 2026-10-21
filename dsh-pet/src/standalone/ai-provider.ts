@@ -64,8 +64,6 @@ export interface StandaloneAiDependencies {
   now?: () => number;
   initialApiKey?: string;
   apiKeyStorePath?: string;
-  initialChatMemoryRounds?: number;
-  initialChatImageLimit?: number;
 }
 
 function parseRequest(
@@ -144,8 +142,6 @@ export function createStandaloneAi(
     store = createAiConfig(home, {
       initialApiKey: dependencies.initialApiKey,
       apiKeyStorePath: dependencies.apiKeyStorePath,
-      initialChatMemoryRounds: dependencies.initialChatMemoryRounds,
-      initialChatImageLimit: dependencies.initialChatImageLimit,
     });
   } catch {
     logger.error('Cannot securely load standalone AI settings.');

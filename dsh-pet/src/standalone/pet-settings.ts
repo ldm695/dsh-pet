@@ -826,10 +826,7 @@ export function makePetConfigSection(rt: {
       const m = merged.main;
       if (!m || !Array.isArray(m.pets)) throw new Error('Invalid config response');
       setEntryPrompt(typeof m.whisperPrompt === 'string' ? m.whisperPrompt : '');
-      const loadedPets: Pet[] = (m.pets as Pet[]).map((pet) => ({
-        ...pet,
-        display: pet.display === 'both' ? 'desktop' : pet.display === 'web' ? 'none' : pet.display,
-      }));
+      const loadedPets = m.pets as Pet[];
       setPets(loadedPets.map((p) => ({ ...p, position: { ...p.position } })));
       setSelId((id) => (loadedPets.some((p) => p.id === id) ? id : (loadedPets[0]?.id ?? '')));
       setDraftPet(null);
