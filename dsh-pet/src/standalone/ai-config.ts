@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { join } from 'node:path';
 import { saveProtectedApiKey } from './api-key-store';
 import { readAiSettings, writeAiSettings } from './ai-storage';
+import { markLegacyStandaloneAiCredentialsConsumed } from './credential-migration';
 
 export interface StandaloneAiPublicSettings {
   protocol: 'openai-compatible' | 'anthropic' | 'deepseek-official';
@@ -140,6 +141,11 @@ export function createAiConfig(home: string, options: AiConfigOptions = {}): AiC
     async save(input) {
       const next = validateSettings(input, settings);
       try {
+        // Persist the opt-out before deleting the current key so startup migration cannot
+        // restore the old DeepSeek-only credential after an explicit clear.
+        if (input && typeof input === 'object' && (input as { clearApiKey?: unknown }).clearApiKey === true) {
+          await markLegacyStandaloneAiCredentialsConsumed(home);
+        }
         // Keep the credential protected by Windows DPAPI. If settings persistence fails after
         // changing the key, restore the prior credential before surfacing the error.
         await saveProtectedApiKey(apiKeyStorePath, next.apiKey || undefined);

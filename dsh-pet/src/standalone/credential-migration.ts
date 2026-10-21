@@ -1,8 +1,8 @@
 /** One-time migration of legacy standalone AI credentials into DPAPI-protected storage. */
-import { lstat, access } from 'node:fs/promises';
+import { lstat, access, readFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { join } from 'node:path';
-import { readAiSettings, writeAiSettings } from './ai-storage';
+import { readAiSettings, writeAiSettings, writePrivateJson } from './ai-storage';
 import { loadProtectedApiKey, saveProtectedApiKey } from './api-key-store';
 
 export interface CredentialMigrationLogger {
@@ -47,6 +47,28 @@ function validApiKey(value: string): boolean {
   return key.length <= 4096 && !/[\s\u0000-\u001f\u007f]/.test(key);
 }
 
+const LEGACY_CREDENTIAL_MARKER = 'standalone-ai-legacy-credentials-migrated.json';
+
+async function readLegacyCredentialMarker(path: string): Promise<boolean> {
+  try {
+    const stat = await lstat(path);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 256) {
+      throw new Error('invalid legacy credential migration marker');
+    }
+    const marker = JSON.parse(await readFile(path, 'utf8')) as { version?: unknown };
+    if (marker?.version !== 1) throw new Error('invalid legacy credential migration marker');
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/** Record that the legacy DeepSeek DPAPI file must never be used as a future fallback. */
+export async function markLegacyStandaloneAiCredentialsConsumed(home: string): Promise<void> {
+  await writePrivateJson(join(home, 'dsh-pet', LEGACY_CREDENTIAL_MARKER), { version: 1 });
+}
+
 async function backupPath(home: string): Promise<string> {
   const directory = join(home, 'dsh-pet');
   const base = join(directory, 'standalone-ai-key-legacy');
@@ -69,6 +91,7 @@ export async function migrateLegacyStandaloneAiCredentials(
   const directory = join(home, 'dsh-pet');
   const protectedPath = join(directory, 'standalone-ai-key.dpapi');
   const oldDeepSeekPath = join(directory, 'deepseek-api-key.dpapi');
+  const legacyMarkerPath = join(directory, LEGACY_CREDENTIAL_MARKER);
 
   let settings: unknown;
   try {
@@ -87,6 +110,16 @@ export async function migrateLegacyStandaloneAiCredentials(
     logger.warn(`读取独立 AI 的 DPAPI 密钥失败，保留所有旧凭据：${error instanceof Error ? error.message : String(error)}`);
     // A present but unreadable new store is authoritative. Do not overwrite it from an older source.
     protectedStoreExists = true;
+  }
+
+  // Fail closed if the marker is corrupt or inaccessible: an old key must not silently
+  // become active again after the user has cleared the current credential.
+  let oldDeepSeekConsumed = false;
+  try {
+    oldDeepSeekConsumed = await readLegacyCredentialMarker(legacyMarkerPath);
+  } catch (error) {
+    oldDeepSeekConsumed = true;
+    logger.warn(`读取旧密钥迁移标记失败，跳过旧 DPAPI 密钥回退：${error instanceof Error ? error.message : String(error)}`);
   }
 
   const settingsObject = settings && typeof settings === 'object' && !Array.isArray(settings)
@@ -110,8 +143,9 @@ export async function migrateLegacyStandaloneAiCredentials(
     }
   }
 
-  // The old DeepSeek-only DPAPI file is consulted only when the new store is absent.
-  if (!protectedStoreExists) {
+  // The old DeepSeek-only DPAPI file is imported once. Keep the source file as a recovery
+  // copy, but persist a marker so clearing the current key cannot reactivate this copy.
+  if (!protectedStoreExists && !oldDeepSeekConsumed) {
     try {
       if (await keyStoreExists(oldDeepSeekPath)) {
         const oldKey = await loadProtectedApiKey(oldDeepSeekPath);
@@ -119,11 +153,28 @@ export async function migrateLegacyStandaloneAiCredentials(
           await persistAndVerify(protectedPath, oldKey);
           activeKey = oldKey;
           protectedStoreExists = true;
+          try {
+            await markLegacyStandaloneAiCredentialsConsumed(home);
+            oldDeepSeekConsumed = true;
+          } catch (error) {
+            logger.warn(`旧密钥已迁入，但无法写入迁移标记；清除密钥前需确保标记可写：${error instanceof Error ? error.message : String(error)}`);
+          }
           logger.info?.('已将旧 DeepSeek 密钥迁移到独立 AI 的 DPAPI 存储。');
         }
       }
     } catch (error) {
       logger.warn(`迁移旧 DeepSeek DPAPI 密钥失败，旧文件已保留：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  // A pre-existing current store is authoritative, even when unreadable. Mark the legacy
+  // source consumed before a later user-initiated clear can remove that current store.
+  if (protectedStoreExists && !oldDeepSeekConsumed) {
+    try {
+      await markLegacyStandaloneAiCredentialsConsumed(home);
+      oldDeepSeekConsumed = true;
+    } catch (error) {
+      logger.warn(`无法记录旧密钥已停用：${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
