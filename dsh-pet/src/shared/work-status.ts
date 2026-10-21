@@ -15,6 +15,7 @@ export interface WorkStatusAgentSnapshot {
   key: string;
   state: WorkStatusState;
   sourceName?: string;
+  task?: string | null;
   revision: number;
   startedAt: number;
 }
@@ -74,6 +75,7 @@ export function toWorkStatus(raw: unknown): WorkStatusSnapshot | null {
             key: agent.key,
             state: agent.state as WorkStatusState,
             ...(typeof agent.sourceName === 'string' ? { sourceName: agent.sourceName } : {}),
+            ...(typeof agent.task === 'string' || agent.task === null ? { task: agent.task } : {}),
             revision: agent.revision as number,
             startedAt: agent.startedAt as number,
           },

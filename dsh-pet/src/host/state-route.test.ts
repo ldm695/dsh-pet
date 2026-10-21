@@ -5,6 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PollStateStore } from './state';
 import { createStateRoute } from './state-route';
+import { createExternalWorkStatusRoute } from './external-work-status-route';
+import { WorkStatusStore } from './work-status';
+import { toWorkStatus } from '../shared/work-status';
 import type { RouteRequest } from './route-contract';
 
 const tempDirs: string[] = [];
@@ -20,6 +23,28 @@ const request = (rest = 'state', method = 'GET', query?: string, signal?: AbortS
 });
 
 describe('createStateRoute', () => {
+  test('外部状态与客户端桥接并存，撤销外部槽后客户端继续工作', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-pet-external-work-'));
+    tempDirs.push(dir);
+    const paths = { dsh: join(dir, 'dsh.json'), codex: join(dir, 'codex.json'), claude: join(dir, 'claude.json') };
+    const now = Date.now();
+    writeFileSync(paths.codex, JSON.stringify({ updatedAt: now, state: 'thinking', revision: 1, eventAt: now - 100 }));
+    const state = new PollStateStore();
+    const external = createExternalWorkStatusRoute(new WorkStatusStore(), () => {});
+    const route = createStateRoute({ state, isStandalone: () => true, bridgePaths: paths, externalWorkSnapshot: external.snapshot });
+    await external.handle({ rest: 'work-status', method: 'POST', body: JSON.stringify({ state: 'working', task: '外部任务' }) });
+    await route(request());
+    const snapshot = toWorkStatus(state.read().sections.workStatus.data);
+    assert.ok(snapshot);
+    assert.deepEqual(snapshot.agents?.map((agent) => agent.key).sort(), ['api:client', 'codex:client']);
+    assert.equal(snapshot.agents?.find((agent) => agent.key === 'api:client')?.task, '外部任务');
+    await external.handle({ rest: 'work-status', method: 'DELETE' });
+    await route(request());
+    const remaining = toWorkStatus(state.read().sections.workStatus.data);
+    assert.equal(remaining?.state, 'thinking');
+    assert.deepEqual(remaining?.agents?.map((agent) => agent.key), ['codex:client']);
+  });
+
   test('normal state reads remain no-cache, and invalid methods/query keep their original errors', async () => {
     const state = new PollStateStore();
     const route = createStateRoute({

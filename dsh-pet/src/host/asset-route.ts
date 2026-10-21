@@ -99,13 +99,21 @@ function handleAssetRoute(rest: string, deps: AssetRouteDependencies): RouteResu
   }
 
   const extraAnimDir = deps.resolveAsset(deps.petConfigDir, petId + '-animation');
-  const file =
-    extraAnimDir !== undefined && existsSync(extraAnimDir)
-      ? deps.resolveExisting(extraAnimDir, fileName)
-      : (deps.resolveExisting(userRootFor(deps.thumbUserRoot, ext), fileName) ??
-        deps.resolveExisting(assetRootFor(deps.packageRoot, ext), fileName));
+  const findAnim = (format: string): string | undefined => {
+    const name = fileName.replace(/\.(webm|mov)$/i, '') + format;
+    return extraAnimDir !== undefined && existsSync(extraAnimDir)
+      ? deps.resolveExisting(extraAnimDir, name)
+      : (deps.resolveExisting(userRootFor(deps.thumbUserRoot, format), name) ??
+          deps.resolveExisting(assetRootFor(deps.packageRoot, format), name));
+  };
+  let file = findAnim(ext);
+  let servedExt = ext;
+  if (file === undefined && ext === '.mov') {
+    file = findAnim('.webm');
+    if (file !== undefined) servedExt = '.webm';
+  }
   if (file === undefined) return { kind: 'text', status: 404, body: 'dsh-pet: asset not found' };
-  return { kind: 'file', file, contentType: contentTypeOf(file) };
+  return { kind: 'file', file, contentType: MIME[servedExt] ?? 'application/octet-stream' };
 }
 
 /** Build the final asset fallback handler; it also preserves the existing unknown-route response. */

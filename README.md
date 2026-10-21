@@ -37,4 +37,6 @@
 
 ## 问题反馈
 
+上游新功能贡献请先在上游开 issue 讨论，由上游维护者确认范围后再提交实现 PR。
+
 请通过 [GitHub Issues](https://github.com/ldm695/dsh-pet/issues) 提交本 Fork 相关问题，并提供应用版本、操作系统和复现步骤。若问题涉及上游原有功能，也请参考[上游仓库](https://github.com/PC2005-cloud/dsh-pet)。

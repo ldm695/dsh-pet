@@ -122,6 +122,8 @@ export const zh = {
   emptyPets: '暂无宠物，点击「添加宠物」创建。',
   sizeLabel: '大小（宽度 px）',
   sizeHint: '高度自动 = 宽度 × 9/16。',
+  personaLabel: '人设（可选）',
+  personaHint: '只影响这只桌宠。留空时跟随所属配置的人设；名字和当前时间由系统自动追加。',
   nameLabel: '名字',
   nameHint: '显示名：鼠标悬浮宠物时弹出，也会加进 AI 人设（你的名字是 X）。可重复，留空按宠物 id 处理。',
   balanceEnabled: '余额功能',
@@ -286,6 +288,8 @@ export const en = {
   emptyPets: 'No pets yet — click "Add pet" to create one.',
   sizeLabel: 'Size (width px)',
   sizeHint: 'Height is automatic = width × 9/16.',
+  personaLabel: 'Persona (optional)',
+  personaHint: 'Applies to this pet only. Leave empty to follow the entry persona; the name and current time are appended automatically.',
   nameLabel: 'Name',
   nameHint:
     'Shown on hover and added to AI personas ("your name is X"). Duplicates allowed; empty falls back to the pet id.',
@@ -707,6 +711,7 @@ export function makePetConfigSection(rt: {
     const [pendingCorruptPets, setPendingCorruptPets] = useState<Pet[] | null>(null);
     // 文件定义宠物数量（pet/ 目录，不在本编辑列表；仅展示提示）
     const extraCount = petBridge.current.filter((p) => p.extra).length;
+    const [entryPrompt, setEntryPrompt] = useState('');
     const [pets, setPets] = useState<Pet[]>(initPets.map((p) => ({ ...p, position: { ...p.position } })));
     const [selId, setSelId] = useState<string>(initPets[0]?.id ?? '');
     const [saving, setBusy] = useState(false);
@@ -820,6 +825,7 @@ export function makePetConfigSection(rt: {
     const applyConfig = useCallback((merged: Record<string, Record<string, unknown>>) => {
       const m = merged.main;
       if (!m || !Array.isArray(m.pets)) throw new Error('Invalid config response');
+      setEntryPrompt(typeof m.whisperPrompt === 'string' ? m.whisperPrompt : '');
       const loadedPets: Pet[] = (m.pets as Pet[]).map((pet) => ({
         ...pet,
         display: pet.display === 'both' ? 'desktop' : pet.display === 'web' ? 'none' : pet.display,
@@ -1207,6 +1213,11 @@ export function makePetConfigSection(rt: {
               toggleCell('fixedEnabled', !!pet.fixedEnabled, busy, (v) => update({ fixedEnabled: v }), true),
             ],
           }),
+          field(t('personaLabel'), h('textarea', {
+            className: inputClass, rows: 3, value: pet.whisperPrompt ?? '',
+            placeholder: entryPrompt, disabled: busy, style: { resize: 'vertical', minHeight: '88px' },
+            onChange: (e: ChangeEvent<HTMLTextAreaElement>) => update({ whisperPrompt: e.target.value }),
+          }), t('personaHint')),
           standaloneWhisperState !== 'enabled'
             ? h('p', { className: 'dsh-pet-cfg__note', children: whisperToggleHint })
             : null,

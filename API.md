@@ -45,6 +45,17 @@ DSH Pet Windows 应用在本机 HTTP 服务上提供统一的 `/dsh-pet-7340` �
 | `POST /dsh-pet-7340/pet-display` | **改单只宠物的显示位置**（`desktop` / `none`），只传 `{ id, display }` |
 | `POST /dsh-pet-7340/config` | 用内置默认整份覆盖用户配置，即「恢复默认」 |
 
+## 第三方菜单项
+
+| 接口 | 功能 |
+| --- | --- |
+| `POST /dsh-pet-7340/menu/item` | 注册菜单项：`{ owner, labels: ["弹弓","钓鱼"] }`，整体覆盖该 owner 的菜单 |
+| `DELETE /dsh-pet-7340/menu/item?owner=` | 清除该 owner 的全部菜单项 |
+| `GET /dsh-pet-7340/menu/events?owner=&wait=` | 查询点击事件，读取即消费；wait 为长轮询毫秒数 |
+| `POST /dsh-pet-7340/menu/click` | 渲染端上报点击，第三方无需调用 |
+
+第三方菜单统一显示在右键菜单的「更多」下；一个 owner 只有一项时直接显示该项。
+
 ## 静态资源
 
 | 接口 | 功能 |
@@ -52,6 +63,13 @@ DSH Pet Windows 应用在本机 HTTP 服务上提供统一的 `/dsh-pet-7340` �
 | `GET /dsh-pet-7340/thumb/{petId}/{file}` | 动画素材（`.webm` / `.mov`，按宠物归属） |
 | `GET /dsh-pet-7340/font/{file}` | 字体文件 |
 | `GET /dsh-pet-7340/pic/{file}` | 通知图标（`pic/`）与表情包（`pic/memes/{素材根}/`，按宠物归属） |
+
+## 八、工作状态（外部写入）
+
+| 接口 | 功能 |
+| --- | --- |
+| `POST /dsh-pet-7340/work-status` | **外部写入工作状态**：`{ state, task? }`，固定外部槽，最后写入者生效 |
+| `DELETE /dsh-pet-7340/work-status` | **清空外部槽**回空闲（幂等，204） |
 
 ---
 

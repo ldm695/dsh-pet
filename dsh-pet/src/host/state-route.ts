@@ -3,6 +3,7 @@ import type { RouteRequest, RouteResult } from './route-contract';
 import { parseStateWaitQuery, type PollState } from './state';
 import type { HostWorkStatusState } from './work-status';
 import type { StateSnapshot } from '../shared/state-contract';
+import type { ExternalWorkSnapshot } from './external-work-status-route';
 import type { WorkStatusSnapshotWire } from '../shared/work-status';
 
 interface StateStoreAccess {
@@ -29,6 +30,7 @@ interface StandaloneBridge {
 
 export interface StateRouteDependencies {
   state: StateStoreAccess;
+  externalWorkSnapshot?: () => ExternalWorkSnapshot | undefined;
   isStandalone: () => boolean;
   bridgePaths: { dsh: string; codex: string; claude: string };
 }
@@ -75,6 +77,7 @@ export function createStateRoute(
       startedAt: number;
       eventAt: number;
       source: string;
+      task?: string | null;
     }> = freshBridges.flatMap(({ source, bridge }) => {
       const bridgeAgentList = bridge?.agents;
       if (Array.isArray(bridgeAgentList)) {
@@ -117,6 +120,18 @@ export function createStateRoute(
         },
       ];
     });
+    const external = deps.externalWorkSnapshot?.();
+    if (external)
+      allBridgeAgents.push({
+        key: 'api',
+        source: 'api',
+        sourceName: '外部应用',
+        state: external.state,
+        task: external.task,
+        revision: external.revision,
+        startedAt: external.updatedAt,
+        eventAt: external.updatedAt,
+      });
     // Each client owns at most one pet; its latest in-progress session takes priority over
     // completed siblings so parallel subagents do not consume additional pets.
     const agentsBySource = new Map<string, typeof allBridgeAgents>();
@@ -148,10 +163,11 @@ export function createStateRoute(
     );
     const workState = latestAgent?.state ?? null;
     const sourceName = latestAgent?.sourceName ?? null;
-    const fingerprint = JSON.stringify({ workState, sourceName, bridgeAgents });
+    const task = latestAgent?.source === 'api' ? (external?.task ?? null) : null;
+    const fingerprint = JSON.stringify({ workState, sourceName, task, bridgeAgents });
     if (fingerprint !== lastStandaloneBridgeFingerprint) {
       lastStandaloneBridgeFingerprint = fingerprint;
-      const payload: WorkStatusSnapshotWire = { state: workState, task: null, sourceName, agents: bridgeAgents };
+      const payload: WorkStatusSnapshotWire = { state: workState, task, sourceName, agents: bridgeAgents };
       deps.state.writeSection('workStatus', payload);
     }
 

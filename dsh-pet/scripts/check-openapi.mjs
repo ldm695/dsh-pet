@@ -25,6 +25,8 @@ const HOST_ROUTE_SRCS = [
     'action-route.ts',
     'lock-route.ts',
     'state-route.ts',
+    'menu-route.ts',
+    'external-work-status-route.ts',
     'playback-route.ts',
     'chat-route.ts',
     'pose-route.ts',

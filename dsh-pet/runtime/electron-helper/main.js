@@ -47,7 +47,12 @@ const fsPromises = require('node:fs/promises');
 // 点击穿透兜底通道的纯判定（不依赖 Electron 的 forward 鼠标钩子；见文件头注释）
 const { decideWindowIgnore, pointerZone } = require('./pointer-target.js');
 // 置顶看门狗：WS_EX_TOPMOST 只是样式位，不等于窗口真的在置顶带（见 topmost-watchdog.js 头部）
-const { TOPMOST_WATCHDOG_TICK_MS, TOPMOST_WATCHDOG_ENABLED, shouldReassertTopmost } = require('./topmost-watchdog.js');
+const {
+  TOPMOST_WATCHDOG_TICK_MS,
+  TOPMOST_WATCHDOG_ENABLED,
+  shouldReassertTopmost,
+  topmostLevel,
+} = require('./topmost-watchdog.js');
 // 宿主存活判定（issue #56：宿主退出 → 管道断开 → 自己退，绝不弹框、绝不留僵尸）
 const { HOST_POLL_MS, hostIsGone, isBrokenPipeError, parseHostPid } = require('./host-liveness.js');
 // 全局 DPI 线性化的纯判定与换算（含平台例外：macOS 的 DIP 已是「点」，无需补偿；见该文件头）
@@ -430,7 +435,7 @@ function applyFullscreenVisibility() {
     }
     if (!allPetsHidden) {
       if (overlayLoweredForFullscreen) {
-        overlayWindow.setAlwaysOnTop(true, 'screen-saver');
+        overlayWindow.setAlwaysOnTop(true, topmostLevel(process.platform));
         overlayLoweredForFullscreen = false;
       }
       showPetWindow(overlayWindow);
@@ -976,7 +981,7 @@ function createPetOverlayWindow() {
     if (win.__petShapeKey) showPetWindow(win);
     if (overlayRendererVisualReady && win.isVisible()) stopOverlayRenderStartupWatchdog();
   });
-  win.setAlwaysOnTop(DISPLAY_PRIORITY !== 'normal', 'screen-saver');
+  win.setAlwaysOnTop(DISPLAY_PRIORITY !== 'normal', topmostLevel(process.platform));
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: !HIDE_ON_FULLSCREEN });
   // The shared renderer uses overlayHull as its coordinate origin. If the native full-desktop
   // window is moved independently (for example by a window-manager/DPI transition), every pet
@@ -1096,7 +1101,7 @@ function createPetOverlayWindow() {
       );
       if (!due) return;
       lastTopmostAssertMs = nowMs;
-      if (DISPLAY_PRIORITY !== 'normal') win.setAlwaysOnTop(true, 'screen-saver');
+      if (DISPLAY_PRIORITY !== 'normal') win.setAlwaysOnTop(true, topmostLevel(process.platform));
     }, TOPMOST_WATCHDOG_TICK_MS);
   };
   const refreshFullscreenVisualWatchers = () => {

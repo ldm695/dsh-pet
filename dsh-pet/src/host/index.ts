@@ -36,6 +36,8 @@
  *                                       { sections: { balance, workStatus, notify }, pets: { <id>: { say } } }，
  *                                       每个叶子 = { counter, data }；counter 变了前端才渲染。
  *                                       只读、纯内存、零副作用（绝不在这里触发外部调用/模型生成）。
+ *   /dsh-pet-7340/work-status          → 外部写入工作状态（POST = 设置固定外部槽的档位/文案；
+ *                                       DELETE = 清空回空闲。不做多写者仲裁/租约/会话管理）
  *   /dsh-pet-7340/balance              → 余额刷新（POST 动作端点，写 S；数据从 /state 读）
  *   /dsh-pet-7340/whisper              → 让某只宠物立即说一句（POST 动作端点，写 S 的 pets.<id>.say）
  *   /dsh-pet-7340/broadcast            → 第三方投喂：把外部给定的文本写进气泡（POST 动作端点，写 S 的
@@ -125,7 +127,9 @@ import {
 import { profileNameFrom, storageEntries } from './storage-paths';
 import { PollStateStore } from './state';
 import type { WorkStatusSnapshotWire } from '../shared/work-status';
-import { timeContextOf } from './time-context';
+import { composeSystemPrompt, petPersona } from './persona';
+import { createMenuRoute } from './menu-route';
+import { createExternalWorkStatusRoute } from './external-work-status-route';
 import {
   HelperProcess,
   defaultElectronExe,
@@ -313,12 +317,52 @@ export function apply(ctx: any): void {
   // 判据用**内容**（state + task）而不是 store 的 ts：ts 是 Date.now()（毫秒分辨率），
   // 同一毫秒内连改两次会被误判成"没变化"而漏写（测试里连发事件就会踩到）。
   // data 里不再带 ts：「变了没有」已由叶子 counter 承担，少一个会漂移的第二信号。
+  //
+  // **忙碌档抖动抑制（滞回）**：工具秒回时 `tool/call` 报 working、`tool/result` 报 result，
+  // 一次回复里能来回切十几次；每切一次前端就把 10s 的片段从第 0 帧重播，观感即"一秒一刀"
+  // （实测 6 次快工具调用 → 13 次换片，working 每次只活 1~2 秒）。
+  // 这里只压 **working ↔ result 这对忙碌档之间的互切**：距上次写入不足 WORK_STATE_GAP_MS
+  // 就先不写，**但不丢**——挂一个 trailing 定时器，到点重新取快照补写，所以最终状态一定落地，
+  // 只是最多晚 GAP。
+  //
+  // 刻意**不压**的对象（"写完立刻可见"是既有契约，动它会把一串宿主回归测试打翻）：
+  //   - 回空闲 / 终态（success、error）：反馈不能迟到；
+  //   - 任何进/出忙碌档以外的变化（thinking、waiting、…）；
+  //   - 任务文案变化（todo/write 的 task）：气泡文字优先于动画平滑，而且它可能伴随
+  //     "展示会话切到另一只"（同档但 task 不同），那不是抖动。
+  // 为什么压在这里而不是两个前端：网页 overlay 与桌面 helper 消费的是同一个叶子，
+  // 一处压住两端同时生效，也不必在前端各维护一份状态机。
+  const WORK_STATE_GAP_MS = 5000;
+  /** 忙碌档：只有这两个档位之间的互切算"抖动"，其余档位变化一律立即写 */
+  const isBusyTier = (s: string | null): boolean => s === 'working' || s === 'result';
   let publishedWork = '\u0000';
+  let publishedState: string | null = null;
+  let publishedTask: string | null = null;
+  let publishedWorkAt = 0;
+  let workFlushTimer: ReturnType<typeof setTimeout> | null = null;
   const publishWorkStatus = (): void => {
     const snap = workStatus.snapshot();
     const key = String(snap.state) + '\u0000' + String(snap.task) + '\u0000DSH';
     if (key === publishedWork) return;
+    // 抖动判定：文案没变、且前后都是忙碌档（同档已被上面的 key 短路掉，这里必是互切）
+    const churn = snap.task === publishedTask && isBusyTier(publishedState) && isBusyTier(snap.state);
+    const wait = WORK_STATE_GAP_MS - (Date.now() - publishedWorkAt);
+    if (churn && wait > 0) {
+      // 压住这一拍：到点再取**最新**快照补写（不要在这里缓存 snap——期间可能又变了）
+      workFlushTimer ??= setTimeout(() => {
+        workFlushTimer = null;
+        publishWorkStatus();
+      }, wait);
+      return;
+    }
+    if (workFlushTimer !== null) {
+      clearTimeout(workFlushTimer);
+      workFlushTimer = null;
+    }
     publishedWork = key;
+    publishedState = snap.state;
+    publishedTask = snap.task;
+    publishedWorkAt = Date.now();
     const payload: WorkStatusSnapshotWire = {
       state: snap.state,
       task: snap.task,
@@ -469,12 +513,12 @@ export function apply(ctx: any): void {
   const petSystemPrompt = (petId: string, cfg: Record<string, Record<string, unknown>>): string => {
     const found = findPetInstance(cfg, petId);
     const conf = found ? found.conf : (cfg.main ?? {});
-    const prompt = typeof conf.whisperPrompt === 'string' ? conf.whisperPrompt : '';
-    const name = found ? String(found.pet.name || found.pet.id || petId) : petId;
-    const nameLine = '你的名字是“' + name + '”。';
-    const base = prompt ? prompt + '\n' + nameLine : nameLine;
-    const time = timeContextOf(new Date());
-    return time ? base + '\n' + time : base;
+    return composeSystemPrompt({
+      prompt: petPersona(conf, found?.pet ?? {}),
+      name: String(found?.pet.name ?? ''),
+      id: petId,
+      now: new Date(),
+    });
   };
 
   /** 对话记忆轮数（1 轮 = 1 问 1 答）：所属条目/主条目的 chatMemoryRounds（合并器已填默认非负数字） */
@@ -489,7 +533,7 @@ export function apply(ctx: any): void {
   };
 
   /** 生成/返回某宠物的一句碎碎念（周期 GET 与菜单手动触发共用的同一逻辑）：
-   *  每只宠物独立生成（所属条目的人设）。生成成功就写进 S 的 pets.<id>.say——
+   *  每只宠物独立生成（人设 = 它自己的 whisperPrompt，没写回落到所属条目）。生成成功就写进 S 的 pets.<id>.say——
    *  碎碎念 / 命令气泡 / 对话回复在前端本来就是**同一条展示链路**（同一个 triggerWhisper、
    *  同一个气泡槽、同一批 events.whisper 动画），所以合并成同一个叶子；"周期内不重复"由
    *  调度侧的 lastWhisperAt 保证，不再需要一份 whisperCache（多端共享也由 S 天然保证）。
@@ -1062,7 +1106,10 @@ export function apply(ctx: any): void {
   });
   const lockRoute = createLockRoute({ readConfig: () => readAllConfig(configPaths), locks });
   const isStandalone = (): boolean => process.env.DSH_PET_STANDALONE === '1';
+  const menuRoute = createMenuRoute((name, data) => state.writeSection(name, data));
+  const externalWorkStatusRoute = createExternalWorkStatusRoute(workStatus, publishWorkStatus);
   const stateRoute = createStateRoute({
+    externalWorkSnapshot: externalWorkStatusRoute.snapshot,
     state,
     isStandalone,
     bridgePaths: { dsh: bridgePath, codex: codexBridgePath, claude: claudeBridgePath },
@@ -1111,6 +1158,10 @@ export function apply(ctx: any): void {
 
     const controlResult = standaloneControlRoute(routeRequest);
     if (controlResult !== undefined) return controlResult;
+    const menuResult = await menuRoute(routeRequest);
+    if (menuResult !== undefined) return menuResult;
+    const externalWorkResult = await externalWorkStatusRoute.handle(routeRequest);
+    if (externalWorkResult !== undefined) return externalWorkResult;
     const stateResult = await stateRoute(routeRequest);
     if (stateResult !== undefined) return stateResult;
     const playbackResult = await playbackRoute(routeRequest);
@@ -1496,6 +1547,8 @@ export function apply(ctx: any): void {
   // （回执的与 /state 长轮询的都不结束的话，插件重载会留下一批悬挂的响应，各自要等到超时才收尾）
   ctx.effect(() => () => {
     disposed = true;
+    if (workFlushTimer !== null) clearTimeout(workFlushTimer);
+    workFlushTimer = null;
     locks.releaseAll();
     playback.cancelAll();
     state.cancelAll();

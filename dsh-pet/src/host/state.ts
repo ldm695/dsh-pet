@@ -128,7 +128,15 @@ export class PollStateStore {
 
   constructor() {
     this.last = 0;
-    this.sections = { balance: emptyLeaf(), workStatus: emptyLeaf(), notify: emptyLeaf(), config: emptyLeaf() };
+    this.sections = {
+      balance: emptyLeaf(),
+      workStatus: emptyLeaf(),
+      notify: emptyLeaf(),
+      config: emptyLeaf(),
+      // 第三方右键菜单项（src/host/menu 的注册表快照）：第三方菜单注册/覆盖时写它，
+      // 浏览器与桌面两端据此在右键菜单里拼出「更多」。data 形状见 shared/menu 的 readMenuItems。
+      menu: emptyLeaf(),
+    };
     this.pets = new Map();
     this.waiters = new Set();
   }

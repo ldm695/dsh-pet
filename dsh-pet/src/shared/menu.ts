@@ -45,11 +45,15 @@ export interface MenuLeaf {
     | 'home'
     | 'reload'
     | 'open-app'
-    | 'set-display';
+    | 'set-display'
+    | 'third-party';
   /** open-app 的目标客户端 */
   app?: 'desktop' | 'web' | 'cli';
   /** set-display 的目标显示位置（与设置页「显示位置」下拉框同一套取值） */
   display?: PetDisplay;
+  /** third-party：注册它的 owner（身份键，**只用于回传，不显示**）。同一个 owner 的项收在同一个
+   *  分组下；只有一项时跳过这层、直接平铺（见 buildMoreBranch）。 */
+  owner?: string;
 }
 
 /** 分支：带子菜单的项 */
@@ -68,6 +72,74 @@ export const displayMenuBranch = (): MenuBranch => ({
     { label: '不显示', action: 'set-display', display: 'none' },
   ],
 });
+
+/** 第三方菜单项（宿主经 /state 的 sections.menu 下发的快照，一条 = 一个可点项）。 */
+export interface MenuMoreItem {
+  /** 注册方身份；同时也是一级分组名（显示用） */
+  owner: string;
+  /** 项名（显示用，也是回传给注册方的标识） */
+  label: string;
+}
+
+/** 第三方菜单项统一收在这个一级菜单下（宿主自己的菜单项不进这里）。 */
+export const MORE_MENU_LABEL = '更多';
+
+/**
+ * 从 `/state` 的 `sections.menu.data` 里读出第三方菜单项。
+ *
+ * 两侧（浏览器 / 桌面）共用同一份解析：快照来自网络，字段一律按"可能不存在"处理——
+ * 非法条目静默丢弃，绝不让一条坏数据把整个右键菜单搞崩（菜单是高频交互入口）。
+ */
+export function readMenuItems(data: unknown): MenuMoreItem[] {
+  if (!data || typeof data !== 'object') return [];
+  const items = (data as { items?: unknown }).items;
+  if (!Array.isArray(items)) return [];
+  const out: MenuMoreItem[] = [];
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    const owner = (item as Record<string, unknown>).owner;
+    const label = (item as Record<string, unknown>).label;
+    if (typeof owner === 'string' && owner !== '' && typeof label === 'string' && label !== '') {
+      out.push({ owner, label });
+    }
+  }
+  return out;
+}
+
+/**
+ * 「更多」一级菜单：把第三方菜单项拼成菜单树的一枝；没有第三方项时返回 null（调用方不注入，
+ * 菜单里就不会出现一个空的「更多」）。
+ *
+ * 层级规则就一条：**按项数决定要不要 owner 这一层**——
+ *   - 该 owner 只有 1 项 → 直接 `更多 / 弹弓`（跳过分组，少一次点击）；
+ *   - 2 项及以上      → `更多 / 小游戏 / 弹弓`、`钓鱼`。
+ * 于是某个 owner 从 1 项变成 2 项时，它原来那一项会"缩进"进分组里——这是这条规则必然的副作用，
+ * 换来的是只有一个项的插件不必多开一层。
+ *
+ * 同名不同 owner 的项允许共存（用户看到两个「弹弓」，点了各回各的 owner）：菜单文案由注册方负责，
+ * 这里不做任何去重、编号或来源标注。
+ */
+export function buildMoreBranch(items: readonly MenuMoreItem[]): MenuBranch | null {
+  // owner → 项名（Map 保序：注册顺序 = 分组顺序 = 组内顺序）
+  const groups = new Map<string, string[]>();
+  for (const item of items) {
+    const list = groups.get(item.owner);
+    if (list) list.push(item.label);
+    else groups.set(item.owner, [item.label]);
+  }
+  const children: MenuNode[] = [];
+  for (const [owner, labels] of groups) {
+    if (labels.length === 1) {
+      children.push({ label: labels[0], action: 'third-party', owner });
+    } else {
+      children.push({
+        label: owner,
+        children: labels.map((label) => ({ label, action: 'third-party' as const, owner })),
+      });
+    }
+  }
+  return children.length > 0 ? { label: MORE_MENU_LABEL, children } : null;
+}
 
 /** 事件名 → 分类标签（无映射时用事件名本身） */
 const EVENT_LABELS: Record<string, string> = {
