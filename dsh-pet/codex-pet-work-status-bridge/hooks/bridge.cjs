@@ -307,22 +307,34 @@ function processEvent(input) {
     } else {
       const state = stateForRootEvent(eventName);
       if (state !== undefined) {
-        // Codex exposes agent_id on SubagentStart/Stop. Tool hooks do not consistently identify
-        // the originating subagent, so do not let their events overwrite the root while children run.
-        const hasActiveSubagent = Object.values(agents).some(
-          (agent) => agent.sessionKey === sessionKey && agent.role === 'subagent' && ACTIVE_STATES.has(agent.state),
-        );
-        if (input.agent_id && eventName !== 'Stop' && eventName !== 'UserPromptSubmit') {
-          const agentId = String(input.agent_id);
-          putAgent(agents, subagentKey(sessionKey, agentId), sessionKey, turnKey, 'subagent', state, now);
-          eventState = state;
-        } else if (eventName === 'Stop' || eventName === 'UserPromptSubmit' || !hasActiveSubagent) {
-          const key = rootKey(sessionKey);
-          clearOtherRootAgents(agents, sessionKey, key);
-          putAgent(agents, key, sessionKey, turnKey, 'root', state, now);
-          eventState = state;
+        if (eventName === 'Stop') {
+          // Stop ends the visible Codex turn. Clear any child entries that did not emit
+          // SubagentStop, otherwise the host's active-agent-first aggregation can keep
+          // the pet in a work animation after the root turn has already completed.
+          const activeSubagents = Object.values(agents).filter(
+            (agent) => agent.sessionKey === sessionKey && agent.role === 'subagent' && ACTIVE_STATES.has(agent.state),
+          ).length;
+          clearSession(agents, sessionKey);
+          putAgent(agents, rootKey(sessionKey), sessionKey, turnKey, 'root', state, now);
+          eventState = activeSubagents > 0 ? `success-cleared-${activeSubagents}-subagents` : 'success';
         } else {
-          eventState = 'root-event-deferred';
+          // Codex exposes agent_id on SubagentStart/Stop. Tool hooks do not consistently identify
+          // the originating subagent, so do not let their events overwrite the root while children run.
+          const hasActiveSubagent = Object.values(agents).some(
+            (agent) => agent.sessionKey === sessionKey && agent.role === 'subagent' && ACTIVE_STATES.has(agent.state),
+          );
+          if (input.agent_id && eventName !== 'UserPromptSubmit') {
+            const agentId = String(input.agent_id);
+            putAgent(agents, subagentKey(sessionKey, agentId), sessionKey, turnKey, 'subagent', state, now);
+            eventState = state;
+          } else if (eventName === 'UserPromptSubmit' || !hasActiveSubagent) {
+            const key = rootKey(sessionKey);
+            clearOtherRootAgents(agents, sessionKey, key);
+            putAgent(agents, key, sessionKey, turnKey, 'root', state, now);
+            eventState = state;
+          } else {
+            eventState = 'root-event-deferred';
+          }
         }
       }
     }

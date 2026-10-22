@@ -583,6 +583,10 @@ function startHeartbeat() {
   if (existsSync(lockDir) && lockIsStale(lockDir)) rmSync(lockDir, { recursive: true, force: true });
   if (existsSync(lockDir)) return;
 
+  spawnHeartbeat(lockDir);
+}
+
+function spawnHeartbeat(lockDir) {
   const child = spawn(process.execPath, [__filename, '--heartbeat', lockDir], {
     detached: true,
     stdio: 'ignore',
@@ -605,36 +609,93 @@ function runHeartbeat(lockDir) {
   }
 
   const path = bridgePath();
-  const startedAt = Date.now();
+  let shutdownRequested = false;
+  const releaseLock = (restartIfActive) => {
+    if (!ownsLock) return;
+    withBridgeLock(path, () => {
+      const current = readCurrent(path);
+      const agents = normalizeAgentMap(current?.agentMap);
+      expireAgents(agents, Date.now());
+      const agentsRemain = Object.keys(agents).length > 0;
+
+      rmSync(lockDir, { recursive: true, force: true });
+      ownsLock = false;
+      if (restartIfActive && agentsRemain) spawnHeartbeat(lockDir);
+    });
+  };
+
   const timer = setInterval(() => {
+    if (shutdownRequested) {
+      try {
+        releaseLock(true);
+        stopHeartbeat();
+      } catch (error) {
+        log('heartbeat=cleanup-failed', error);
+      }
+      return;
+    }
+
     try {
-      let agentsRemain = false;
+      let shouldStopHeartbeat = false;
       withBridgeLock(path, () => {
         const current = readCurrent(path);
-        if (!current) return;
+        if (!current) {
+          rmSync(lockDir, { recursive: true, force: true });
+          ownsLock = false;
+          shouldStopHeartbeat = true;
+          return;
+        }
         const now = Date.now();
         const agents = normalizeAgentMap(current.agentMap);
         const previousCount = Object.keys(agents).length;
         expireAgents(agents, now);
-        agentsRemain = Object.keys(agents).length > 0;
+        const agentsRemain = Object.keys(agents).length > 0;
         const next = refreshEnvelope(current, agents, now);
         next.revision = (Number(current.revision) || 0) + (Object.keys(agents).length === previousCount ? 0 : 1);
         next.agentMap = agents;
         atomicWrite(path, next);
+        if (!agentsRemain) {
+          // Release the heartbeat lock while holding the bridge lock. A new Hook
+          // can then write state and start a replacement heartbeat without racing
+          // this process's exit cleanup.
+          rmSync(lockDir, { recursive: true, force: true });
+          ownsLock = false;
+          shouldStopHeartbeat = true;
+        }
       });
-      if (!agentsRemain || Date.now() - startedAt > MAX_ACTIVE_MS + TERMINAL_KEEP_MS) clearInterval(timer);
+      if (shouldStopHeartbeat) stopHeartbeat();
     } catch (error) {
       log('heartbeat=write-failed', error);
     }
   }, HEARTBEAT_MS);
 
-  const cleanup = () => {
+  function stopHeartbeat() {
     clearInterval(timer);
-    if (ownsLock) rmSync(lockDir, { recursive: true, force: true });
-  };
+    process.removeListener('SIGINT', cleanup);
+    process.removeListener('SIGTERM', cleanup);
+  }
+
+  function cleanup() {
+    try {
+      releaseLock(true);
+      stopHeartbeat();
+    } catch (error) {
+      // If bridge locking is temporarily unavailable, keep this heartbeat alive
+      // and retry cleanup on the next heartbeat tick instead of leaving active state stale.
+      shutdownRequested = true;
+      log('heartbeat=cleanup-failed', error);
+    }
+  }
   process.once('SIGINT', cleanup);
   process.once('SIGTERM', cleanup);
-  process.once('exit', cleanup);
+  process.once('exit', () => {
+    clearInterval(timer);
+    try {
+      releaseLock(false);
+    } catch (error) {
+      log('heartbeat=cleanup-failed', error);
+    }
+  });
   log('heartbeat=started');
 }
 

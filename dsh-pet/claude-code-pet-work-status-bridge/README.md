@@ -42,7 +42,7 @@ Claude Code 的用户中断不会触发 `Stop`。收到带 `is_interrupt=true` �
 
 前提：DSH Pet 独立版已运行并开启「工作状态联动」，本机可从命令行执行 `node`。
 
-仓库内插件目录为 `dsh-pet/claude-code-pet-work-status-bridge/`，Hook 配置位于 `hooks/hooks.json`。插件版本为 `0.2.11`。安装或更新后，在 Claude Code 中重新加载插件；若客户端提示审核 hooks，请检查并确认信任。
+仓库内插件目录为 `dsh-pet/claude-code-pet-work-status-bridge/`，Hook 配置位于 `hooks/hooks.json`。插件版本为 `0.2.12`。安装或更新后，在 Claude Code 中重新加载插件；若客户端提示审核 hooks，请检查并确认信任。
 
 如需直接配置到用户级 `settings.json`，可把完整事件配置从 `hooks/hooks.json` 合并进去；不要覆盖文件中已有的其它 hooks。
 

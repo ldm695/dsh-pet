@@ -8,7 +8,7 @@ DSH Pet 是面向 Windows 的便携桌面宠物应用。它使用 Electron 透�
 
 从 [GitHub Releases](https://github.com/ldm695/dsh-pet/releases) 下载 Windows x64 Portable 文件并运行。应用无需安装向导，启动后桌宠直接显示在桌面。右键桌宠可打开设置页、播放动作、查看余额或退出应用。
 
-GitHub Releases 仅发布大众版。个人版及其专属图标保留在维护者本机，不包含在公开安装包和公开桥接插件压缩包中。
+每次公开 GitHub Release 固定包含五个文件：大众版 Portable EXE、同版本大众版 ZIP，以及 DSH Desktop、Codex、Claude Code 三个公开桥接插件 ZIP。个人版及其专属图标只保留在维护者本机，不得上传到公开 Release。
 
 **升级到 `0.3.7-ldm.12` 前请先运行一次 `0.3.7-ldm.11`。** `.11` 负责迁移旧主配置路径和旧独立 AI 密钥；运行后请确认原有桌宠设置仍在，曾配置独立 AI 的用户还应测试连接成功。若迁移失败或设置、AI 不可用，请先留在 `.11` 处理，不要继续升级。随后 `.12` 首次启动会整理显示位置旧值和对话上下文格式，但不再提供旧配置路径或旧密钥的常驻回退。
 
