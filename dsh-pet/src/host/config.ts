@@ -115,12 +115,35 @@ function warnOnce(key: string, message: string): void {
   console.warn('dsh-pet: ' + message);
 }
 
-/** 剥除 JSONC 注释（行注释 // 与块注释）得到纯 JSON */
+/** 仅删除字符串之外的 JSONC 注释，保留字符串转义、换行与相邻 JSON token 的分隔。 */
 function stripJsonc(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/(^|[^\\:])\/\/.*$/gm, '$1')
-    .trim();
+  let out = '';
+  let inString = false;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (inString) {
+      out += ch;
+      if (ch === '\\' && i + 1 < src.length) {
+        out += src[++i];
+      } else if (ch === '"') {
+        inString = false;
+      }
+    } else if (ch === '"') {
+      inString = true;
+      out += ch;
+    } else if (ch === '/' && src[i + 1] === '/') {
+      out += ' ';
+      while (i + 1 < src.length && src[i + 1] !== '\r' && src[i + 1] !== '\n') i++;
+    } else if (ch === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2);
+      if (end === -1) throw new SyntaxError('Unterminated JSONC block comment');
+      out += src.slice(i, end + 2).replace(/[^\r\n]/g, ' ');
+      i = end + 1;
+    } else {
+      out += ch;
+    }
+  }
+  return out.trim();
 }
 
 /** 读取并解析 JSONC 文件；不存在/解析失败 → undefined（调用方决定处理） */
@@ -492,6 +515,8 @@ function topFieldValid(key: string, value: unknown): boolean {
       return typeof value === 'boolean';
     case 'confineToScreen':
       return typeof value === 'boolean';
+    case 'trayEnabled':
+      return typeof value === 'boolean';
     case 'petDisplayPriority':
       return (
         value === 'always-on-top' ||
@@ -684,6 +709,7 @@ function mergePet(
     whisperEnabled: petBool(p.whisperEnabled, base.whisperEnabled, label, 'whisperEnabled', id),
     workStatusEnabled: petBool(p.workStatusEnabled, base.workStatusEnabled, label, 'workStatusEnabled', id),
     fixedEnabled: petBool(p.fixedEnabled, base.fixedEnabled, label, 'fixedEnabled', id),
+    horizontalOnly: petBool(p.horizontalOnly, base.horizontalOnly, label, 'horizontalOnly', id),
     display: petEnum(p.display, PET_DISPLAY_SET, base.display, label, 'display', id),
     position: {
       corner: petEnum(ownPos.corner, CORNER_SET, basePos.corner, label, 'position.corner', id),
@@ -775,7 +801,7 @@ export function findPetInstance(
 
 /**
  * 保存用户层（PUT /config）：更新 main-config.jsonc，接受可编辑字段（pets + 全局开关：
- * notificationsEnabled / whisperImageEnabled / chatImageEnabled / confineToScreen / petDisplayPriority + physics
+ * notificationsEnabled / whisperImageEnabled / chatImageEnabled / confineToScreen / trayEnabled / petDisplayPriority + physics
  * + whisperModel / chatModel + chatMemoryRounds + chatImageLimit）。
  * pets 内除 id/name/size/四个开关/display/position 外，还接可选的 `whisperPrompt`（实例级人设；
  * 空串 = 删除覆盖，回落条目）。
@@ -817,6 +843,8 @@ export function saveUserConfig(
     // 传了必须是布尔，没传则走下面的读取侧默认值（内置默认 false = 保持原行为）。
     const fixedEnabled = pp.fixedEnabled;
     if (fixedEnabled !== undefined && typeof fixedEnabled !== 'boolean') return null;
+    const horizontalOnly = pp.horizontalOnly;
+    if (horizontalOnly !== undefined && typeof horizontalOnly !== 'boolean') return null;
     const display = String(pp.display ?? '');
     if (!PET_DISPLAY_SET.has(display)) return null;
     const pos = pp.position && typeof pp.position === 'object' ? (pp.position as Record<string, unknown>) : {};
@@ -840,6 +868,7 @@ export function saveUserConfig(
       whisperEnabled,
       workStatusEnabled,
       fixedEnabled,
+      horizontalOnly,
       display,
       position: { corner, marginX, marginY },
     };
@@ -854,6 +883,8 @@ export function saveUserConfig(
   if (cie !== undefined && typeof cie !== 'boolean') return null;
   const cts = o.confineToScreen;
   if (cts !== undefined && typeof cts !== 'boolean') return null;
+  const te = o.trayEnabled;
+  if (te !== undefined && typeof te !== 'boolean') return null;
   const pdp = o.petDisplayPriority;
   if (pdp !== undefined && !topFieldValid('petDisplayPriority', pdp)) return null;
   // physics（拖拽抛掷手感，设置页「物理」区可图形化编辑）：整段校验——physicsValid 与读取侧
@@ -895,6 +926,7 @@ export function saveUserConfig(
   if (wie !== undefined) outConfig.whisperImageEnabled = wie;
   if (cie !== undefined) outConfig.chatImageEnabled = cie;
   if (cts !== undefined) outConfig.confineToScreen = cts;
+  if (te !== undefined) outConfig.trayEnabled = te;
   if (pdp !== undefined) outConfig.petDisplayPriority = pdp;
   if (ph !== undefined) outConfig.physics = ph;
   if (fo !== undefined) outConfig.font = fo;
@@ -913,6 +945,7 @@ export function saveUserConfig(
   if (wie !== undefined) bodyOwned.add('whisperImageEnabled');
   if (cie !== undefined) bodyOwned.add('chatImageEnabled');
   if (cts !== undefined) bodyOwned.add('confineToScreen');
+  if (te !== undefined) bodyOwned.add('trayEnabled');
   if (pdp !== undefined) bodyOwned.add('petDisplayPriority');
   if (ph !== undefined) bodyOwned.add('physics');
   if (fo !== undefined) bodyOwned.add('font');

@@ -23,6 +23,9 @@ const defaults = {
     whisperImageEnabled: false,
     chatImageEnabled: false,
     confineToScreen: false,
+    trayEnabled: true,
+    petDisplayPriority: 'always-on-top',
+    uiTheme: 'system',
     physics: {
       gravity: 2400,
       restitution: 0.6,
@@ -31,10 +34,6 @@ const defaults = {
       ceilingBounce: false,
       petCollision: false,
     },
-    whisperModel: { provider: '', model: '' },
-    chatModel: { provider: '', model: '' },
-    chatMemoryRounds: 5,
-    chatImageLimit: 10,
   },
 };
 const customized = {
@@ -44,10 +43,9 @@ const customized = {
     whisperImageEnabled: true,
     chatImageEnabled: true,
     confineToScreen: true,
-    chatMemoryRounds: 19,
-    chatImageLimit: 2,
-    whisperModel: { provider: 'test', model: 'model' },
-    chatModel: { provider: 'test', model: 'model' },
+    trayEnabled: false,
+    petDisplayPriority: 'hide-on-fullscreen',
+    uiTheme: 'dark',
     physics: { ...defaults.main.physics, gravity: 1200, throwPower: 2, ceilingBounce: true, petCollision: true },
   },
 };
@@ -121,7 +119,7 @@ async function open(t, { get = customized, viewport = { width: 900, height: 900 
 async function save(page) {
   await Promise.all([
     page.waitForResponse((response) => response.request().method() === 'PUT'),
-    page.getByRole('button', { name: 'Save', exact: true }).click(),
+    page.getByRole('button', { name: 'Save settings', exact: true }).click(),
   ]);
 }
 
@@ -137,7 +135,7 @@ test('pending config prevents editing and saving placeholder defaults', async (t
     },
   });
   try {
-    assert.equal(await page.getByRole('button', { name: 'Save', exact: true }).isDisabled(), true);
+    assert.equal(await page.locator('.dsh-pet-cfg__btn.is-primary').isDisabled(), true);
     assert.equal(await page.locator('input[type=text]').first().isDisabled(), true);
     assert.deepEqual(writes, []);
   } finally {
@@ -159,7 +157,7 @@ for (const failure of ['http', 'network', 'malformed', 'null']) {
               ),
     });
     await page.getByRole('alert').waitFor();
-    assert.equal(await page.getByRole('button', { name: 'Save', exact: true }).isDisabled(), true);
+    assert.equal(await page.locator('.dsh-pet-cfg__btn.is-primary').isDisabled(), true);
     assert.deepEqual(writes, []);
     fail = false;
     await page.getByRole('button', { name: 'Retry', exact: true }).click();
@@ -169,12 +167,12 @@ for (const failure of ['http', 'network', 'malformed', 'null']) {
   });
 }
 
-test('Sync updates all controls so a subsequent Save preserves the restored defaults', async (t) => {
+test('restoring defaults refreshes editable controls before the next save', async (t) => {
   const { page, writes } = await open(t);
   await save(page);
-  assert.equal(writes[0].chatMemoryRounds, 19);
-  await page.getByRole('button', { name: 'Sync', exact: true }).click();
-  await page.getByRole('button', { name: 'Sync', exact: true }).last().click();
+  await page.getByRole('button', { name: 'Global settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Restore defaults', exact: true }).click();
+  await page.getByRole('button', { name: 'Restore defaults', exact: true }).last().click();
   await save(page);
   assert.equal(writes.length, 2);
   for (const [key, value] of Object.entries(defaults.main)) assert.deepEqual(writes[1][key], value, key);
@@ -209,21 +207,13 @@ for (const lang of ['en', 'zh']) {
   }
 }
 
-test('model picker remains anchored while the responsive settings panel is scrolled', async (t) => {
+test('global settings tab exposes app-wide controls and saves their values', async (t) => {
   const { page, writes } = await open(t, { viewport: { width: 900, height: 700 } });
-  const trigger = page.locator('.dsh-pet-mp__trigger').first();
-  await trigger.click();
-  const panel = page.getByRole('menu');
-  await panel.waitFor();
-  for (const scrollY of [0, 120]) {
-    await page.evaluate((y) => window.scrollTo(0, y), scrollY);
-    await page.waitForFunction(() => {
-      const trigger = document.querySelector('.dsh-pet-mp__trigger').getBoundingClientRect();
-      const panel = document.querySelector('.dsh-pet-mp__panel').getBoundingClientRect();
-      return Math.abs(panel.left - trigger.left) < 2 && panel.top >= 0 && panel.bottom <= innerHeight;
-    });
-  }
-  await page.getByRole('menuitemradio', { name: 'Follow current conversation' }).click();
+  const tab = page.getByRole('button', { name: 'Global settings', exact: true });
+  await tab.click();
+  assert.equal(await tab.getAttribute('aria-pressed'), 'true');
   await save(page);
-  assert.deepEqual(writes[0].whisperModel, { provider: '', model: '' });
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].trayEnabled, false);
+  assert.equal(writes[0].uiTheme, 'dark');
 });

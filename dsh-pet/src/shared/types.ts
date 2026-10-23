@@ -109,6 +109,8 @@ export interface Pet {
    *  （余额/碎碎念/工作状态）、点击回应与拖拽一律照常——用户主动触发的不受此限制。
    *  缺失默认 false（保持原行为：会自己走、会自己翻） */
   fixedEnabled: boolean;
+  /** 仅允许横向漫游：自动移动与菜单移动保持当前高度，路线角度固定为 0°；拖拽与抛掷仍由用户操作控制。 */
+  horizontalOnly: boolean;
   /** 显示位置（desktop/none，必填）：缺失即配置错误，代码不做兜底 */
   display: PetDisplay;
   position: { corner: Corner; marginX: number; marginY: number };

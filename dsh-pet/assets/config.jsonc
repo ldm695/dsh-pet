@@ -11,7 +11,7 @@
 //     chatMemoryRounds / whisperModel / chatModel / eventsRefreshSec
 //   · 条目级（每个条目一份：main 一份、每个种类各一份；种类文件顶层可覆盖）：
 //     whisperPrompt / memes / workStatusTexts / animations / animationWeights
-//   · 应用级偏好（仅 main 条目生效）：notificationsEnabled / uiTheme / eventsRefreshSec.balance
+//   · 应用级偏好（仅 main 条目生效）：notificationsEnabled / uiTheme / trayEnabled / eventsRefreshSec.balance
 // 合并口径：所有顶层字段都是**整段替换**——写了就整段用自己的，缺的子键不会从本文件补回来
 //   （消费端各自兜底：余额周期读不到按 1800、碎碎念按 300）。
 {
@@ -112,6 +112,11 @@
   // normal = 普通窗口层级，可被其它应用窗口覆盖。
   // 全屏隐藏通过 Windows 前台窗口检测实现；macOS 跟随全屏空间隐藏；Linux 暂不检测其它应用全屏。
   "petDisplayPriority": "always-on-top",
+  // ===================== 系统托盘（独立桌面应用） =====================
+  // true（默认）= 显示系统托盘图标，使用它打开设置、切换桌宠显示并退出应用。
+  // false = 隐藏托盘；桌面宠物仍可通过右键菜单打开设置或退出。若没有桌面宠物，应用会打开设置页，
+  // 关闭设置页时退出应用，避免留下没有可见入口的后台进程。仅主配置生效，设置页随「保存设置」写入。
+  "trayEnabled": true,
   // ===================== 工作状态联动文案（条目级，与 animations/physics 同级；种类文件 pet/<名>-config.json 顶层可覆盖） =====================
   // 工作状态气泡文本（pets[].workStatusEnabled 开启时展示；仅在 events.workStatus 动画触发时弹）。
   // 结构 = 二维数组，外层索引即档位（与 events.workStatus 动画索引一一对应，勿在中间插入新档）：
@@ -200,6 +205,9 @@
       // 余额/碎碎念/工作状态事件动画、点击回应与拖拽一律照常——用户主动触发的不受此限制。
       // 设置页有同名勾选框。改动后刷新或重启生效。
       "fixedEnabled": false,
+      // 仅允许横向漫游：自动移动与菜单移动只沿水平方向，不纵向移动或走斜线；拖拽与抛掷仍由用户操作控制。
+      // 默认 false；设置页可按宠物单独开启。
+      "horizontalOnly": false,
       "display": "desktop",
       "position": {
         "corner": "top-right",

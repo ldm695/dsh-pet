@@ -6,14 +6,14 @@
 //
 // **本模块不认识任何服务商**：只认叶子里的 `shape`（展示形态）与数据自带的业务事实
 // （各窗口满额度、滚动窗时长、档位基准、峰谷档位）。服务商名字只用于日志与去重键。
-// 加一个服务商只要落到 `windows` / `money` 之一，这里与两端展示层一行都不用改。
+// 加一个服务商只要落到 `windows` / `money` / `points` 之一，这里与两端展示层一行都不用改。
 
 /** 余额叶子里的原始响应（与 host/balance/ 的 BalanceResult 同构；两端按此结构校验） */
 export interface RawBalanceResult {
   ok: boolean;
   provider?: string;
-  /** 展示形态（host 写叶子时带上）：windows = 三窗口用量，money = 账户金额 */
-  shape?: 'windows' | 'money';
+  /** 展示形态（host 写叶子时带上）：windows = 三窗口用量，money = 账户金额，points = 积分 */
+  shape?: 'windows' | 'money' | 'points';
   reason?: string;
   message?: string;
   data?: {
@@ -30,6 +30,10 @@ export interface RawBalanceResult {
     /** money 余额统一使用钱包数组，单币种和多币种共用同一契约。 */
     wallets?: unknown;
     tier?: unknown;
+    /** points：单位、余额与可选档位基准。 */
+    unit?: unknown;
+    total?: unknown;
+    full?: unknown;
   };
 }
 
@@ -39,7 +43,7 @@ export type PricingTier = 'peak' | 'idle';
 /** 已解析的余额视图（展示 + 档位计算用） */
 export interface BalanceView {
   provider: string;
-  shape: 'windows' | 'money';
+  shape: 'windows' | 'money' | 'points';
   ok: true;
   /**
    * 三窗口已用百分比（0-100 数字）+ 各自的重置时间。
@@ -64,6 +68,8 @@ export interface BalanceView {
   wallets?: MoneyWalletView[];
   /** money：计价档位装饰；缺省 = 渲染成不带峰谷的「余额 ¥x.xx」 */
   tier?: PricingTier;
+  /** points：积分/点数余额；没有 full 时不参与百分比与档位动画。 */
+  points?: PointsView;
 }
 
 export interface MoneyWalletView {
@@ -72,6 +78,13 @@ export interface MoneyWalletView {
   granted?: string;
   toppedUp?: string;
   fullBalance?: string;
+}
+
+/** points 形态的余额值；unit 只作显示后缀，不当作货币。 */
+export interface PointsView {
+  unit: string;
+  total: string;
+  full?: string;
 }
 
 /** 无效（不支持/缺凭证/抓取失败）：显式标记，不静默 */
@@ -174,6 +187,20 @@ export function toBalanceState(raw: unknown): BalanceState | null {
       tier: d.tier === 'peak' || d.tier === 'idle' ? d.tier : undefined,
     };
   }
+  if (r.shape === 'points') {
+    if (typeof d.unit !== 'string' || d.unit.length === 0) return null;
+    if (typeof d.total !== 'string' || d.total.length === 0) return null;
+    return {
+      provider,
+      shape: 'points',
+      ok: true,
+      points: {
+        unit: d.unit,
+        total: d.total,
+        full: typeof d.full === 'string' && d.full.length > 0 ? d.full : undefined,
+      },
+    };
+  }
   return null;
 }
 
@@ -181,9 +208,15 @@ export function toBalanceState(raw: unknown): BalanceState | null {
  * 事件档位百分比（已用百分比语义：0 = 未消耗，100 = 耗尽）：
  * - windows：取三窗口最大（风险最高者为准）
  * - money：余额按**数据自带的基准**（`fullBalance`）折算（基准 20 → 余额 20 元 → 0%，10 元 → 50%，
- *   0 元 → 100%）。没有基准 → undefined（不播档位动画，不替服务商猜一个）
+ *   0 元 → 100%）。多币种各自按基准折算后相加；没有基准 → undefined（不播档位动画，不替服务商猜一个）
  */
 export function balancePercent(v: BalanceView): number | undefined {
+  if (v.shape === 'points') {
+    const total = Number(v.points?.total);
+    const full = Number(v.points?.full);
+    if (!Number.isFinite(total) || !Number.isFinite(full) || full <= 0) return undefined;
+    return Math.max(0, Math.min(100, 100 - (total / full) * 100));
+  }
   if (v.shape === 'money') {
     if (v.wallets?.length) {
       let remaining = 0;
@@ -195,7 +228,7 @@ export function balancePercent(v: BalanceView): number | undefined {
         remaining += total / full;
         based++;
       }
-      return based === 0 ? undefined : Math.max(0, Math.min(100, 100 - (remaining / based) * 100));
+      return based === 0 ? undefined : Math.max(0, Math.min(100, 100 - remaining * 100));
     }
     return undefined;
   }
@@ -263,7 +296,7 @@ function windowQuotas(v: BalanceView): Record<WindowKey, number | undefined> {
  * 绝对口径的副作用（刻意保留）：滚动窗额度最小，通常先报它；两端一致，完整读数见 tools/api-tester.html。
  */
 export function urgentWindow(v: BalanceView): WindowUsage | undefined {
-  if (v.shape === 'money') return undefined;
+  if (v.shape !== 'windows') return undefined;
   const quotas = windowQuotas(v);
   const resets: Record<WindowKey, string | undefined> = {
     rolling: v.rollingResetsAt,
@@ -381,11 +414,12 @@ function unavailableRows(state: BalanceUnavailable): BalanceBubbleRow[] {
  * - windows：两行 —— 「X额度已用 N%」+ 重置倒计时
  * - money：一行 —— 「余额（峰/谷）¥x.xx」（峰红/谷绿由 role:'tier' 表达）；
  *   服务商没给档位装饰时退化成「余额 ¥x.xx」，不替它编一个峰谷
+ * - points：一行 —— 「余额 800 积分」，不套货币符号
  * - 无效：显式展示不可用原因（见 unavailableRows），绝不伪造数字
  */
 export function balanceBubbleView(state: BalanceState): BalanceBubbleRow[] {
   if (state.ok) {
-    if (state.shape !== 'money') {
+    if (state.shape === 'windows') {
       // windows：三窗口中先告急的一个
       const w = urgentWindow(state);
       if (w) {
@@ -397,6 +431,12 @@ export function balanceBubbleView(state: BalanceState): BalanceBubbleRow[] {
         return rows;
       }
       return [{ role: 'label', text: '额度数据不可用' }];
+    }
+    if (state.shape === 'points') {
+      const points = state.points;
+      return points
+        ? [{ role: 'label', text: '余额 ' + points.total + ' ' + points.unit }]
+        : [{ role: 'label', text: '积分数据不可用' }];
     }
     // money：多个币种按各自金额展示，CNY 优先；0 余额不占位，全部为 0 时仍显示 ¥0.00。
     const wallets = state.wallets ?? [];
@@ -423,12 +463,12 @@ export function balanceBubbleView(state: BalanceState): BalanceBubbleRow[] {
  * 展开态行数据（点余额气泡后显示）：三个窗口各一行 —— 窗口名 + 进度条 + 已用百分比 + 重置倒计时。
  *
  * 只列**存在**的窗口：`rolling` / `weekly` 缺省 = 该服务商没有这个窗口，不补 0、不画空条。
- * money 形态没有"窗口"这个概念（只有账户余额），点开也没有别的读数 → 回落到收起态视图，
+ * money / points 形态没有"窗口"这个概念，点开也没有别的读数 → 回落到收起态视图，
  * 于是展开前后内容一致，不会出现"点了一下却什么都没变"的空交互。
  */
 export function balanceDetailView(state: BalanceState): BalanceBubbleRow[] {
   if (!state.ok) return unavailableRows(state);
-  if (state.shape === 'money') return balanceBubbleView(state);
+  if (state.shape !== 'windows') return balanceBubbleView(state);
   const resets: Record<WindowKey, string | undefined> = {
     rolling: state.rollingResetsAt,
     weekly: state.weeklyResetsAt,

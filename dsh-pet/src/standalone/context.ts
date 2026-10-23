@@ -158,6 +158,7 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
   const apiKey = deepseekApiKey();
   const routes = options.routes ?? [];
   const failures: string[] = [];
+  const services = new Map<string, unknown>();
   /** effect 释放函数（后注册先释放，与 Cordis 的逆序释放一致） */
   const disposers: Array<() => unknown> = [];
   let disposed = false;
@@ -399,6 +400,15 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
   };
 
   const context: Record<string, unknown> = {
+    /** Cordis 服务在独立宿主中按名称登记；未提供的可选服务返回 undefined。 */
+    provide(name: string, value: unknown): Record<string, unknown> {
+      services.set(name, value);
+      context[name] = value;
+      return context;
+    },
+    get(name: string): unknown {
+      return services.get(name) ?? context[name];
+    },
     /**
      * 与 Cordis 同语义：跑一次注册函数并收集它返回的释放函数。
      * 单项失败按 DSH 的 effect 隔离口径处理：记录 + 打日志，不让整个插件起不来

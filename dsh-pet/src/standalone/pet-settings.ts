@@ -88,7 +88,7 @@ export const zh = {
   intro: '管理多个桌宠：每个宠物可独立设置大小与首次启动位置（保存后即时生效）。',
   // 卡片标题 + 卡片级说明（说明都进问号，不再占一行小字）
   petCardHint:
-    '每只宠物独立配置：名字 / 大小 / 显示位置 / 首次启动位置与偏移 / 四个功能开关。修改后点击顶部的「保存设置」应用。',
+    '每只宠物独立配置：名字 / 大小 / 显示位置 / 首次启动位置与偏移 / 功能与移动开关。修改后点击顶部的「保存设置」应用。',
   globalControlsTitle: '通知与显示',
   petSettingsList: '桌宠设置',
   globalSettingsList: '全局设置',
@@ -136,6 +136,9 @@ export const zh = {
   fixedEnabled: '宠物固定',
   fixedEnabledHint:
     '启用后随机动画不再让宠物自己转向或走开，只播原地待机与随机小动作；右键菜单点播、接口触发、余额/碎碎念/工作状态动画不受影响。',
+  horizontalOnly: '仅允许横向移动',
+  horizontalOnlyHint:
+    '启用后自动漫游和右键菜单中的移动动作只沿水平方向行走，不再纵向移动或走斜线；拖拽与抛掷仍按你的操作执行。',
   displayLabel: '显示位置',
   displayHint: '桌宠只在 Windows 桌面显示，也可关闭显示。',
   'display.desktop': '仅桌面',
@@ -184,6 +187,9 @@ export const zh = {
   confineToggle: '抛掷锁定在当前屏幕',
   confineToggleHint:
     '多屏用户：甩出去的宠物只在松手时所在那块屏幕内弹（屏缝当墙，不飞到隔壁屏）；关掉则照常跨屏飞行。',
+  trayToggle: '系统托盘',
+  trayToggleHint:
+    '关闭后隐藏系统托盘图标。桌面仍有宠物时，可从桌宠右键菜单打开设置或退出；没有桌面宠物时会自动打开设置页，关闭设置页将退出应用。保存后生效。',
   displayPriorityLabel: '桌宠显示层级',
   displayPriorityHint:
     '全局设置，只影响桌面模式。Windows 可检测前台全屏应用；选择“全屏或最大化时自动隐藏”时，也会检测最大化窗口并隐藏其所在显示器上的桌宠。macOS 跟随全屏空间隐藏，Linux 暂不支持检测其它应用窗口。',
@@ -254,7 +260,7 @@ export const en = {
   intro: 'Manage multiple pets: each pet has its own size and first-launch position (applies instantly after saving).',
   // Card titles + card-level help (all hints move into the "?" bubble)
   petCardHint:
-    'Per-pet settings: name / size / display / first-launch position and offsets / the four feature switches. Click “Save Settings” in the page header to apply changes.',
+    'Per-pet settings: name / size / display / first-launch position and offsets / feature and movement switches. Click “Save Settings” in the page header to apply changes.',
   globalControlsTitle: 'Notifications & display',
   petSettingsList: 'Pet settings',
   globalSettingsList: 'Global settings',
@@ -304,6 +310,9 @@ export const en = {
   fixedEnabled: 'Pin in place',
   fixedEnabledHint:
     'When enabled, the random chain no longer turns this pet or walks it away — only idle and in-place actions play. Right-click picks, API triggers and balance / whisper / work-status animations are unaffected.',
+  horizontalOnly: 'Horizontal movement only',
+  horizontalOnlyHint:
+    'Automatic wandering and context-menu movement stay at the same height and use a 0° path. Dragging and throwing still follow your input.',
   displayLabel: 'Display',
   displayHint: 'Show the pet on the Windows desktop, or hide it.',
   'display.desktop': 'Desktop only',
@@ -353,6 +362,9 @@ export const en = {
   confineToggle: 'Lock throws to the current screen',
   confineToggleHint:
     'Multi-monitor: a thrown pet bounces only inside the screen it was released on (screen seams act as walls, so it never flies to the neighbouring monitor); turn this off to let it cross screens as usual.',
+  trayToggle: 'System tray',
+  trayToggleHint:
+    'Hides the system tray icon when turned off. If a desktop pet is visible, open settings or quit from its right-click menu. If no desktop pets are visible, the settings page opens automatically; closing it exits the app. Applies after saving.',
   displayPriorityLabel: 'Pet window priority',
   displayPriorityHint:
     'Global desktop-mode setting. Windows detects foreground fullscreen apps; “Hide during fullscreen or maximized windows” also detects maximized windows and hides pets on that monitor. macOS follows fullscreen Spaces; Linux does not detect other application windows.',
@@ -806,6 +818,8 @@ export function makePetConfigSection(rt: {
     const [chatImage, setChatImage] = useState(false);
     // 抛掷锁定开关（全局：写用户级配置；与「保存」一起提交，不做即时写入）
     const [confineScreen, setConfineScreen] = useState(false);
+    // 托盘开关属于应用级设置；与其它全局设置一同保存，桌面壳经本机 IPC 同步状态。
+    const [trayEnabled, setTrayEnabled] = useState(true);
     const [displayPriority, setDisplayPriority] = useState<PetDisplayPriority>('always-on-top');
     const [uiTheme, setUiTheme] = useState<UiTheme>('system');
     // 物理参数（全局：拖拽抛掷手感，写用户级配置 main-config.jsonc 的 physics 段）。
@@ -838,6 +852,7 @@ export function makePetConfigSection(rt: {
       if (typeof m.whisperImageEnabled === 'boolean') setWhisperImage(m.whisperImageEnabled);
       if (typeof m.chatImageEnabled === 'boolean') setChatImage(m.chatImageEnabled);
       if (typeof m.confineToScreen === 'boolean') setConfineScreen(m.confineToScreen);
+      if (typeof m.trayEnabled === 'boolean') setTrayEnabled(m.trayEnabled);
       if (
         m.petDisplayPriority === 'always-on-top' ||
         m.petDisplayPriority === 'hide-on-fullscreen' ||
@@ -992,6 +1007,7 @@ export function makePetConfigSection(rt: {
           whisperImageEnabled: whisperImage,
           chatImageEnabled: chatImage,
           confineToScreen: confineScreen,
+          trayEnabled,
           petDisplayPriority: displayPriority,
           // 物理参数整段提交（白名单字段，未传即走宿主透传保留）：宿主用 physicsValid 整段校验
           physics: physics,
@@ -1073,6 +1089,7 @@ export function makePetConfigSection(rt: {
         whisperEnabled: tpl.whisperEnabled,
         workStatusEnabled: tpl.workStatusEnabled,
         fixedEnabled: tpl.fixedEnabled,
+        horizontalOnly: tpl.horizontalOnly,
         display: tpl.display,
         position: { ...tpl.position },
       });
@@ -1201,13 +1218,14 @@ export function makePetConfigSection(rt: {
             ],
           }),
           h('div', {
-            className: 'dsh-pet-cfg__grid4',
+            className: 'dsh-pet-cfg__grid5',
             children: [
               toggleCell('balanceEnabled', !!pet.balanceEnabled, busy, (v) => update({ balanceEnabled: v })),
               toggleCell('whisperEnabled', !!pet.whisperEnabled, busy || standaloneWhisperState !== 'enabled',
                 (v) => update({ whisperEnabled: v }), false, whisperToggleHint),
               toggleCell('workStatusEnabled', !!pet.workStatusEnabled, busy, (v) => update({ workStatusEnabled: v })),
               toggleCell('fixedEnabled', !!pet.fixedEnabled, busy, (v) => update({ fixedEnabled: v }), true),
+              toggleCell('horizontalOnly', !!pet.horizontalOnly, busy, (v) => update({ horizontalOnly: v }), true),
             ],
           }),
           field(t('personaLabel'), h('textarea', {
@@ -1356,6 +1374,7 @@ export function makePetConfigSection(rt: {
                 toggleCell('whisperImageToggle', whisperImage, busy, setWhisperImage),
                 toggleCell('chatImageToggle', chatImage, busy, setChatImage),
                 toggleCell('confineToggle', confineScreen, busy, setConfineScreen, true),
+                toggleCell('trayToggle', trayEnabled, busy, setTrayEnabled),
               ],
             }),
             h('div', {

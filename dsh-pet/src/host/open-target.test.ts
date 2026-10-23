@@ -56,8 +56,8 @@ describe('「打开网站」按宿主形态自动分派', () => {
       'site 路径（含回落）必须仍是原来那条打开站点的实现',
     );
     assert.ok(
-      (main.match(/dsh:\/\/open/g) ?? []).length === 1,
-      'dsh://open 只允许出现在 desktop 分支里（site 形态不得被顺带改成唤起应用）',
+      (main.match(/shell\.openExternal\('dsh:\/\/open'\)/g) ?? []).length === 2,
+      'dsh://open 只用于「打开网站」与「打开应用」各自的 desktop 分支',
     );
   });
 
@@ -67,9 +67,11 @@ describe('「打开网站」按宿主形态自动分派', () => {
       "constants.js 必须从 query 读形态且默认 'site'",
     );
     assert.ok(
-      /label: OPEN_TARGET === 'desktop' \? '打开 DeepSeek Harness' : '打开网站', action: 'open-site'/.test(sprite),
-      '菜单文案要跟着变，但 action 仍是 open-site（另一端只认这个动作名）',
+      /label: OPEN_TARGET === 'desktop' \? '打开软件' : '打开网站',[\s\S]*?action: 'open-site',[\s\S]*?hint: OPEN_SHORTCUT_HINT/.test(sprite),
+      '菜单文案随宿主形态变化，保留 open-site 动作并展示快捷键提示',
     );
+    assert.ok(/const isOpenShortcut = \(e\) => !!\(e && \(e\.ctrlKey \|\| e\.metaKey\)\)/.test(sprite));
+    assert.ok(/if \(isOpenShortcut\(e\)\)[\s\S]*?openDshSite\(ORIGIN\)/.test(sprite));
   });
 
   test('独立模式不注入该变量 → 自动回落 site（不破坏"不打开 DSH 也能养桌宠"）', () => {

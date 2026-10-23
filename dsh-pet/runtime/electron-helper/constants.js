@@ -53,7 +53,7 @@ const BRIDGE = params.get('bridge') === '1';
 // Renderer runs with nodeIntegration disabled; main.js forwards standalone mode through the URL.
 const STANDALONE = params.get('standalone') === '1';
 // 工具项「打开网站」的去向（主进程按宿主形态经 query 注入，见 main.js 的 OPEN_TARGET）：
-// desktop = 宿主是 DSH 桌面应用，菜单项改叫「打开 DeepSeek Harness」并唤起桌面应用主窗口；site = 打开站点。
+// desktop = 宿主是 DSH 桌面应用，菜单项改叫「打开软件」并唤起桌面应用主窗口；site = 打开站点。
 const OPEN_TARGET = params.get('openTarget') === 'desktop' ? 'desktop' : 'site';
 // 视口 = 覆盖窗口外接矩形（Windows 使用完整面板，确保透明窗口覆盖任务栏区域）。
 // 它只是**坐标系原点与比例换算基准**：位置比例（customPos）、漫游 ratio 都按它算。

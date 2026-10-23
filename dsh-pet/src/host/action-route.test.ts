@@ -38,6 +38,7 @@ function fixture(overrides: Partial<ActionRouteDependencies> = {}) {
 
 const request = (rest: string, method = 'POST', body?: string, query?: string): RouteRequest => {
   const params = new URLSearchParams(query);
+  if (!params.has('pet')) params.set('pet', 'main');
   if (!params.has('surface')) params.set('surface', 'desktop');
   return { rest, method, body, query: params };
 };

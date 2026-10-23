@@ -86,6 +86,10 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
   // settings file existed before the one-time context migration writes it.
   const aiInitialApiKey = storedApiKey ?? environmentApiKey;
   const security = createRequestSecurity();
+  // The packaged Electron shell owns the native tray and sends authenticated local API requests.
+  // Pass the per-run capability only through the private child-process IPC channel; never log it.
+  const ipcProcess = process as NodeJS.Process & { send?: (message: unknown) => boolean };
+  ipcProcess.send?.({ channel: 'dsh-pet:request-token', token: security.token });
   const standaloneAi = createStandaloneAi(home, logger, {
     initialApiKey: aiInitialApiKey,
     apiKeyStorePath: aiApiKeyStorePath,
@@ -109,9 +113,26 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
       handler: (_req, res) => {
         const appName = process.env.DSH_PET_DISPLAY_NAME === 'DSH Pet' ? 'DSH Pet' : '哦鲸鲸';
         const aiUrl = security.authenticatedUrl(`http://127.0.0.1:${portRef.value}`);
+        const authBootstrap = `<script>
+window.DSH_PET_AI_SETTINGS_URL=${JSON.stringify(aiUrl)};
+(() => {
+  const token=${JSON.stringify(security.token)};
+  const originalFetch=window.fetch.bind(window);
+  window.fetch=(input,init={})=>{
+    let url;
+    try { url=new URL(typeof input==='string'||input instanceof URL?input:input.url,window.location.href); }
+    catch { return originalFetch(input,init); }
+    if(url.origin!==window.location.origin||!url.pathname.startsWith('/dsh-pet-7340/')) return originalFetch(input,init);
+    const headers=new Headers(input instanceof Request?input.headers:undefined);
+    new Headers(init.headers).forEach((value,name)=>headers.set(name,value));
+    headers.set('X-DSH-Pet-Token',token);
+    return originalFetch(input,{...init,headers});
+  };
+})();
+</script>`;
         const html = STANDALONE_SETTINGS_HTML.replace(/__DSH_PET_APP_NAME__/g, appName).replace(
           '</head>',
-          `<script>window.DSH_PET_AI_SETTINGS_URL=${JSON.stringify(aiUrl)};</script></head>`,
+          `${authBootstrap}</head>`,
         );
         res.writeHead(200, {
           'content-type': 'text/html; charset=utf-8',

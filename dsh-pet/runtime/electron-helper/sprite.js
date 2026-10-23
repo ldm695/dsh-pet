@@ -7,6 +7,10 @@
  */
 'use strict';
 
+// 左键 + 修饰键 =「呼出 DSH」快捷键。macOS 上 Ctrl+左键会变成系统右键，故使用 Cmd。
+const OPEN_SHORTCUT_HINT = /Mac/i.test(navigator.platform || navigator.userAgent) ? 'Cmd+左键' : 'Ctrl+左键';
+const isOpenShortcut = (e) => !!(e && (e.ctrlKey || e.metaKey));
+
 const MOVE_DIAGNOSTICS_ENABLED = window.petBridge?.moveDiagnosticsEnabled === true;
 
 function clampPetCenterToRegion(areas, cx, cy, halfW, halfH, sideAllow, topInset) {
@@ -301,7 +305,7 @@ class PetSprite {
     this.inputRegionMutation.observe(document.body, { childList: true, subtree: true });
     this.hit.addEventListener('pointerdown', (e) => this.onPointerDown(e), { signal: ac.signal });
     this.hit.addEventListener('pointermove', (e) => this.onPointerMove(e), { signal: ac.signal });
-    this.hit.addEventListener('click', () => this.onClick(), { signal: ac.signal });
+    this.hit.addEventListener('click', (e) => this.onClick(e), { signal: ac.signal });
     this.hit.addEventListener('contextmenu', (e) => this.onContextMenu(e), { signal: ac.signal });
     window.addEventListener('pointerup', (e) => this.onPointerUp(e), { signal: ac.signal });
     window.addEventListener('pointercancel', (e) => this.onPointerUp(e), { signal: ac.signal });
@@ -895,7 +899,12 @@ class PetSprite {
         this.playback = null;
         this.reportPlayback(interrupted, 'cancelled', 'frozen');
       }
-      console.log(stamp + ' 占用锁生效：冻结');
+      // 冻结时收起任务状态气泡；解冻不补亮，只由之后的状态变化重新显示。
+      if (this.workTimer !== null) window.clearTimeout(this.workTimer);
+      this.workTimer = null;
+      this.workOn = false;
+      this.renderBubble();
+      console.log(stamp + ' 占用锁生效：冻结（任务状态气泡收起）');
       return;
     }
     console.log(stamp + ' 占用锁解除：恢复');
@@ -1209,10 +1218,11 @@ class PetSprite {
     const mp = Object.assign({}, moves.default, chosen.params || {});
     const facingDir = this.facing === 'right' ? 1 : -1;
     const manualMove = options.manualMove === true;
+    const horizontalOnly = this.pet.horizontalOnly === true;
     // A manual menu choice must keep its selected horizontal move animation. Try the
     // current facing first, then planMoveCandidate tries the opposite facing if this
     // direction would hit a screen boundary. Automatic moves may still choose either axis.
-    const mode = preferredDrag ? 'vertical' : manualMove ? 'horizontal' : 'any';
+    const mode = horizontalOnly ? 'horizontal' : preferredDrag ? 'vertical' : manualMove ? 'horizontal' : 'any';
     let candidate = null;
     // Candidate scoring details are collected only when movement diagnostics are explicitly enabled.
     let candidateDiagnostics = MOVE_DIAGNOSTICS_ENABLED ? [] : null;
@@ -1223,7 +1233,7 @@ class PetSprite {
       const headings = [];
       const modes = mode === 'any' ? ['horizontal', 'vertical'] : [mode];
       const angles = {
-        horizontal: [0, 12, 25, 40],
+        horizontal: horizontalOnly ? [0] : [0, 12, 25, 40],
         vertical: [75, 80, 85, 90],
       };
       const distanceRatios = [0, 0.5, 1];
@@ -1347,12 +1357,18 @@ class PetSprite {
     const distScale = this.size / S.PET_REF_WIDTH;
     const cx = Number.isFinite(origin?.cx) ? origin.cx : this.currentCenterX();
     const cy = Number.isFinite(origin?.cy) ? origin.cy : this.currentCenterY();
+    const horizontalOnly = this.pet.horizontalOnly === true;
     const wanderArea = this.confineToScreen ? S.resolveRect(AREAS, cx, cy) : null;
     const moveAreas = wanderArea ? [wanderArea] : AREAS;
     let plan = null;
     let dir = preferredDir;
-    const modes =
-      mode === 'any' ? (Math.random() < 0.5 ? ['vertical', 'horizontal'] : ['horizontal', 'vertical']) : [mode];
+    const modes = horizontalOnly
+      ? ['horizontal']
+      : mode === 'any'
+        ? Math.random() < 0.5
+          ? ['vertical', 'horizontal']
+          : ['horizontal', 'vertical']
+        : [mode];
     const directions = [preferredDir, -preferredDir];
     if (sample) {
       const selectedMode = sample.mode || mode;
@@ -1389,7 +1405,7 @@ class PetSprite {
     for (const selectedMode of modes) {
       for (let attempt = 0; attempt < 12 && !plan; attempt++) {
         for (const candidateDir of directions) {
-          const angleDegrees = selectedMode === 'vertical' ? 75 + Math.random() * 15 : Math.random() * 45;
+          const angleDegrees = selectedMode === 'vertical' ? 75 + Math.random() * 15 : horizontalOnly ? 0 : Math.random() * 45;
           const candidate = S.planMove({
             cx,
             cy,
@@ -1942,7 +1958,7 @@ class PetSprite {
     // 在飞行中且达标 → 立即粒子爆发 + 积分弹窗；pressScoreFired 标记本次按下已触发，
     // 松开的 click 据此不再重复弹、也不再播普通点击动画（与浏览器同构）。
     this.pressScoreFired = false;
-    if (grabState) {
+    if (grabState && !isOpenShortcut(e)) {
       const grabSpeed = Math.hypot(grabState.vx, grabState.vy);
       if (grabSpeed >= S.SCORE_MIN_SPEED) {
         this.pressScoreFired = true;
@@ -2344,9 +2360,15 @@ class PetSprite {
     if (this.tipOn) this.renderTip();
   }
 
-  onClick() {
+  onClick(e) {
     const d = this.dragState;
     if (d.active || d.dragging || this.justDragged) return;
+    if (isOpenShortcut(e)) {
+      this.stopThrow();
+      this.stopMove();
+      if (window.petBridge) window.petBridge.openDshSite(ORIGIN);
+      return;
+    }
     // 积分判定已在 onPointerDown（按下即触发）完成：
     // 本次按下已触发过积分 → 只收手停住、**不**再播普通点击动画（粒子+弹窗即反馈，与浏览器同构）
     if (this.pressScoreFired) {
@@ -2414,7 +2436,11 @@ class PetSprite {
     // 首项文案随宿主形态变（OPEN_TARGET）：宿主是 DSH 桌面应用时点是"唤起桌面应用窗口"，仍叫「打开网站」会误导
     const tools = STANDALONE
       ? []
-      : [{ label: OPEN_TARGET === 'desktop' ? '打开 DeepSeek Harness' : '打开网站', action: 'open-site' }];
+      : [{
+          label: OPEN_TARGET === 'desktop' ? '打开软件' : '打开网站',
+          action: 'open-site',
+          hint: OPEN_SHORTCUT_HINT,
+        }];
     if (!STANDALONE || config.balanceQuerySupported !== false) {
       tools.push({ label: '查看余额', action: 'show-balance' });
     }

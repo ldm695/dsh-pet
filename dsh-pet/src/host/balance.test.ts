@@ -15,10 +15,12 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  listBalanceProviders,
   matchBalanceProvider,
   parseAccountBalance,
   parseCommandCode,
   queryBalance,
+  registerBalanceProvider,
   type BalanceResult,
   type WindowsUsage,
 } from './balance/index.ts';
@@ -99,14 +101,86 @@ function goatRoute(url: string): Response {
 describe('BALANCE_PROVIDERS —— commandcode 已登记（凭证 COMMANDCODE_API_KEY）', () => {
   test('provider id 命中 commandcode，凭证 ref 是 COMMANDCODE_API_KEY，且定义自带取数', () => {
     const def = matchBalanceProvider('commandcode');
-    assert.deepEqual(def?.ids, ['commandcode']);
-    assert.deepEqual(def?.credential, { mode: 'ref', ref: 'COMMANDCODE_API_KEY' });
+    assert.ok(def && 'credential' in def);
+    if (!def || !('credential' in def)) return;
+    assert.deepEqual(def.ids, ['commandcode']);
+    assert.deepEqual(def.credential, { mode: 'ref', ref: 'COMMANDCODE_API_KEY' });
     assert.equal(typeof def?.fetch, 'function', '服务商定义必须自带取数（加服务商只写一个文件）');
   });
 
   test('未登记的服务商仍然不命中（→ unsupported，不静默伪造 0）', () => {
     assert.equal(matchBalanceProvider('unregistered-provider'), undefined);
     assert.equal(matchBalanceProvider('opencode'), undefined, 'Zen 按量版（opencode）与 Go 是两个 id，前者无用量接口');
+  });
+});
+
+describe('第三方余额 provider 注册', () => {
+  test('只传 provider id，不解析宿主密钥或账号服务；注销后不再命中', async () => {
+    let received = '';
+    const provider = {
+      id: 'test-points-provider',
+      async fetch(ctx: { provider: string }) {
+        received = ctx.provider;
+        return { ok: true as const, provider: ctx.provider, shape: 'points' as const, data: { unit: '积分', total: '8' } };
+      },
+    };
+    const unregister = registerBalanceProvider(provider);
+    try {
+      assert.deepEqual(listBalanceProviders().external, ['test-points-provider']);
+      assert.deepEqual(await queryBalance('test-points-provider', async () => {
+        assert.fail('第三方 provider 不应解析宿主密钥');
+      }, async () => {
+        assert.fail('第三方 provider 不应获得 DSH 账号服务');
+      }), {
+        ok: true,
+        provider: 'test-points-provider',
+        shape: 'points',
+        data: { unit: '积分', total: '8' },
+      });
+      assert.equal(received, 'test-points-provider');
+    } finally {
+      unregister();
+    }
+    assert.equal(matchBalanceProvider('test-points-provider'), undefined);
+  });
+
+  test('拒绝空 id、重复 id 与内置 id；失败统一转成 fetch-error', async () => {
+    assert.throws(() => registerBalanceProvider({ id: '', fetch: async () => { throw new Error('unused'); } }), /id/);
+    const first = registerBalanceProvider({ id: 'test-duplicate-provider', fetch: async ({ provider }) => ({
+      ok: true,
+      provider,
+      shape: 'points',
+      data: { unit: '积分', total: '1' },
+    }) });
+    try {
+      assert.throws(
+        () => registerBalanceProvider({ id: 'test-duplicate-provider', fetch: async () => { throw new Error('unused'); } }),
+        /已被注册/,
+      );
+      assert.throws(
+        () => registerBalanceProvider({ id: 'commandcode', fetch: async () => { throw new Error('unused'); } }),
+        /内置/,
+      );
+    } finally {
+      first();
+    }
+
+    const unregister = registerBalanceProvider({
+      id: 'test-failing-provider',
+      async fetch() {
+        throw new Error('provider failure');
+      },
+    });
+    try {
+      assert.deepEqual(await queryBalance('test-failing-provider', async () => undefined), {
+        ok: false,
+        provider: 'test-failing-provider',
+        reason: 'fetch-error',
+        message: 'provider failure',
+      });
+    } finally {
+      unregister();
+    }
   });
 });
 
@@ -345,8 +419,10 @@ describe('deepseek-account —— DSH 账号路由（走账号服务，不是 HT
 
   test('provider id 命中 deepseek-account，shape 与 deepseek-official 相同，凭证模式为 none（无 API Key）', () => {
     const def = matchBalanceProvider('deepseek-account');
-    assert.deepEqual(def?.ids, ['deepseek-account']);
-    assert.deepEqual(def?.credential, { mode: 'none' }, '账号路由没有 API Key，凭证由账号服务持有');
+    assert.ok(def && 'credential' in def);
+    if (!def || !('credential' in def)) return;
+    assert.deepEqual(def.ids, ['deepseek-account']);
+    assert.deepEqual(def.credential, { mode: 'none' }, '账号路由没有 API Key，凭证由账号服务持有');
     assert.equal(typeof def?.fetch, 'function');
   });
 

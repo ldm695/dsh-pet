@@ -31,6 +31,17 @@ export interface BalanceFetchContext {
   resolveAccount?: () => Promise<AccountBalanceSnapshot | null | undefined>;
 }
 
+/** 第三方服务商取数上下文：只提供当前 provider id，不暴露宿主凭证或账号服务。 */
+export interface PluginFetchContext {
+  provider: string;
+}
+
+/** 第三方服务商定义：凭证由注册方自己的插件管理，失败时抛错交给宿主统一归类。 */
+export interface PluginProvider {
+  id: string;
+  fetch(ctx: PluginFetchContext): Promise<BalanceSuccess>;
+}
+
 /**
  * 一个 service provider 的余额查询定义 —— **一行 = 一个自包含服务商**。
  * 接口地址、业务常量、响应解析全在它自己的文件里（见 ./providers/）。
@@ -51,13 +62,14 @@ export interface BalanceProvider {
 // ---------- 展示形态（wire 契约：host 写进叶子，两端展示层按它选渲染分支） ----------
 
 /**
- * 展示形态 —— 只有两种，且**不含任何服务商信息**：
+ * 展示形态 —— 三种，且**不含任何服务商信息**：
  * - `windows`：三窗口用量（百分比 + 重置倒计时）→ 气泡「X额度已用 N%」
  * - `money`：账户金额 → 气泡「余额（峰/谷）¥x.xx」
+ * - `points`：积分/点数余额（非货币）→ 气泡「余额 800 积分」
  *
- * 加一个服务商只要落到这两种形态之一，src/shared 与两端展示层就完全不用动。
+ * 加一个服务商只要落到这三种形态之一，src/shared 与两端展示层就完全不用动。
  */
-export type BalanceShape = 'windows' | 'money';
+export type BalanceShape = 'windows' | 'money' | 'points';
 
 /** 计价档位装饰（气泡上的「峰/谷」）：由服务商按自己的计价规则算好后随数据带出 */
 export type PricingTier = 'peak' | 'idle';
@@ -115,6 +127,13 @@ export interface MoneyBalance {
   tier?: PricingTier;
 }
 
+/** 积分/点数余额，不伪装成货币；`full` 缺省时不参与档位百分比计算。 */
+export interface PointsBalance {
+  unit: string;
+  total: string;
+  full?: string;
+}
+
 /**
  * DSH 账号服务的余额快照（`ctx.deepseekAccount.getBalance()` 的返回，只取用到的字段）。
  * 与 `dsh-deepseek-account` 的 `AccountDetails['balance']` 同构：`ready` 带两个钱包数组，
@@ -133,7 +152,8 @@ export interface AccountBalanceSnapshot {
 /** 成功结果（client 端与 host 端同构使用）：`shape` 是展示形态，`provider` 是当前到底是谁 */
 export type BalanceSuccess =
   | { ok: true; provider: string; shape: 'windows'; data: WindowsUsage }
-  | { ok: true; provider: string; shape: 'money'; data: MoneyBalance };
+  | { ok: true; provider: string; shape: 'money'; data: MoneyBalance }
+  | { ok: true; provider: string; shape: 'points'; data: PointsBalance };
 
 /**
  * 按当前服务商查询余额的结果。

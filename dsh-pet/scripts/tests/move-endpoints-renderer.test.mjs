@@ -16,6 +16,8 @@ function fixture() {
   const math = Object.create(Math);
   math.random = () => 0.5;
   const context = vm.createContext({
+    navigator: { platform: 'Win32', userAgent: 'Windows' },
+    process: { env: {} },
     window: {
       petBridge: {
         beginMove: (...args) => messages.push(['begin', ...args]),
@@ -419,6 +421,7 @@ test('preload carries endpoint messages, snapshots, and unknown drag/throw desti
   const sends = [];
   const subscriptions = new Map();
   vm.runInNewContext(readFileSync(new URL('preload.js', helper), 'utf8'), {
+    process: { env: {} },
     require: () => ({
       contextBridge: {
         exposeInMainWorld(_name, value) {

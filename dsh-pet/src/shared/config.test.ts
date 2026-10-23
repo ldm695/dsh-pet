@@ -95,6 +95,7 @@ describe('flattenConfigPets —— 成品 → 渲染列表的唯一填充点', (
   test('源码守卫：桌面设置页使用成品聚合，host 的写接口返回成品聚合', () => {
     const petSettings = readSource('../standalone/pet-settings.ts');
     const host = readSource('../host/index.ts');
+    const configRoute = readSource('../host/config-route.ts');
 
     assert.ok(
       !/petBridge\.sync/.test(petSettings),
@@ -103,11 +104,12 @@ describe('flattenConfigPets —— 成品 → 渲染列表的唯一填充点', (
     assert.ok(/flattenConfigPets/.test(petSettings), '桌面设置页必须用 flattenConfigPets 拍平成品聚合');
     // host 的 GET / PUT / POST /config 与 POST /pet-display 都返回成品聚合——调用方拿写接口的
     //    响应直接拍平，不自己拼字段，也不再补一次 GET（补拉的那一次可能拿到陈旧配置）
-    const returns = host.match(/obj: readAllConfig\(configPaths\)/g) ?? [];
-    assert.equal(returns.length, 4, 'GET / PUT / POST /config 与 POST /pet-display 都应返回成品聚合');
+    const mappedReturns = configRoute.match(/obj: deps\.mapResponseConfig\(deps\.readAll\(\)\)/g) ?? [];
+    assert.equal(mappedReturns.length, 3, 'GET / PUT / POST /config 都应返回映射后的成品聚合');
+    assert.match(configRoute, /obj: deps\.readAll\(\)/, 'pet-display 写接口也应返回成品聚合');
     // 只扫 /config 那一段：动作端点（POST /balance 等）返回 { ok: true } 是**对的**（动作不带数据，
     // 数据只有 /state 一个出口），全文件扫描会把它们误判成"config 写接口返回了 ok:true"。
-    const configBlock = /if \(rest === 'config'\) \{([\s\S]*?)\n {4}\}/.exec(host)?.[1] ?? '';
+    const configBlock = /if \(rest === 'config'\) \{([\s\S]*?)\n {4}\}/.exec(configRoute)?.[1] ?? '';
     assert.ok(configBlock.length > 0, '必须能定位到 /config 路由段（守卫失效即无意义）');
     assert.ok(
       !/obj: \{ ok: true \}/.test(configBlock),
@@ -117,15 +119,15 @@ describe('flattenConfigPets —— 成品 → 渲染列表的唯一填充点', (
     //    **带 // 注释的 config.jsonc 原文**，严格 JSON.parse 会抛错并被 catch 吞掉 →
     //    existing 变 undefined → 白名单重建 → 用户手改的高级字段（animations/physics/memes…）
     //    全部丢失。这是曾经修过、又被「同步」带回来的回归，必须钉住。
-    assert.ok(/readUserConfig\(configPaths\)/.test(host), 'PUT /config 必须用 readUserConfig 读用户层（JSONC 容忍）');
+    assert.ok(/readUserConfig\(paths\)/.test(configRoute), 'PUT /config 必须用 readUserConfig 读用户层（JSONC 容忍）');
     assert.ok(
-      !/JSON\.parse\(await readFile\(userConfigPath/.test(host),
+      !/JSON\.parse\(await readFile\(userConfigPath/.test(configRoute),
       '不得用严格 JSON.parse 读用户层：带注释的配置会解析失败，保存时静默丢掉全部高级字段',
     );
     // ⑤ 保存前必须有损坏预检：用户层解析不了时**先不写盘**，回 409 让设置页弹窗
     //    （取消 = 不动文件 / 确认 = 强行重建）。没有它就会出现"损坏 → 静默白名单重建 → 配置全丢"。
     assert.ok(
-      /userConfigUnparsable\(configPaths\)/.test(host),
+      /userConfigUnparsable\(paths\)/.test(configRoute),
       'PUT /config 必须先做损坏预检（userConfigUnparsable），损坏时回 409 而不是静默重建',
     );
     // ⑥ 前端不得把带默认参数的 handler **直接**交给 React：`onClick: save` 会让 React 把
@@ -168,17 +170,15 @@ describe('flattenConfigPets —— 成品 → 渲染列表的唯一填充点', (
       /physicsValid\(ph\)/.test(readSource('../host/config.ts')),
       'saveUserConfig 必须用 physicsValid 校验 physics（与读取侧同一套规则）',
     );
-    // ⑨ 模型选择（设置页「AI 模型」两个下拉框）必须真的提交：whisperModel / chatModel 若不在白名单里，
-    //    前端选了也写不进用户层（只会被 existing 的透传值盖回去）。守卫两侧：
-    //    「保存」请求体必须带它们；宿主必须用同一份 modelSelectionValid 整段校验。
+    // ⑨ 模型与对话上下文现在由独立 AI 服务页管理，不属于此桌宠/全局设置表单。
     assert.ok(
-      /(^|[^.\w])whisperModel\b/.test(saveBody[1]) && /(^|[^.\w])chatModel\b/.test(saveBody[1]),
-      '「保存」的请求体必须带上 whisperModel / chatModel（否则设置页选的模型不会落盘）',
+      !/\bwhisperModel\b|\bchatModel\b|\bchatMemoryRounds\b|\bchatImageLimit\b/.test(saveBody[1]),
+      '主设置保存请求不应覆盖独立 AI 服务页管理的模型与对话上下文',
     );
     const hostConfig = readSource('../host/config.ts');
     assert.ok(
       /modelSelectionValid\(wm\)/.test(hostConfig) && /modelSelectionValid\(cm\)/.test(hostConfig),
-      'saveUserConfig 必须用 modelSelectionValid 校验 whisperModel / chatModel（与读取侧同一套规则）',
+      '配置读取仍须校验模型字段，避免手动编辑配置绕过校验',
     );
     // 下拉框的数据源必须与 DSH 的模型选择器同源：走宿主 llm 服务（listProviders / listModels），
     // 不得另立一份手写的服务商清单——那会随 DSH 支持的服务商漂移。

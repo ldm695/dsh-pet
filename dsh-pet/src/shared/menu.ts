@@ -7,7 +7,7 @@
 // 菜单数据单一事实来源 = 合并后的 animations 配置（用户覆盖层自动生效）。
 //
 // 菜单层级（与产品定义一致）：
-//   一级 = 工具项 + 动作：打开网站（宿主是 DSH 桌面应用时，同一项的文案与去向变成「打开 DeepSeek Harness」——见 runtime/electron-helper/main.js 的 OPEN_TARGET）/ 查看余额 / 重载配置（桌面端专属）与 回到初始位置（两端共用），由各壳注入；
+//   一级 = 工具项 + 动作：打开网站（宿主是 DSH 桌面应用时，同一项的文案与去向变成「打开软件」——见 runtime/electron-helper/main.js 的 OPEN_TARGET）/ 查看余额 / 重载配置（桌面端专属）与 回到初始位置（两端共用），由各壳注入；
 //   二级（动作的子级）= 分类：待机 / 转向 / 拖拽 / 点击回应 / 移动 / config 随机动作分类 / 事件档位
 //   三级 = 具体动画名
 //
@@ -54,6 +54,8 @@ export interface MenuLeaf {
   /** third-party：注册它的 owner（身份键，**只用于回传，不显示**）。同一个 owner 的项收在同一个
    *  分组下；只有一项时跳过这层、直接平铺（见 buildMoreBranch）。 */
   owner?: string;
+  /** 菜单项右侧的快捷键提示；纯展示，不影响动作分发。 */
+  hint?: string;
 }
 
 /** 分支：带子菜单的项 */
@@ -85,20 +87,25 @@ export interface MenuMoreItem {
 export const MORE_MENU_LABEL = '更多';
 
 /**
- * 从 `/state` 的 `sections.menu.data` 里读出第三方菜单项。
+ * 从 `/state` 的 `sections.menu.data` 里读出**本端**要显示的第三方菜单项。
  *
  * 两侧（浏览器 / 桌面）共用同一份解析：快照来自网络，字段一律按"可能不存在"处理——
  * 非法条目静默丢弃，绝不让一条坏数据把整个右键菜单搞崩（菜单是高频交互入口）。
+ * `target` 等于本端或 `both` 才显示；旧快照中缺失/非法的 target 按 `both` 处理。
  */
-export function readMenuItems(data: unknown): MenuMoreItem[] {
+export function readMenuItems(data: unknown, surface: 'web' | 'desktop' = 'desktop'): MenuMoreItem[] {
   if (!data || typeof data !== 'object') return [];
   const items = (data as { items?: unknown }).items;
   if (!Array.isArray(items)) return [];
   const out: MenuMoreItem[] = [];
   for (const item of items) {
     if (!item || typeof item !== 'object') continue;
-    const owner = (item as Record<string, unknown>).owner;
-    const label = (item as Record<string, unknown>).label;
+    const record = item as Record<string, unknown>;
+    const rawTarget = record.target;
+    const target = rawTarget === 'web' || rawTarget === 'desktop' || rawTarget === 'both' ? rawTarget : 'both';
+    if (target !== 'both' && target !== surface) continue;
+    const owner = record.owner;
+    const label = record.label;
     if (typeof owner === 'string' && owner !== '' && typeof label === 'string' && label !== '') {
       out.push({ owner, label });
     }
@@ -209,7 +216,7 @@ export const MENU_CSS = [
   '.dsh-pet-menu[data-theme="dark"]{--dsh-menu-text:#dedede;--dsh-menu-bg:rgba(36,36,36,.98);--dsh-menu-border:#505050;--dsh-menu-shadow:0 8px 28px rgba(0,0,0,.45);--dsh-menu-hover:#373737;--dsh-menu-scrollbar:rgba(255,255,255,.24);--dsh-menu-scrollbar-hover:rgba(120,174,232,.65);--dsh-menu-arrow:#a0a0a0}',
   '@media(prefers-color-scheme:dark){.dsh-pet-menu[data-theme="system"]{--dsh-menu-text:#dedede;--dsh-menu-bg:rgba(36,36,36,.98);--dsh-menu-border:#505050;--dsh-menu-shadow:0 8px 28px rgba(0,0,0,.45);--dsh-menu-hover:#373737;--dsh-menu-scrollbar:rgba(255,255,255,.24);--dsh-menu-scrollbar-hover:rgba(120,174,232,.65);--dsh-menu-arrow:#a0a0a0}}',
   '.dsh-pet-menu,.dsh-pet-menu *{box-sizing:border-box}',
-  '.dsh-pet-menu-column{position:absolute;min-width:150px;max-width:240px;padding:4px;',
+  '.dsh-pet-menu-column{position:absolute;min-width:150px;max-width:300px;padding:4px;',
   'background:var(--dsh-menu-bg);border:1px solid var(--dsh-menu-border);border-radius:8px;',
   'box-shadow:var(--dsh-menu-shadow);max-height:min(62vh,460px);overflow-y:auto;',
   // 自定义滚动条：细圆角半透明条（Chromium 系 Chrome/Edge/Electron 走 ::-webkit-scrollbar；
@@ -227,6 +234,7 @@ export const MENU_CSS = [
   'gap:14px;padding:5px 12px;border-radius:6px;white-space:nowrap;cursor:default}',
   '.dsh-pet-menu-item:hover{background:var(--dsh-menu-hover)}',
   '.dsh-pet-menu-item>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis}',
+  '.dsh-pet-menu-hint{color:#9aa0a6;font-size:12px;flex:none;white-space:nowrap}',
   '.dsh-pet-menu-arrow{color:var(--dsh-menu-arrow);font-size:12px;flex:none}',
 ].join('');
 
@@ -347,6 +355,12 @@ export function mountContextMenu(opts: {
         const label = document.createElement('span');
         label.textContent = node.label;
         item.appendChild(label);
+        if (node.hint) {
+          const hint = document.createElement('span');
+          hint.className = 'dsh-pet-menu-hint';
+          hint.textContent = node.hint;
+          item.appendChild(hint);
+        }
         // Hovering a leaf means the pointer has left any sibling branch trigger in this
         // panel. Close its submenu chain immediately instead of leaving it stranded open.
         item.addEventListener('mouseenter', () => {

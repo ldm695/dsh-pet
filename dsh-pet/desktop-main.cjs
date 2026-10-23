@@ -43,6 +43,10 @@ let quitting = false;
 let servicePort = PORT;
 let hostStdoutBuffer = '';
 let tray;
+let hostRequestToken = '';
+let visibleDesktopPetCount = 0;
+let trayRefreshInProgress = false;
+let trayRefreshRequested = false;
 
 // The packaged executable is also used to run the transparent-window helper.
 // Electron may keep loading this package's main entry even when the helper JS
@@ -103,6 +107,9 @@ if (helperEntry) {
     settingsWindow.once('ready-to-show', () => settingsWindow && settingsWindow.show());
     settingsWindow.on('closed', () => {
       settingsWindow = undefined;
+      // With neither a tray nor a visible pet, the settings window is the only user-facing
+      // entry point. Do not leave an invisible background process after it closes.
+      if (!tray && visibleDesktopPetCount === 0 && !quitting) quit();
     });
     if (hostReady) {
       settingsWindow.loadURL(settingsUrl()).catch((error) => {
@@ -125,7 +132,7 @@ if (helperEntry) {
     if (portMatch) {
       servicePort = Number(portMatch[1]);
       hostReady = true;
-      createTray();
+      void refreshTrayMenu();
       if (settingsWindow && !settingsWindow.isDestroyed() && !settingsWindow.webContents.getURL()) {
         settingsWindow.loadURL(settingsUrl()).catch((error) => {
           log(`[error] Unable to open settings: ${error.message}`);
@@ -167,7 +174,21 @@ if (helperEntry) {
   }
 
   function handleHostMessage(message) {
-    if (!message || message.channel !== 'dsh-pet:auto-start' || typeof message.requestId !== 'string') return;
+    if (!message || typeof message !== 'object') return;
+    if (
+      message.channel === 'dsh-pet:request-token' &&
+      typeof message.token === 'string' &&
+      /^[A-Za-z0-9_-]{43}$/.test(message.token)
+    ) {
+      hostRequestToken = message.token;
+      void refreshTrayMenu();
+      return;
+    }
+    if (message.channel === 'dsh-pet:config-changed') {
+      void refreshTrayMenu();
+      return;
+    }
+    if (message.channel !== 'dsh-pet:auto-start' || typeof message.requestId !== 'string') return;
     let response;
     try {
       if (message.action === 'get') response = { ok: true, state: getAutoStartState() };
@@ -190,9 +211,13 @@ if (helperEntry) {
   const toggleDisplay = (display) => (isDesktopDisplay(display) ? 'none' : 'desktop');
 
   async function trayRequest(method, path, body) {
+    if (!hostRequestToken) throw new Error('本机设置访问凭据尚未就绪。');
     const response = await fetch(`http://127.0.0.1:${servicePort}${PET_ROUTE}${path}`, {
       method,
-      headers: body ? { 'content-type': 'application/json' } : undefined,
+      headers: {
+        'X-DSH-Pet-Token': hostRequestToken,
+        ...(body ? { 'content-type': 'application/json' } : {}),
+      },
       body,
     });
     const text = await response.text();
@@ -201,7 +226,24 @@ if (helperEntry) {
   }
 
   async function refreshTrayMenu() {
-    if (!tray || tray.isDestroyed()) return;
+    if (!hostReady || !hostRequestToken) return;
+    if (trayRefreshInProgress) {
+      trayRefreshRequested = true;
+      return;
+    }
+    trayRefreshInProgress = true;
+    try {
+      do {
+        trayRefreshRequested = false;
+        await refreshTrayMenuOnce();
+      } while (trayRefreshRequested);
+    } finally {
+      trayRefreshInProgress = false;
+      if (trayRefreshRequested) void refreshTrayMenu();
+    }
+  }
+
+  async function refreshTrayMenuOnce() {
     try {
       const merged = await trayRequest('GET', '/config');
       const pets = Object.values(merged)
@@ -212,6 +254,16 @@ if (helperEntry) {
           display: String(pet?.display || ''),
         }))
         .filter((pet) => pet.id);
+      visibleDesktopPetCount = pets.filter((pet) => isDesktopDisplay(pet.display)).length;
+      const trayEnabled = merged?.main?.trayEnabled !== false;
+      if (!trayEnabled) {
+        if (tray && !tray.isDestroyed()) tray.destroy();
+        tray = undefined;
+        if (visibleDesktopPetCount === 0 && (!settingsWindow || settingsWindow.isDestroyed())) openSettings();
+        return;
+      }
+      createTrayIcon();
+      if (!tray || tray.isDestroyed()) return;
       const petItems = [
         {
           label: '全部显示',
@@ -268,7 +320,7 @@ if (helperEntry) {
     }
   }
 
-  function createTray() {
+  function createTrayIcon() {
     if (tray) return;
     const icon = nativeImage.createFromPath(join(app.getAppPath(), 'assets', APP_ICON_FILE));
     if (icon.isEmpty()) {
@@ -279,7 +331,6 @@ if (helperEntry) {
     tray = new Tray(icon);
     tray.setToolTip(APP_DISPLAY_NAME);
     tray.on('click', openSettings);
-    void refreshTrayMenu();
   }
 
   function ensureNotificationShortcut() {

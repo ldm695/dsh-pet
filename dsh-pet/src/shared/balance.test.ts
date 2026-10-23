@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   balanceBubbleView,
+  balanceDetailView,
   balancePercent,
   decideBalanceNotice,
   toBalanceState,
@@ -48,14 +49,14 @@ describe('balanceBubbleView —— 不可用状态必须给出可读的文字说
 
   test('credential-missing：host 的 message 已带前缀，不再叠加（无双重「缺少凭证」）', () => {
     const rows = balanceBubbleView({
-      provider: 'deepseek-official',
+      provider: 'commandcode',
       ok: false,
       reason: 'credential-missing',
-      message: '缺少凭证 DEEPSEEK_API_KEY',
+      message: '缺少凭证 COMMANDCODE_API_KEY',
     });
     assert.deepEqual(rows, [
       { role: 'error', text: '缺少余额查询凭证' },
-      { role: 'sub', text: '缺少凭证 DEEPSEEK_API_KEY' },
+      { role: 'sub', text: '缺少凭证 COMMANDCODE_API_KEY' },
     ]);
     assert.equal(
       rows.filter((r) => r.text.includes('缺少凭证')).length,
@@ -412,5 +413,34 @@ describe('money —— 档位基准由数据带出（展示层不再写死任何
       null,
       '缺 currency 的项被丢弃，丢光就是认不出',
     );
+  });
+});
+
+describe('points —— 第三方积分余额使用独立展示形态', () => {
+  test('单位、余额与档位基准解析后用于气泡和动画百分比', () => {
+    const state = toBalanceState({
+      ok: true,
+      provider: 'local-gateway',
+      shape: 'points',
+      data: { unit: '积分', total: '8', full: '20' },
+    });
+    if (!state || !state.ok || state.shape !== 'points') assert.fail('应解析为 points 余额');
+    assert.deepEqual(state.points, { unit: '积分', total: '8', full: '20' });
+    assert.deepEqual(balanceBubbleView(state), [{ role: 'label', text: '余额 8 积分' }]);
+    assert.deepEqual(balanceDetailView(state), [{ role: 'label', text: '余额 8 积分' }]);
+    assert.equal(balancePercent(state), 60);
+    assert.equal(urgentWindow(state), undefined, '积分不是时间窗口额度');
+  });
+
+  test('没有 full 基准时仍显示真实余额，但不伪造档位百分比', () => {
+    const state = toBalanceState({ ok: true, provider: 'gateway', shape: 'points', data: { unit: '点', total: '0' } });
+    if (!state || !state.ok || state.shape !== 'points') assert.fail('应解析为 points 余额');
+    assert.deepEqual(balanceBubbleView(state), [{ role: 'label', text: '余额 0 点' }]);
+    assert.equal(balancePercent(state), undefined);
+  });
+
+  test('缺失 unit 或 total 时拒绝无法显示的 points 数据', () => {
+    assert.equal(toBalanceState({ ok: true, provider: 'gateway', shape: 'points', data: { total: '3' } }), null);
+    assert.equal(toBalanceState({ ok: true, provider: 'gateway', shape: 'points', data: { unit: '积分' } }), null);
   });
 });

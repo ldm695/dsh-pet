@@ -24,6 +24,7 @@ import { apply } from '../host/index.ts';
 import { createStandaloneContext, type RegisteredRoute, type StandaloneLogger } from './context.ts';
 import { configPathsFor } from './options.ts';
 import { listenStandaloneServer, type StandaloneServer } from './server.ts';
+import { createRequestSecurity } from './request-security.ts';
 
 /** 静默日志器（插件仍会往 console 打少量 warn，那是它自己的诊断，这里不拦） */
 const silent: StandaloneLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
@@ -34,6 +35,7 @@ let server: StandaloneServer | undefined;
 let context: ReturnType<typeof createStandaloneContext> | undefined;
 let savedHome: string | undefined;
 let savedElectron: string | undefined;
+const requestSecurity = createRequestSecurity();
 
 before(async () => {
   home = mkdtempSync(join(tmpdir(), 'dsh-pet-standalone-'));
@@ -49,15 +51,17 @@ before(async () => {
   const listening = await listenStandaloneServer({
     routes,
     logger: silent,
+    requestSecurity,
     port: 0,
     // 与 CLI 同一个运维信息形状（这条断言顺带钉住 CLI 用的字段名）
     status: () => ({ name: 'dsh-pet-standalone', plugin: { root: packageRoot } }),
   });
   // 顺序与 CLI 完全一致：先监听拿到端口，再 apply —— 插件的 launchHelper 依赖 port > 0
   portRef.value = listening.port;
-  apply(created.ctx);
+  // 先登记清理目标；apply 的 effect 若抛错，after hook 仍须关掉已监听的服务。
   context = created;
   server = listening;
+  apply(created.ctx);
   base = `http://127.0.0.1:${listening.port}`;
 });
 
@@ -83,10 +87,10 @@ async function get(path: string): Promise<{ status: number; text: string; json: 
 describe('插件宿主半边在独立模式下跑起来了', () => {
   test('apply 注册了插件自己的路由前缀（独立模式不自己写路由表）', () => {
     const routes = context?.routes ?? [];
-    assert.equal(routes.length, 1, '当前插件只注册一条 prefix 路由；多出来的注册要在这里显式确认');
-    assert.equal(routes[0]?.kind, 'prefix');
-    assert.equal(routes[0]?.path, '/dsh-pet-7340');
-    assert.equal(typeof routes[0]?.handler, 'function');
+    const prefixes = routes.filter((route) => route.kind === 'prefix');
+    assert.equal(prefixes.length, 1, '当前插件只注册一条 prefix 路由；多出来的 prefix 要在这里显式确认');
+    assert.equal(prefixes[0]?.path, '/dsh-pet-7340');
+    assert.equal(typeof prefixes[0]?.handler, 'function');
   });
 
   test('/state 与 DSH 内同形（独立模式没有任何会话事件 → 叶子保持初始值）', async () => {
@@ -156,7 +160,10 @@ describe('独立服务自己的端点', () => {
   });
 
   test('/shutdown 在没有收尾回调时也只回 200，不影响服务继续工作', async () => {
-    const response = await fetch(`${base}/shutdown`, { method: 'POST' });
+    const response = await fetch(`${base}/shutdown`, {
+      method: 'POST',
+      headers: { 'X-DSH-Pet-Token': requestSecurity.token },
+    });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { ok: true, stopping: true });
     assert.equal((await get('/dsh-pet-7340/state')).status, 200, '测试里没人真的停机：服务应继续可用');

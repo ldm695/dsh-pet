@@ -16,14 +16,41 @@ import { commandCode } from './providers/commandcode';
 import { deepseekAccount } from './providers/deepseek-account';
 import { deepseekOfficial } from './providers/deepseek-official';
 import { opencodeGo } from './providers/opencode-go';
-import type { AccountBalanceSnapshot, BalanceProvider, BalanceResult } from './types';
+import type { AccountBalanceSnapshot, BalanceProvider, BalanceResult, PluginProvider } from './types';
 
 /** 已登记的服务商（登记口径见模块头：只收有接口的，其余 → `unsupported`） */
 export const BALANCE_PROVIDERS: BalanceProvider[] = [opencodeGo, commandCode, deepseekOfficial, deepseekAccount];
 
+/** 第三方余额 provider 只在当前宿主进程内存中登记。 */
+const externalProviders = new Map<string, PluginProvider>();
+
 /** provider id → 唯一匹配定义；未匹配返回 undefined（= 不支持查询） */
-export function matchBalanceProvider(provider: string): BalanceProvider | undefined {
-  return BALANCE_PROVIDERS.find((p) => p.ids.includes(provider));
+export function matchBalanceProvider(provider: string): BalanceProvider | PluginProvider | undefined {
+  return BALANCE_PROVIDERS.find((p) => p.ids.includes(provider)) ?? externalProviders.get(provider);
+}
+
+/** 注册第三方余额查询；注销函数只会移除本次注册的实例。 */
+export function registerBalanceProvider(def: PluginProvider): () => void {
+  if (!def || typeof def !== 'object') throw new TypeError('provider 定义必须是对象');
+  if (typeof def.id !== 'string' || def.id.length === 0) throw new TypeError('id 必须是非空字符串');
+  if (typeof def.fetch !== 'function') throw new TypeError('fetch 必须是函数');
+  if (BALANCE_PROVIDERS.some((provider) => provider.ids.includes(def.id))) {
+    throw new Error('不能覆盖内置服务商: ' + def.id);
+  }
+  if (externalProviders.has(def.id)) throw new Error('该服务商 id 已被注册: ' + def.id);
+
+  externalProviders.set(def.id, def);
+  return () => {
+    if (externalProviders.get(def.id) === def) externalProviders.delete(def.id);
+  };
+}
+
+/** 列出当前可查询的内置与第三方 provider id，供插件调试。 */
+export function listBalanceProviders(): { builtin: string[]; external: string[] } {
+  return {
+    builtin: BALANCE_PROVIDERS.flatMap((provider) => provider.ids),
+    external: [...externalProviders.keys()],
+  };
 }
 
 /**
@@ -55,6 +82,15 @@ export async function queryBalance(
   const def = matchBalanceProvider(provider);
   if (!def) return failed(provider, 'unsupported');
 
+  // 第三方 provider 只收到 provider id。密钥、DSH 账号服务与宿主 credentialRef 都不传给它。
+  if (!('credential' in def)) {
+    try {
+      return await def.fetch({ provider });
+    } catch (e) {
+      return failed(provider, 'fetch-error', e instanceof Error ? e.message : String(e));
+    }
+  }
+
   // 凭证前置检查放在 try 之外：解析凭证本身抛错属于意外异常，由调用方（refreshBalance）兜底 ——
   // 与拆分前的口径一致。账号路由没有 API Key，改为判定「账号服务在不在场」。
   let key = '';
@@ -85,6 +121,9 @@ export type {
   BalanceSuccess,
   CredentialSpec,
   MoneyBalance,
+  PluginFetchContext,
+  PluginProvider,
+  PointsBalance,
   PricingTier,
   WindowsUsage,
 } from './types';

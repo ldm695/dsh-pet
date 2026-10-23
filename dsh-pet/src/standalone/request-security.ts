@@ -25,7 +25,7 @@ function publicRead(req: IncomingMessage): boolean {
   if (['/standalone-ai/settings', '/shutdown'].includes(path)) return false;
   if (/^\/dsh-pet-\d+\/(?:whisper|chat)(?:\/|$)/.test(path)) return false;
   return (
-    ['/', '/health', '/standalone-ai/'].includes(path) ||
+    ['/', '/health', '/standalone-ai/', '/standalone-settings.js'].includes(path) ||
     /^\/dsh-pet-\d+\//.test(path)
   );
 }

@@ -91,6 +91,7 @@ before(() => {
 
   let handler: ((req: unknown, res: unknown) => Promise<void>) | undefined;
   const noop = (): void => {};
+  const services = new Map<string, unknown>();
   apply({
     // 与 DSH 一致：effect 的返回值是**释放函数**。这里收下来在 after() 里调用——
     // 插件现在有常驻定时器（余额周期刷新），不释放的话测试进程会一直等它（跑完不退出）。
@@ -104,6 +105,8 @@ before(() => {
       }
     },
     on: () => noop,
+    provide: (name: string, service: unknown) => services.set(name, service),
+    get: (name: string) => services.get(name),
     webServer: { register: (spec: { handler: typeof handler }) => ((handler = spec.handler), noop) },
     commands: { register: () => noop },
     logger: { warn: () => {}, info: () => {}, debug: () => {}, error: () => {} },

@@ -98,11 +98,12 @@ describe('createStandaloneContext —— 与 Cordis 对齐的语义', () => {
     const handler = (): void => {};
     const dispose = webServer.register({ kind: 'prefix', path: '/dsh-pet-7340', handler });
     assert.equal(typeof dispose, 'function');
-    assert.equal(context.routes.length, 1);
-    assert.equal(context.routes[0]?.path, '/dsh-pet-7340');
-    assert.equal(context.routes[0]?.handler, handler);
+    const originalRouteCount = context.routes.length;
+    const registered = context.routes.find((route) => route.path === '/dsh-pet-7340');
+    assert.ok(registered);
+    assert.equal(registered.handler, handler);
     (dispose as () => void)();
-    assert.equal(context.routes.length, 0, '释放后路由应移除');
+    assert.equal(context.routes.length, originalRouteCount - 1, '释放后只移除该路由');
   });
 
   test('webServer.port 惰性读取：先起服务、后 apply 时插件读到的是真端口', () => {

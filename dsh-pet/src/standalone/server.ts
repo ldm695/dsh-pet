@@ -8,9 +8,8 @@
  *   3. 提供 `/` 与 `/health`（运维信息）和 `/shutdown`（脚本化停机）；
  *   4. 兜住 handler 的异常，按插件自身的口径回 500 JSON。
  *
- * 为什么这里不补 `Access-Control-Allow-Origin`：独立模式的桌面渲染端经 bridge 管道
- * 取数据（不是 HTTP 跨源请求），CORS 对它无意义；而由本服务直接写的响应（`/`、`/shutdown`、
- * 未匹配路由）都带上了跨源头，供浏览器/第三方工具直接消费。
+ * 桌面渲染端经 bridge 管道取数据，不需要 CORS。只有 `/` 与 `/health` 运维信息保留跨源读取；
+ * 设置页和插件 API 在 HTTP 边界统一移除跨源头，并对读取与写入执行本机来源校验。
  */
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server as HttpServer, ServerResponse } from 'node:http';
@@ -34,8 +33,8 @@ export interface StandaloneServerOptions {
   status?: () => unknown;
   /** `/shutdown` 被请求时通知调用方收尾（独立模式的脚本化停机） */
   onShutdown?: () => void;
-  /** 独立 AI 本机设置接口使用的请求令牌与来源校验 */
-  requestSecurity?: RequestSecurity;
+  /** 本机设置与插件 API 共用的请求令牌与来源校验 */
+  requestSecurity: RequestSecurity;
 }
 
 export interface StandaloneServer {
@@ -107,16 +106,19 @@ export function createRequestListener(
     logger.debug(`${method} ${pathname}`);
 
     if (method === 'OPTIONS') {
-      const headers = pathname.startsWith('/standalone-ai/') ? {} : CORS_HEADERS;
+      secureResponse(res, pathname);
+      const headers = pathname === '/' || pathname === '/health' ? CORS_HEADERS : {};
       res.writeHead(204, headers);
       res.end();
       return;
     }
+    secureResponse(res, pathname);
     if (pathname === '/' || pathname === '/health') {
       sendJson(res, 200, status?.() ?? { name: 'DSH Pet' });
       return;
     }
     if (pathname === '/shutdown') {
+      if (!requestSecurity.authorize(req, res)) return;
       // 先回话再收尾：调用方要能拿到 200，而不是被自己的停机动作打断
       sendJson(res, 200, { ok: true, stopping: true });
       queueMicrotask(() => onShutdown?.());
@@ -134,10 +136,10 @@ export function createRequestListener(
     }
     const invoke = async (): Promise<void> => {
       let request = req;
-      if (pathname.startsWith('/standalone-ai/')) {
-        secureResponse(res, pathname);
-        if (!requestSecurity || !requestSecurity.authorize(req, res)) return;
-        if (method === 'POST') {
+      const protectedPath = pathname.startsWith('/standalone-ai/') || pathname.startsWith('/dsh-pet-');
+      if (protectedPath) {
+        if (!requestSecurity.authorize(req, res)) return;
+        if (pathname.startsWith('/standalone-ai/') && method === 'POST') {
           const replay = await boundedRequest(req, res, MAX_SETTINGS_BYTES);
           if (!replay) return;
           request = replay;

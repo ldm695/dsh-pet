@@ -29,8 +29,8 @@ test('第三方菜单注册、点击消费和注销均通过现有状态通道�
   });
   assert.deepEqual(state.read().sections.menu.data, {
     items: [
-      { owner: '游戏', label: '弹弓' },
-      { owner: '游戏', label: '钓鱼' },
+      { owner: '游戏', label: '弹弓', target: 'both' },
+      { owner: '游戏', label: '钓鱼', target: 'both' },
     ],
   });
   const pending = route(request('menu/events', 'GET', undefined, 'owner=游戏&wait=5000'));
@@ -48,6 +48,32 @@ test('第三方菜单注册、点击消费和注销均通过现有状态通道�
   assert.equal(json(await route(request('menu/events', 'GET', undefined, 'owner=游戏'))).reason, 'unknown-owner');
 });
 
+test('第三方菜单 target 可按端筛选，旧注册缺省为 both', async () => {
+  const state = new PollStateStore();
+  const route = createMenuRoute((name, data) => state.writeSection(name, data));
+  for (const target of ['web', 'desktop', 'both'] as const) {
+    assert.deepEqual(
+      json(await route(request('menu/item', 'POST', { owner: target, labels: ['入口'], target }))),
+      { ok: true },
+    );
+  }
+  assert.deepEqual(json(await route(request('menu/item', 'POST', { owner: '旧插件', labels: ['默认'] }))), {
+    ok: true,
+  });
+  const items = (state.read().sections.menu.data as { items: unknown[] }).items;
+  assert.deepEqual(items, [
+    { owner: 'web', label: '入口', target: 'web' },
+    { owner: 'desktop', label: '入口', target: 'desktop' },
+    { owner: 'both', label: '入口', target: 'both' },
+    { owner: '旧插件', label: '默认', target: 'both' },
+  ]);
+  assert.deepEqual(json(await route(request('menu/item', 'POST', { owner: '坏值', labels: ['入口'], target: 'native' }))), {
+    ok: false,
+    reason: 'invalid-target',
+    message: 'target 只能是 web / desktop / both（不写 = both）',
+  });
+});
+
 test('外部工作状态在独立模式的重复桥接轮询后保留，并可显式清除', async () => {
   const state = new PollStateStore();
   const work = new WorkStatusStore();
@@ -63,7 +89,7 @@ test('外部工作状态在独立模式的重复桥接轮询后保留，并可�
     const payload = json<WorkPayload>(await route(request('state'))).sections.workStatus.data;
     assert.equal(payload.state, 'working');
     assert.equal(payload.task, '构建');
-    assert.equal(payload.agents?.[0].key, 'dsh:api');
+    assert.equal(payload.agents?.[0].key, 'api:client');
   }
   await external.handle(request('work-status', 'POST', { state: 'result' }));
   assert.equal(json<WorkPayload>(await route(request('state'))).sections.workStatus.data.task, '构建');

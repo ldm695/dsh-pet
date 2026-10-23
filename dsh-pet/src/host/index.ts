@@ -92,7 +92,7 @@ import { createPoseRoute } from './pose-route';
 import { PoseStore } from './pose';
 import { createStandaloneControlRoute } from './standalone-control-route';
 import type { RouteRequest, RouteResult } from './route-contract';
-import { queryBalance } from './balance/index';
+import { listBalanceProviders, queryBalance, registerBalanceProvider } from './balance/index';
 import { generateWhisper } from './whisper';
 import { automaticWhisperSchedule } from './whisper-policy';
 import { generateChat, type ChatMemoryMessage } from './chat';
@@ -113,9 +113,12 @@ import {
   reduceWorkStatus,
   currentTaskFromTodo,
   goalUpdateAction,
+  TASK_TEXT_MAX,
   WorkStatusStore,
+  type HostWorkStatusState,
   type WorkStatusTurnContext,
 } from './work-status';
+import { toolDetailFromEvent } from './tool-detail';
 import {
   agentErrorFrame,
   hasBlockingActivity,
@@ -255,6 +258,15 @@ function readBody(req: IncomingMessage): Promise<string> {
 /** 宿主插件主体：注册 `/dsh-pet-7340` 前缀路由 + 斜杠命令（/balance /pet /chat）。 */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- DSH 注入的 ctx（webServer/locale 等 service 无静态类型）
 export function apply(ctx: any): void {
+  // 宿主半侧公开给第三方插件的注册入口，与页面侧同名服务分属不同 Cordis 容器。
+  // 注册返回注销函数，插件通过 ctx.effect 清理；provider 取数时只收到自己的 id，不会拿到宿主密钥。
+  ctx.provide('petApi7340', {
+    balance: {
+      register: registerBalanceProvider,
+      list: listBalanceProviders,
+    },
+  });
+
   // 用户数据根：配置与用户素材统一收敛于此（扩展包按 <插件id> 各自建目录）
   const dshHome = resolveDshHome();
   const userRoot = join(dshHome, 'dsh-pet');
@@ -304,6 +316,12 @@ export function apply(ctx: any): void {
   // 会话存**——task 曾是全局单值，写过一次就跟着此后所有会话活动一直显示（issue #59）。
   // 进程内内存态：重启回空闲；每次会话事件有实际状态变化才更新（签名比对防刷屏）。
   const workStatus = new WorkStatusStore();
+  const DOWNLOAD_WORK_SESSION = 'dsh-pet-electron-download';
+  const DOWNLOAD_WORK_KEY = `dsh:${DOWNLOAD_WORK_SESSION}`;
+  /** 下载收尾槽位短暂保留，便于用户看到就绪/失败；不延长宿主生命周期。 */
+  const DOWNLOAD_SLOT_CLEAR_MS = 12 * 1000;
+  let downloadSlotTimer: ReturnType<typeof setTimeout> | null = null;
+  let downloadWorkSeq = 0;
   const bridgePath = join(userRoot, 'work-status-bridge.json');
   const codexBridgePath = join(userRoot, 'codex-work-status-bridge.json');
   const claudeBridgePath = join(userRoot, 'claude-code-work-status-bridge.json');
@@ -317,9 +335,8 @@ export function apply(ctx: any): void {
   // **忙碌档抖动抑制（滞回）**：工具秒回时 `tool/call` 报 working、`tool/result` 报 result，
   // 一次回复里能来回切十几次；每切一次前端就把 10s 的片段从第 0 帧重播，观感即"一秒一刀"
   // （实测 6 次快工具调用 → 13 次换片，working 每次只活 1~2 秒）。
-  // 这里只压 **working ↔ result 这对忙碌档之间的互切**：距上次写入不足 WORK_STATE_GAP_MS
-  // 就先不写，**但不丢**——挂一个 trailing 定时器，到点重新取快照补写，所以最终状态一定落地，
-  // 只是最多晚 GAP。
+  // 只压 working → result：快速工具完成时的结果档延后最多 5 秒；反向 result → working 立即写，
+  // 避免新一轮工具开工迟到。此规则与上游最新实现一致，也适配下面加入的逐工具详情文案。
   //
   // 刻意**不压**的对象（"写完立刻可见"是既有契约，动它会把一串宿主回归测试打翻）：
   //   - 回空闲 / 终态（success、error）：反馈不能迟到；
@@ -330,20 +347,29 @@ export function apply(ctx: any): void {
   // 一处压住两端同时生效，也不必在前端各维护一份状态机。
   const WORK_STATE_GAP_MS = 5000;
   /** 忙碌档：只有这两个档位之间的互切算"抖动"，其余档位变化一律立即写 */
-  const isBusyTier = (s: string | null): boolean => s === 'working' || s === 'result';
   let publishedWork = '\u0000';
   let publishedState: string | null = null;
-  let publishedTask: string | null = null;
   let publishedWorkAt = 0;
   let workFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearDownloadWorkStatus = (): boolean => {
+    if (downloadSlotTimer !== null) {
+      clearTimeout(downloadSlotTimer);
+      downloadSlotTimer = null;
+    }
+    return workStatus.clear(DOWNLOAD_WORK_SESSION);
+  };
   const publishWorkStatus = (): void => {
+    // Electron 下载是辅助提示：任何真实会话或外部工作状态出现时都让位，绝不盖住它们。
+    if (workStatus.snapshot().agents.some((agent) => agent.key !== DOWNLOAD_WORK_KEY)) {
+      clearDownloadWorkStatus();
+    }
     const snap = workStatus.snapshot();
     const key = JSON.stringify([snap.state, snap.task, snap.agents]);
     if (key === publishedWork) return;
-    // 抖动判定：文案没变、且前后都是忙碌档（同档已被上面的 key 短路掉，这里必是互切）
-    const churn = snap.task === publishedTask && isBusyTier(publishedState) && isBusyTier(snap.state);
+    // 抖动判定只压 working → result。工具详情会随每个 tool/call 改变，不能再要求任务文案相同。
+    const busyFlip = publishedState === 'working' && snap.state === 'result';
     const wait = WORK_STATE_GAP_MS - (Date.now() - publishedWorkAt);
-    if (churn && wait > 0) {
+    if (busyFlip && wait > 0) {
       // 压住这一拍：到点再取**最新**快照补写（不要在这里缓存 snap——期间可能又变了）
       workFlushTimer ??= setTimeout(() => {
         workFlushTimer = null;
@@ -357,7 +383,6 @@ export function apply(ctx: any): void {
     }
     publishedWork = key;
     publishedState = snap.state;
-    publishedTask = snap.task;
     publishedWorkAt = Date.now();
     const payload: WorkStatusSnapshotWire = {
       state: snap.state,
@@ -366,6 +391,23 @@ export function apply(ctx: any): void {
       agents: snap.agents,
     };
     state.writeSection('workStatus', payload);
+  };
+  /** 下载阶段提示只占用独立会话槽；若已有真实工作状态，publishWorkStatus 会立即清除此提示。 */
+  const reportElectronDownload = (text: string, status: HostWorkStatusState, terminal = false): void => {
+    if (disposed) return;
+    const points = Array.from(text);
+    const task = points.length > TASK_TEXT_MAX ? `${points.slice(0, TASK_TEXT_MAX).join('')}…` : text;
+    downloadWorkSeq += 1;
+    workStatus.setState(DOWNLOAD_WORK_SESSION, status, downloadWorkSeq);
+    workStatus.setTask(DOWNLOAD_WORK_SESSION, task);
+    publishWorkStatus();
+    if (!terminal || !workStatus.has(DOWNLOAD_WORK_SESSION)) return;
+    if (downloadSlotTimer !== null) clearTimeout(downloadSlotTimer);
+    downloadSlotTimer = setTimeout(() => {
+      downloadSlotTimer = null;
+      if (workStatus.clear(DOWNLOAD_WORK_SESSION)) publishWorkStatus();
+    }, DOWNLOAD_SLOT_CLEAR_MS);
+    downloadSlotTimer.unref?.();
   };
   // 系统通知帧：host 监听 DSH 宿主事件生成通知帧（帧契约与 shared/notify.ts 一致），写进 S 的
   // sections.notify，浏览器 1s 轮询 /state 后弹 toast。
@@ -380,6 +422,16 @@ export function apply(ctx: any): void {
   /** 终态（success/error）展示窗口定时器：约 60s 后清掉该会话条目，陈旧完成态不再浮上来（Bug 2/3） */
   const terminalTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const TERMINAL_KEEP_MS = 60 * 1000;
+  /** 最近一条 todo 文案；工具详情展示期间先缓存，最后一个工具结束后恢复。 */
+  const lastTodoText = new Map<string, string | null>();
+  /** 正在执行且有安全详情可显示的工具数；并行工具全部结束后才恢复 todo 文案。 */
+  const toolsInFlight = new Map<string, number>();
+  const bumpToolsInFlight = (sessionId: string, delta: number): number => {
+    const next = Math.max(0, (toolsInFlight.get(sessionId) ?? 0) + delta);
+    if (next > 0) toolsInFlight.set(sessionId, next);
+    else toolsInFlight.delete(sessionId);
+    return next;
+  };
   /** 取消某会话待执行的终态清理：会话已回到非终态，那次清理到点后既不清理也不重排，留着只会误导 */
   const cancelTerminalCleanup = (sessionId: string): void => {
     const t = terminalTimers.get(sessionId);
@@ -396,6 +448,8 @@ export function apply(ctx: any): void {
       if (sessionState === 'success' || sessionState === 'error') {
         workStatus.clear(sessionId); // 条目连同它的任务详情文案一起消失，不残留到后续活动
         turnFlags.delete(sessionId);
+        lastTodoText.delete(sessionId);
+        toolsInFlight.delete(sessionId);
         publishWorkStatus(); // 清完要写 S：否则前端一直挂着那条陈旧完成态
       }
     }, TERMINAL_KEEP_MS);
@@ -1008,7 +1062,10 @@ export function apply(ctx: any): void {
       return;
     }
     console.warn(`[dsh-pet] Electron not found, downloading to ${defaultElectronExe()} ...`);
-    electronEnsure = ensureElectronDownload()
+    electronEnsure = ensureElectronDownload({
+      onLog: ({ text, level, done }) =>
+        reportElectronDownload(text, level === 'warn' ? 'error' : done ? 'success' : 'working', done),
+    })
       .then((path) => {
         if (path) {
           launchHelper(path);
@@ -1150,7 +1207,13 @@ export function apply(ctx: any): void {
       userConfigPath,
       petConfigDir,
       () => state.writeSection('config', {}),
-      () => void syncDesktop(),
+      () => {
+        if (process.env.DSH_PET_STANDALONE === '1') {
+          const ipcProcess = process as NodeJS.Process & { send?: (message: unknown) => boolean };
+          ipcProcess.send?.({ channel: 'dsh-pet:config-changed' });
+        }
+        void syncDesktop();
+      },
       standaloneMoveTestConfig,
     ),
     releasePetLock: (petId) => locks.release({ petId, force: true }),
@@ -1284,11 +1347,13 @@ export function apply(ctx: any): void {
         // 会话没有活动条目（已空闲/已清理）→ 不动：它不会被展示，写进去只会成为一条"幽灵文案"。
         // 清单里再无 in_progress/pending 时 currentTaskFromTodo 返回 null，等于把旧文案清掉、
         // 气泡回落到档位文案（issue #59 缺陷 3：档位文案不该被一条历史记录永久屏蔽）。
-        if (workStatus.has(sessionId)) {
-          workStatus.setTask(
-            sessionId,
-            currentTaskFromTodo(event as { data?: { todos?: Array<{ status?: string; content?: string }> } }),
-          );
+        const task = currentTaskFromTodo(
+          event as { data?: { todos?: Array<{ status?: string; content?: string }> } },
+        );
+        lastTodoText.set(sessionId, task);
+        // 有工具详情时保留它；否则 todo 文案仍按原逻辑即时更新。
+        if ((toolsInFlight.get(sessionId) ?? 0) === 0 && workStatus.has(sessionId)) {
+          workStatus.setTask(sessionId, task);
           publishWorkStatus(); // 任务文案变化也要写 S（气泡内容靠它更新）
         }
         return;
@@ -1310,6 +1375,8 @@ export function apply(ctx: any): void {
         // 代价：goal 续跑这类多轮任务，每轮开头会回落一瞬档位文案，直到本轮（通常在开头几步内）
         // 再写一次 todo 清单。
         workStatus.setTask(sessionId, null);
+        lastTodoText.delete(sessionId);
+        toolsInFlight.delete(sessionId);
         publishWorkStatus(); // 清掉上一轮任务文案也要写 S
       }
       if (
@@ -1333,6 +1400,8 @@ export function apply(ctx: any): void {
         // 落到其他活跃会话，防止回合被打断后永久卡在上一档；其他事件的 null 是"不关心"，忽略。
         if (type === 'turn/end') {
           turnFlags.delete(sessionId);
+          lastTodoText.delete(sessionId);
+          toolsInFlight.delete(sessionId);
           cancelTerminalCleanup(sessionId); // 条目都要清了，别留一个到点后无事可做的定时器
           workStatus.clear(sessionId); // 条目连同任务详情文案一起消失（clear 内部会重算展示）
           publishWorkStatus(); // 回合被打断 → 回到空闲：前端据此收起常驻气泡
@@ -1340,9 +1409,23 @@ export function apply(ctx: any): void {
         return;
       }
       const seq = Number((event as { seq?: unknown }).seq ?? 0);
-      // 同会话同状态不重复更新（防刷屏）；不同状态才改写并重算展示
-      if (!workStatus.setState(sessionId, next, seq)) return;
-      publishWorkStatus(); // 档位变了 → 写 S（前端据此切动画 + 气泡）
+      const detail =
+        type === 'tool/call'
+          ? toolDetailFromEvent(event as { data?: { name?: unknown; arguments?: unknown } })
+          : null;
+      // 必须先写状态：setTask 只更新已存在的会话条目。
+      const changed = workStatus.setState(sessionId, next, seq);
+      if (changed && detail !== null) {
+        // 并行工具期间，较晚到达的 todo/write 不覆盖具体工具详情。
+        bumpToolsInFlight(sessionId, 1);
+        workStatus.setTask(sessionId, detail);
+      } else if (changed && type === 'tool/result') {
+        const remaining = bumpToolsInFlight(sessionId, -1);
+        if (remaining === 0) workStatus.setTask(sessionId, lastTodoText.get(sessionId) ?? null);
+      }
+      publishWorkStatus(); // 档位或文案变化都可能更新气泡
+      // 同会话同状态同序号的重复事件不重排终态清理。
+      if (!changed) return;
       // 终态只展示短暂窗口后自动清理：陈旧完成态不再浮上来（Bug 3 的一环，顺带缓解 Bug 2 残留）。
       // 回到非终态则取消那次待执行的清理——否则它到点时会话已非终态，既不清也不重排，
       // 条目（连同旧任务文案）就永久留下了。
@@ -1353,6 +1436,8 @@ export function apply(ctx: any): void {
       dispose();
       for (const t of terminalTimers.values()) clearTimeout(t);
       terminalTimers.clear();
+      lastTodoText.clear();
+      toolsInFlight.clear();
     };
   }, 'dsh-pet: work-status session events');
 
@@ -1609,6 +1694,9 @@ export function apply(ctx: any): void {
     disposed = true;
     if (workFlushTimer !== null) clearTimeout(workFlushTimer);
     workFlushTimer = null;
+    if (downloadSlotTimer !== null) clearTimeout(downloadSlotTimer);
+    downloadSlotTimer = null;
+    workStatus.clear(DOWNLOAD_WORK_SESSION);
     locks.releaseAll();
     playback.cancelAll();
     state.cancelAll();
