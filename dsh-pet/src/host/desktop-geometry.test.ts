@@ -21,10 +21,10 @@ test('macOS: movement reaches panel top while menus and Dock exclusions keep the
   assert.equal(primary.workArea.y, 24, 'do not mutate Electron display objects');
 });
 
-test('Windows overlay spans full panels while pet physics and UI use the work area', () => {
+test('Windows pet windows and movement use the display work area', () => {
   const geo = buildDeskGeometry([primary], 1, 'win32');
   assert.deepEqual(geo.areas, [primary.workArea]);
-  assert.deepEqual(geo.hull, primary.bounds);
+  assert.deepEqual(geo.hull, primary.workArea);
   assert.deepEqual(geo.workAreas, [primary.workArea]);
   assert.equal(geo.topInsetRatio, 0);
 });

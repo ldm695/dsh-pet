@@ -126,8 +126,8 @@ describe('源码守卫 —— 置顶看门狗必须在 main.js 里按这套规�
       '建窗时必须先置顶一次（看门狗只负责复查，不能当成唯一置顶来源）',
     );
     assert.ok(
-      (main.match(/(?:win|overlayWindow)\.setAlwaysOnTop\(true, topmostLevel\(process\.platform\)\)/g) ?? []).length >= 2,
-      '看门狗必须再钉一次同档位（HWND_TOPMOST 落带靠它；moveTop 的 HWND_TOP 对已沉底窗口无效）',
+      (main.match(/win\.setAlwaysOnTop\(true, topmostLevel\(process\.platform\)\)/g) ?? []).length >= 1,
+      '看门狗必须为独立桌宠窗口再钉一次同档位（HWND_TOPMOST 落带靠它；moveTop 的 HWND_TOP 对已沉底窗口无效）',
     );
     assert.ok(
       /require\('\.\/topmost-watchdog\.js'\)/.test(main),

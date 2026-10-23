@@ -1,11 +1,8 @@
 /**
  * dsh-pet desktop helper —— Electron 主进程
  *
- * 职责：创建覆盖桌面坐标系的透明 BrowserWindow，所有桌宠在同一 renderer 中独立运行。
- * 窗口通过 setShape 只开放宠物与弹出控件附近的区域；宠物移动由 renderer 更新 DOM，不搬动原生窗口。
- *
- * 原生窗口覆盖虚拟桌面并保持完整绘制区域，避免动态 SetWindowRgn 落后于快速移动的宠物而裁切画面。
- * 点击穿透由 setIgnoreMouseEvents 和宠物/控件命中区独立管理。
+ * 职责：每只桌宠创建独立的小型透明 BrowserWindow，由 renderer 更新桌宠状态，主进程跟随其位置。
+ * 点击穿透由 renderer 的身体命中判定和 setIgnoreMouseEvents 管理。
  * 输入：窗口默认**整窗点击穿透**（setIgnoreMouseEvents(true,{forward:true})），渲染端在光标
  * 进/出宠物身体命中区时经 pet:set-interactive 翻转可交互——透明像素不挡下层应用，
  * 窗口命中区域仅覆盖 .dsh-pet-hit。
@@ -45,6 +42,7 @@ const { execFileSync, spawn } = require('node:child_process');
 const { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } = require('node:fs');
 const fsPromises = require('node:fs/promises');
 // 点击穿透兜底通道的纯判定（不依赖 Electron 的 forward 鼠标钩子；见文件头注释）
+const { decideWindowIgnore, pointerZone, POINTER_POLL_MS } = require('./pointer-target.js');
 // 置顶看门狗：WS_EX_TOPMOST 只是样式位，不等于窗口真的在置顶带（见 topmost-watchdog.js 头部）
 const {
   TOPMOST_WATCHDOG_TICK_MS,
@@ -64,13 +62,8 @@ const { WorkStatusAssignmentManager } = require('./shared-core.js');
 // 允许无用户手势直接播放（余额动画等）
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
-// Software composition is the default for Windows transparent overlays; hardware composition
-// remains available as an explicit preference for machines where the GPU presentation path is stable.
-const RENDER_MODE = process.env.DSH_PET_RENDER_MODE === 'hardware' ? 'hardware' : 'software';
-const FRAME_DIAGNOSTICS = process.env.DSH_PET_FRAME_DIAGNOSTICS === '1';
-const RENDER_STARTUP_WATCHDOG_MS = 20_000;
-const RENDER_STARTUP_RECHECK_MS = 5_000;
-const RENDER_STARTUP_CONTROL_PREFIX = 'dsh-pet-render-watchdog:';
+// Match upstream rendering policy: Windows transparent pet windows use software composition.
+if (process.platform === 'win32') app.disableHardwareAcceleration();
 
 // 显式定名：Helper 是被 `electron.exe <main.js>` 直接拉起的，Electron 取不到 app 名会回落成
 // "Electron"，userData 便落到 %APPDATA%\Electron —— 那是所有这么跑的 Electron 脚本的公共目录，
@@ -134,20 +127,6 @@ if (!DPI_PROBE && HOST_PID > 0) {
     if (hostIsGone(HOST_PID)) exitForDeadHost();
   }, HOST_POLL_MS).unref?.();
 }
-
-// Windows 透明分层窗口（WS_EX_LAYERED）在 DWM 硬件加速合成下曾出现多处缺陷：
-//   - 拖拽移动时窗口四周出现黑色边框（#37）
-//   - 大透明窗移动覆盖小透明窗时，被覆盖窗口内容丢失（显示"消失"）
-// 当前采用固定桌面大小的单透明窗口，原生窗口不随宠物移动；默认使用软件合成，
-// 如确认设备的 GPU 合成稳定且希望降低 CPU 占用，可通过 --dsh-pet-render-mode=hardware 切回硬件合成。
-if (process.platform === 'win32' && RENDER_MODE === 'software') {
-  app.disableHardwareAcceleration();
-}
-app.on('gpu-info-update', () => {
-  console.error(
-    `[dsh-pet-desktop-helper] render mode=${RENDER_MODE} hardwareAcceleration=${app.isHardwareAccelerationEnabled()}`,
-  );
-});
 
 // ---------- 全局 DPI 线性化（多显示器异构缩放的根因修复） ----------
 //
@@ -309,9 +288,6 @@ if (BRIDGE) {
 
 /** 窗口表：petId -> BrowserWindow */
 const windows = new Map();
-// Main-process visual/input watchdogs can sleep while the entire overlay is hidden by fullscreen.
-// The fullscreen detector itself remains active so it can wake these timers as soon as visibility returns.
-const fullscreenWatcherRefreshers = new Set();
 const pendingPetPositions = new Map();
 let petPositionSaveTimer = null;
 function petPositionFile() {
@@ -365,8 +341,6 @@ const HIDE_ON_MAXIMIZED = DISPLAY_PRIORITY === 'hide-on-fullscreen-or-maximized'
 const fullscreenDisplayIds = new Set();
 let fullscreenPollTimer;
 let fullscreenStateReady = false;
-let fullscreenZOrderTimer;
-let overlayLoweredForFullscreen = false;
 
 function shouldHideOnFullscreen(win) {
   if (!HIDE_ON_FULLSCREEN || process.platform !== 'win32') return false;
@@ -379,94 +353,12 @@ function shouldHideOnFullscreen(win) {
   }
 }
 
-function allOverlayPetsHiddenOnFullscreen() {
-  return windows.size > 0 && [...windows.keys()].every((petId) => fullscreenHiddenPets.has(petId));
-}
-
 function showPetWindow(win) {
-  if (win.isDestroyed()) return;
-  if (win === overlayWindow) {
-    // The overlay spans the full desktop hull. Do not expose its native surface until Chromium
-    // has produced the first frame; otherwise Windows may briefly composite the default white
-    // backing during helper restarts (for example, after saving pet settings).
-    if (!overlayFirstFrameReady || !overlayRendererVisualReady) return;
-  } else if (shouldHideOnFullscreen(win)) return;
-  if (!win.isVisible()) {
-    if (win === overlayWindow && !overlayInitialCompositionReady) {
-      // Keep the first native composition transparent while Windows attaches the layered surface.
-      win.setOpacity(0);
-      win.showInactive();
-      setTimeout(() => {
-        if (overlayWindow !== win || win.isDestroyed()) return;
-        overlayInitialCompositionReady = true;
-        win.setOpacity(1);
-      }, 120);
-    } else {
-      win.showInactive();
-    }
-  }
+  if (win.isDestroyed() || shouldHideOnFullscreen(win)) return;
+  if (!win.isVisible()) win.showInactive();
 }
 
 function applyFullscreenVisibility() {
-  if (overlayWindow && !overlayWindow.isDestroyed()) {
-    const hidden = {};
-    fullscreenHiddenPets.clear();
-    for (const petId of windows.keys()) {
-      let shouldHide =
-        HIDE_ON_FULLSCREEN && process.platform === 'win32' && !fullscreenStateReady;
-      const bounds = overlayPetBounds.get(petId);
-      if (
-        !shouldHide &&
-        HIDE_ON_FULLSCREEN &&
-        process.platform === 'win32' &&
-        fullscreenStateReady &&
-        bounds
-      ) {
-        try {
-          shouldHide = fullscreenDisplayIds.has(String(screen.getDisplayMatching(bounds).id));
-        } catch {}
-      }
-      if (shouldHide) fullscreenHiddenPets.add(petId);
-      hidden[petId] = shouldHide;
-    }
-    const allPetsHidden = allOverlayPetsHiddenOnFullscreen();
-    if (!allPetsHidden && fullscreenZOrderTimer) {
-      clearTimeout(fullscreenZOrderTimer);
-      fullscreenZOrderTimer = undefined;
-    }
-    if (!allPetsHidden) {
-      if (overlayLoweredForFullscreen) {
-        overlayWindow.setAlwaysOnTop(true, topmostLevel(process.platform));
-        overlayLoweredForFullscreen = false;
-      }
-      showPetWindow(overlayWindow);
-      const point = screen.getCursorScreenPoint();
-      setWindowIgnore(overlayWindow, !overlayPointIsInteractive(overlayWindow, point));
-    } else {
-      // Renderer-hidden pets must not leave stale native hit targets behind.
-      setWindowIgnore(overlayWindow, true);
-    }
-    overlayWindow.webContents.send('pet:fullscreen-visibility', hidden);
-    for (const refresh of fullscreenWatcherRefreshers) refresh();
-    updateOverlayShape();
-    if (allPetsHidden && !fullscreenZOrderTimer && !overlayLoweredForFullscreen) {
-      const target = overlayWindow;
-      fullscreenZOrderTimer = setTimeout(() => {
-        fullscreenZOrderTimer = undefined;
-        if (overlayWindow === target && !target.isDestroyed() && allOverlayPetsHiddenOnFullscreen()) {
-          // Keep the shared HWND visible so Windows does not animate it back onscreen on restore.
-          // Lower it after the per-pet opacity fade, and leave the renderer/native input pass-through.
-          setWindowIgnore(target, true);
-          if (DISPLAY_PRIORITY !== 'normal') {
-            target.setAlwaysOnTop(false);
-            overlayLoweredForFullscreen = true;
-          }
-        }
-      }, 220);
-      fullscreenZOrderTimer.unref?.();
-    }
-    return;
-  }
   for (const win of new Set(windows.values())) {
     if (win.isDestroyed()) continue;
     if (shouldHideOnFullscreen(win)) {
@@ -563,6 +455,11 @@ function stopFullscreenWatcher() {
 
 /** win.id -> 上一次请求的窗口矩形；宠物窗口尺寸固定，只在位置变化时移动原生窗口。 */
 const lastRequestedBounds = new Map();
+const winMargins = new Map();
+const inputBusy = new Map();
+const inputRegions = new Map();
+const offBodyMs = new Map();
+let pointerFallbackPaused = false;
 
 /**
  * 宠物间碰撞 broker 状态：petId -> { x, y, vx, vy, size, bottomPad }。
@@ -594,8 +491,7 @@ function acceptWorkStatusSnapshot(event, snapshot) {
   if (!sourceWindow || sourceWindow.isDestroyed() || ![...windows.values()].includes(sourceWindow)) return;
   if (!Array.isArray(snapshot?.agents) || !Array.isArray(snapshot?.eligiblePetIds)) return;
 
-  // A pet renderer may report only its own local eligibility. In overlay mode the one renderer
-  // owns every pet in `windows`, so the same filtering also supports that layout.
+  // Each renderer may report only the pet eligibility owned by its window.
   const ownedPetIds = new Set([...windows].filter(([, win]) => win === sourceWindow).map(([petId]) => petId));
   const eligiblePetIds = snapshot.eligiblePetIds.filter(
     (petId) => typeof petId === 'string' && ownedPetIds.has(petId),
@@ -896,161 +792,8 @@ const windowIgnore = new Map();
 
 /** 翻转整窗穿透的**唯一出口**：状态与 windowIgnore 镜像永远一起更新（穿透期间保留 forward） */
 function setWindowIgnore(win, ignore) {
-  const previous = windowIgnore.get(win.id);
   win.setIgnoreMouseEvents(ignore, { forward: true });
   windowIgnore.set(win.id, ignore);
-  if (process.env.DSH_PET_INPUT_DIAGNOSTICS === '1' && previous !== ignore && win === overlayWindow) {
-    const point = screen.getCursorScreenPoint();
-    const local = overlayHull ? { x: point.x - overlayHull.x, y: point.y - overlayHull.y } : null;
-    const matches = [];
-    if (local) {
-      for (const [petId, entry] of overlayInputs) {
-        if (fullscreenHiddenPets.has(petId)) continue;
-        if (
-          [...(entry.bodyRects || []), ...(entry.rects || [])].some(
-            (r) => local.x >= r.x && local.x <= r.x + r.width && local.y >= r.y && local.y <= r.y + r.height,
-          )
-        )
-          matches.push(petId);
-      }
-    }
-    console.error(
-      '[dsh-pet-inputdiag] ' +
-        JSON.stringify({
-          ignore,
-          cursor: point,
-          local,
-          matches,
-          rects: [...overlayInputs].map(([petId, entry]) => ({ petId, bodyRects: entry.bodyRects || [] })),
-        }),
-    );
-  }
-}
-
-/** 兜底通道的光标轮询间隔（ms，与 issue #55 报告者实测值一致） */
-const POINTER_POLL_MS = 60;
-/** 冒烟期间暂停兜底轮询：它按**真实光标**翻转 windowIgnore，会干扰冒烟对渲染端通道的断言 */
-let pointerFallbackPaused = false;
-
-/** 共享窗口中每只宠物上报命中区、UI 区域、输入占用状态与画布 bounds。 */
-const overlayInputs = new Map();
-const overlayPetBounds = new Map();
-const fullscreenHiddenPets = new Set();
-let overlayWindow = null;
-let overlayHull = null;
-let overlayFirstFrameReady = false;
-let overlayRendererVisualReady = false;
-let overlayInitialCompositionReady = false;
-let overlayRenderStartupTimer;
-let overlayRenderStartupStartedAt = 0;
-let overlayRenderStartupReported = false;
-
-function stopOverlayRenderStartupWatchdog() {
-  if (overlayRenderStartupTimer) clearTimeout(overlayRenderStartupTimer);
-  overlayRenderStartupTimer = undefined;
-}
-
-function reportOverlayRenderStartupFailure(win, petCount) {
-  if (
-    process.env.DSH_PET_STANDALONE !== '1' ||
-    overlayRenderStartupReported ||
-    !win ||
-    win.isDestroyed()
-  ) {
-    return;
-  }
-
-  // Fullscreen hiding is intentional. Wait until the desktop becomes eligible for display
-  // before deciding that the native transparent surface failed to start.
-  if (
-    HIDE_ON_FULLSCREEN &&
-    process.platform === 'win32' &&
-    (!fullscreenStateReady || allOverlayPetsHiddenOnFullscreen())
-  ) {
-    overlayRenderStartupTimer = setTimeout(
-      () => reportOverlayRenderStartupFailure(win, petCount),
-      RENDER_STARTUP_RECHECK_MS,
-    );
-    overlayRenderStartupTimer.unref?.();
-    return;
-  }
-
-  if (overlayFirstFrameReady && overlayRendererVisualReady && win.isVisible()) {
-    stopOverlayRenderStartupWatchdog();
-    return;
-  }
-
-  overlayRenderStartupReported = true;
-  const event = {
-    type: 'startup-timeout',
-    elapsedMs: Math.max(0, Date.now() - overlayRenderStartupStartedAt),
-    petCount,
-    firstFrameReady: overlayFirstFrameReady,
-    rendererVisualReady: overlayRendererVisualReady,
-    windowVisible: win.isVisible(),
-  };
-  console.error(
-    `[dsh-pet-render-watchdog] ${RENDER_MODE} overlay did not become visible after ${event.elapsedMs}ms ` +
-      `(firstFrame=${event.firstFrameReady}, rendererVisualReady=${event.rendererVisualReady}, pets=${petCount})`,
-  );
-  if (RENDER_MODE === 'hardware') {
-    console.error('[dsh-pet-render-watchdog] requesting one software fallback');
-    process.stdout.write(RENDER_STARTUP_CONTROL_PREFIX + JSON.stringify(event) + '\n');
-  } else {
-    console.error('[dsh-pet-render-watchdog] software fallback also failed; automatic watchdog restart is disabled');
-  }
-  stopOverlayRenderStartupWatchdog();
-}
-
-function startOverlayRenderStartupWatchdog(win, petCount) {
-  stopOverlayRenderStartupWatchdog();
-  overlayRenderStartupReported = false;
-  if (process.env.DSH_PET_STANDALONE !== '1' || petCount <= 0) {
-    return;
-  }
-  overlayRenderStartupStartedAt = Date.now();
-  overlayRenderStartupTimer = setTimeout(
-    () => reportOverlayRenderStartupFailure(win, petCount),
-    RENDER_STARTUP_WATCHDOG_MS,
-  );
-  overlayRenderStartupTimer.unref?.();
-}
-
-function updateOverlayShape() {
-  const win = overlayWindow;
-  if (!win || win.isDestroyed() || !overlayHull || typeof win.setShape !== 'function') return;
-  // Keep the native shape equal to the complete virtual desktop. A local moving shape can
-  // trail a fast pet because renderer -> main -> SetWindowRgn is asynchronous; the sprite may
-  // then be clipped before the next IPC update expands the region. Mouse pass-through remains
-  // controlled independently by setIgnoreMouseEvents + overlayPointIsInteractive().
-  const rects = [{ x: 0, y: 0, width: Math.round(overlayHull.width), height: Math.round(overlayHull.height) }];
-  if (rects[0].width <= 0 || rects[0].height <= 0) return;
-  const key = JSON.stringify(rects);
-  if (key === win.__petShapeKey) return;
-  try {
-    win.setShape(rects);
-    win.__petShapeKey = key;
-    if (!win.isVisible()) showPetWindow(win);
-  } catch (error) {
-    console.error('[dsh-pet-desktop-helper] setShape failed:', String(error?.message || error));
-  }
-}
-
-function overlayPointIsInteractive(win, point) {
-  if (!win || !overlayHull) return false;
-  const x = point.x - overlayHull.x;
-  const y = point.y - overlayHull.y;
-  for (const [petId, entry] of overlayInputs) {
-    if (fullscreenHiddenPets.has(petId)) continue;
-    if (entry.busy && entry.dragging) return true;
-    for (const r of entry.bodyRects || []) {
-      if (x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height) return true;
-    }
-    for (const r of entry.rects || []) {
-      if (x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height) return true;
-    }
-  }
-  return false;
 }
 
 /**
@@ -1088,18 +831,13 @@ function petWindowSize(size) {
 }
 
 /**
- * 桌面几何：逐显示器的宠物活动区、完整面板和覆盖窗口外接矩形 + 主屏下标。
- *
- * Windows 的 hull 使用完整面板，确保透明覆盖窗口仍铺满显示器；宠物漫游、抛掷、角落定位走
- * areas（Windows 下为 workAreas）的并集，跨屏邻接判断单独使用完整 panels，菜单夹取也走 workAreas：
- * 显示器摆放不规则时 hull 里会有大片不属于任何屏的空洞，以 hull 为边界会把宠物放进去
- * （实测右倒 T 型双屏：hull 的 23.7% 是空洞，宠物飞进去就彻底看不见了）。
+ * 桌面几何：逐显示器的宠物活动区、工作区和完整面板，以及主屏下标。
  */
 function deskGeometry() {
   return buildDeskGeometry(screen.getAllDisplays(), screen.getPrimaryDisplay().id, process.platform);
 }
 
-/** 每只桌宠使用独立的小型透明窗口，避免整块虚拟桌面参与持续合成。 */
+/** 每只桌宠使用独立的小型透明窗口。 */
 function createPetWindows() {
   const geo = deskGeometry();
   const area = geo.hull;
@@ -1167,10 +905,40 @@ function createPetWindows() {
         if (!win.isDestroyed() && !win.isVisible() && !shouldHideOnFullscreen(win)) showPetWindow(win);
       }, 400);
     });
+    const pointerTimer = setInterval(() => {
+      if (pointerFallbackPaused || win.isDestroyed()) return;
+      const bounds = win.getBounds();
+      if (bounds.width < 8 || bounds.height < 8) return;
+      const ignoring = windowIgnore.get(win.id) !== false;
+      const busy = inputBusy.get(win.id) === true;
+      const point = screen.getCursorScreenPoint();
+      const margins = winMargins.get(win.id);
+      const zone = pointerZone(bounds, point, margins);
+      const offBodyDuration = !busy && zone === 'margin' ? (offBodyMs.get(win.id) ?? 0) + POINTER_POLL_MS : 0;
+      offBodyMs.set(win.id, offBodyDuration);
+      const next = decideWindowIgnore(bounds, point, ignoring, busy, offBodyDuration, inputRegions.get(win.id), margins);
+      if (next !== ignoring) setWindowIgnore(win, next);
+    }, POINTER_POLL_MS);
+    let lastTopmostAssertMs = Date.now();
+    const topmostTimer = setInterval(() => {
+      const nowMs = Date.now();
+      const due = shouldReassertTopmost(
+        {
+          nowMs,
+          lastAssertMs: lastTopmostAssertMs,
+          destroyed: win.isDestroyed(),
+          visible: win.isVisible(),
+          paused: pointerFallbackPaused,
+        },
+        TOPMOST_WATCHDOG_ENABLED,
+      );
+      if (!due) return;
+      lastTopmostAssertMs = nowMs;
+      if (DISPLAY_PRIORITY !== 'normal') win.setAlwaysOnTop(true, topmostLevel(process.platform));
+    }, TOPMOST_WATCHDOG_TICK_MS);
     win.webContents.on('console-message', (_event, details) => {
       const message = typeof details?.message === 'string' ? details.message : undefined;
       if (message?.startsWith('[dsh-pet-workdiag]')) console.error(message);
-      if (FRAME_DIAGNOSTICS && message?.startsWith('[dsh-pet-frame-diagnostics]')) console.error(message);
       if (MOVE_DIAGNOSTICS_ENABLED && message?.startsWith('[dsh-pet-move]')) {
         console.error(message);
         try {
@@ -1190,13 +958,17 @@ function createPetWindows() {
     const workStatusRendererId = win.webContents.id;
 
     win.once('closed', () => {
+      clearInterval(pointerTimer);
+      clearInterval(topmostTimer);
       ipcMain.removeListener('pet:work-status-diagnostic', onWorkStatusDiagnostic);
       windows.delete(pet.id);
       petStates.delete(pet.id);
-      overlayInputs.delete(pet.id);
-      overlayPetBounds.delete(pet.id);
       if (moveTargets.remove(pet.id)) traceMoveTarget('remove-target', { petId: pet.id, reason: 'window-closed' });
       lastRequestedBounds.delete(win.id);
+      winMargins.delete(win.id);
+      inputBusy.delete(win.id);
+      inputRegions.delete(win.id);
+      offBodyMs.delete(win.id);
       windowIgnore.delete(win.id);
       releaseWorkStatusRenderer(workStatusRendererId);
       broadcastPetStates();
@@ -1214,7 +986,6 @@ function createPetWindows() {
         openTarget: OPEN_TARGET,
         scale: String(scale),
         petIndex: String(pet.index),
-        overlay: '0',
         petLayouts,
         viewW: String(area.width),
         viewH: String(area.height),
@@ -1225,7 +996,6 @@ function createPetWindows() {
         topInsetRatio: String(geo.topInsetRatio),
         panels: JSON.stringify(geo.panels),
         primaryIndex: String(geo.primaryIndex),
-        frameDiagnostics: FRAME_DIAGNOSTICS ? '1' : '0',
       },
     }).catch((error) => {
       console.error(`[dsh-pet-desktop-helper] page load failed (${pet.id}):`, error);
@@ -1235,250 +1005,6 @@ function createPetWindows() {
   }
 }
 
-function createPetOverlayWindow() {
-  const geo = deskGeometry();
-  const area = geo.hull;
-  const configUrl = process.env.DSH_PET_CONFIG_URL || 'http://127.0.0.1:6952/dsh-pet-7340/config';
-  const lastPositions = readPetPositions();
-  const pets = petsFromEnv().map((pet) => ({ ...pet, lastPosition: lastPositions[pet.id] || null }));
-  const scale = petScale();
-  if (!BrowserWindow.prototype.setShape)
-    throw new Error('当前 Electron 不支持 BrowserWindow.setShape，无法启用单窗口桌宠渲染');
-
-  overlayHull = { ...area };
-  const win = new BrowserWindow({
-    width: Math.round(area.width),
-    height: Math.round(area.height),
-    title: `${APP_DISPLAY_NAME} 桌宠（桌面模式）`,
-    x: area.x,
-    y: area.y,
-    show: false,
-    useContentSize: true,
-    enableLargerThanScreen: true,
-    transparent: true,
-    backgroundColor: '#00000000',
-    frame: false,
-    icon: path.resolve(
-      __dirname,
-      '..',
-      '..',
-      'assets',
-      APP_EDITION === 'public' ? 'logo-rounded.png' : 'dsh-pet-icon.ico',
-    ),
-    alwaysOnTop: DISPLAY_PRIORITY !== 'normal',
-    skipTaskbar: true,
-    resizable: false,
-    hasShadow: false,
-    focusable: true,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-      paintWhenInitiallyHidden: true,
-      spellcheck: false,
-    },
-  });
-  // Keep the taskbar/Task Manager window label consistent with the selected edition.
-  // index.html has a generic fallback title; prevent it from replacing the branded title.
-  win.on('page-title-updated', (event) => {
-    event.preventDefault();
-    win.setTitle(`${APP_DISPLAY_NAME} 桌宠（桌面模式）`);
-  });
-  overlayWindow = win;
-  const workStatusRendererId = win.webContents.id;
-  overlayFirstFrameReady = false;
-  overlayRendererVisualReady = false;
-  overlayInitialCompositionReady = false;
-  startOverlayRenderStartupWatchdog(win, pets.length);
-  win.once('ready-to-show', () => {
-    if (overlayWindow !== win || win.isDestroyed()) return;
-    overlayFirstFrameReady = true;
-    if (win.__petShapeKey) showPetWindow(win);
-    if (overlayRendererVisualReady && win.isVisible()) stopOverlayRenderStartupWatchdog();
-  });
-  win.setAlwaysOnTop(DISPLAY_PRIORITY !== 'normal', topmostLevel(process.platform));
-  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: !HIDE_ON_FULLSCREEN });
-  // The shared renderer uses overlayHull as its coordinate origin. If the native full-desktop
-  // window is moved independently (for example by a window-manager/DPI transition), every pet
-  // remains rendered relative to the old origin and pointer hit-testing becomes offset. Pet
-  // dragging is renderer-only, so the overlay itself must stay anchored to the virtual desktop.
-  win.on('move', () => {
-    setImmediate(() => {
-      if (overlayWindow !== win || win.isDestroyed() || !overlayHull) return;
-      const currentHull = deskGeometry().hull;
-      // A real display-layout change is handled by the debounced display watcher below. Don't
-      // snap to stale geometry while Electron is still delivering that transition.
-      if (currentHull.x !== overlayHull.x || currentHull.y !== overlayHull.y) return;
-      const bounds = win.getBounds();
-      const x = Math.round(overlayHull.x);
-      const y = Math.round(overlayHull.y);
-      if (Math.abs(bounds.x - x) <= 1 && Math.abs(bounds.y - y) <= 1) return;
-      console.error(
-        `[dsh-pet-desktop-helper] overlay window moved unexpectedly (${bounds.x},${bounds.y}); restoring (${x},${y})`,
-      );
-      win.setPosition(x, y, false);
-    });
-  });
-  win.webContents.setBackgroundThrottling(false);
-  win.webContents.on('did-start-loading', () => {
-    // A renderer reload must not retain endpoints claimed by its previous sprites.
-    for (const [petId, petWin] of windows) {
-      if (petWin !== win || !moveTargets.remove(petId)) continue;
-      traceMoveTarget('remove-target', { petId, reason: 'renderer-reload' });
-    }
-    broadcastMoveTargets();
-  });
-  win.webContents.on('context-menu', (event) => event.preventDefault());
-  win.webContents.on('console-message', (_event, details) => {
-    const message = typeof details?.message === 'string' ? details.message : undefined;
-    // Forward work-status and movement diagnostics without requiring DevTools.
-    if (message?.startsWith('[dsh-pet-workdiag]')) console.error(message);
-    if (FRAME_DIAGNOSTICS && message?.startsWith('[dsh-pet-frame-diagnostics]')) console.error(message);
-    if (MOVE_DIAGNOSTICS_ENABLED && message?.startsWith('[dsh-pet-move]')) {
-      console.error(message);
-      try {
-        const record = JSON.parse(message.slice('[dsh-pet-move]'.length).trim());
-        if (record && typeof record === 'object' && !Array.isArray(record)) {
-          persistMoveDiagnostic(record, 'renderer');
-        }
-      } catch (error) {
-        warnMoveDiagnosticsError('parse-failed', error);
-      }
-    }
-  });
-  const onWorkStatusDiagnostic = (event, record) => {
-    if (event.sender !== win.webContents || !record || typeof record !== 'object') return;
-    const diagnosticsFile = process.env.DSH_PET_WORK_STATUS_DIAGNOSTICS_FILE;
-    if (!diagnosticsFile) return;
-    persistWorkStatusDiagnostic(record, diagnosticsFile);
-  };
-  ipcMain.on('pet:work-status-diagnostic', onWorkStatusDiagnostic);
-  win.once('closed', () => ipcMain.removeListener('pet:work-status-diagnostic', onWorkStatusDiagnostic));
-  win.webContents.on('did-finish-load', () => win.webContents.setZoomFactor(scale));
-  setWindowIgnore(win, true);
-
-  let pointerTimer;
-  let lastTopmostAssertMs = Date.now();
-  let topmostTimer;
-  const stopFullscreenVisualWatchers = () => {
-    if (pointerTimer) clearInterval(pointerTimer);
-    if (topmostTimer) clearInterval(topmostTimer);
-    pointerTimer = undefined;
-    topmostTimer = undefined;
-  };
-  const startFullscreenVisualWatchers = () => {
-    if (win.isDestroyed() || pointerTimer || topmostTimer) return;
-    pointerTimer = setInterval(() => {
-      if (pointerFallbackPaused || win.isDestroyed()) return;
-      const bounds = win.getBounds();
-      if (bounds.width < 8 || bounds.height < 8) return;
-      const ignoring = windowIgnore.get(win.id) !== false;
-      const point = screen.getCursorScreenPoint();
-      const dragging = [...overlayInputs].some(([petId, entry]) => !fullscreenHiddenPets.has(petId) && entry.dragging);
-      const next = !dragging && !overlayPointIsInteractive(win, point);
-      if (next !== ignoring) setWindowIgnore(win, next);
-    }, POINTER_POLL_MS);
-    // [置顶看门狗] 建窗时那次 setAlwaysOnTop 之后再没人复查过：外部任何一次 z 序扰动都能让桌宠
-    // 沉到普通窗下面——而 `WS_EX_TOPMOST` 位还在（点击穿透的读-改-写会把它写回来），于是
-    // "是不是置顶"永远查得出 true、宠物却再也看不见，用户侧只能重启 helper 才回来。
-    // 这里低频重钉一次：落地就是 SetWindowPos(HWND_TOPMOST, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE)，
-    // 不移动、不重绘、不抢焦点（判定的纯逻辑与全部依据见 topmost-watchdog.js）。
-    //
-    // 【注意】总开关 `TOPMOST_WATCHDOG_ENABLED` 当前是 **关闭** 的：重钉会把桌宠抬到所有置顶窗口
-    // 之上，打断全屏游戏与截图。关闭的理由、代价、以及一个尚未解决的「显示桌面后误置顶」bug，
-    // 都写在 topmost-watchdog.js 的文件头里 —— 要重新启用前请先读完那几节。
-    let lastTopmostAssertMs = Date.now();
-    topmostTimer = setInterval(() => {
-      const nowMs = Date.now();
-      const due = shouldReassertTopmost(
-        {
-          nowMs,
-          lastAssertMs: lastTopmostAssertMs,
-          destroyed: win.isDestroyed(),
-          visible: win.isVisible(),
-          paused: pointerFallbackPaused,
-        },
-        TOPMOST_WATCHDOG_ENABLED,
-      );
-      if (!due) return;
-      lastTopmostAssertMs = nowMs;
-      if (DISPLAY_PRIORITY !== 'normal') win.setAlwaysOnTop(true, topmostLevel(process.platform));
-    }, TOPMOST_WATCHDOG_TICK_MS);
-  };
-  const refreshFullscreenVisualWatchers = () => {
-    if (win === overlayWindow && allOverlayPetsHiddenOnFullscreen()) stopFullscreenVisualWatchers();
-    else startFullscreenVisualWatchers();
-  };
-  fullscreenWatcherRefreshers.add(refreshFullscreenVisualWatchers);
-  refreshFullscreenVisualWatchers();
-  win.on('closed', () => {
-    fullscreenWatcherRefreshers.delete(refreshFullscreenVisualWatchers);
-    stopFullscreenVisualWatchers();
-    for (const [petId, petWin] of windows) {
-      if (petWin !== win) continue;
-      windows.delete(petId);
-      petStates.delete(petId);
-      overlayInputs.delete(petId);
-      overlayPetBounds.delete(petId);
-      if (moveTargets.remove(petId)) traceMoveTarget('remove-target', { petId, reason: 'window-closed' });
-    }
-    releaseWorkStatusRenderer(workStatusRendererId);
-    broadcastPetStates();
-    if (fullscreenZOrderTimer) {
-      clearTimeout(fullscreenZOrderTimer);
-      fullscreenZOrderTimer = undefined;
-    }
-    overlayWindow = null;
-    stopOverlayRenderStartupWatchdog();
-    overlayLoweredForFullscreen = false;
-    overlayFirstFrameReady = false;
-    overlayRendererVisualReady = false;
-    overlayInitialCompositionReady = false;
-    lastRequestedBounds.delete(win.id);
-    windowIgnore.delete(win.id);
-  });
-
-  const notificationIcons = Object.fromEntries(
-    ['notify-done', 'notify-error', 'notify-truncated', 'notify-approval', 'notify-question', 'notify-test'].map(
-      (name) => [name, pathToFileURL(path.resolve(__dirname, '..', '..', 'assets', 'pic', name + '.png')).href],
-    ),
-  );
-  const petLayouts = JSON.stringify(
-    pets.map(({ id, size, position, lastPosition }) => ({ id, size, position, lastPosition })),
-  );
-  win
-    .loadFile(path.join(__dirname, 'index.html'), {
-      query: {
-        configUrl,
-        notificationIcon: pathToFileURL(
-          path.resolve(__dirname, '..', '..', 'assets', APP_EDITION === 'public' ? 'logo-rounded.png' : 'dsh-pet-icon-16.png'),
-        ).href,
-        notificationIcons: JSON.stringify(notificationIcons),
-        bridge: BRIDGE ? '1' : '0',
-        standalone: process.env.DSH_PET_STANDALONE === '1' ? '1' : '0',
-        openTarget: OPEN_TARGET,
-        scale: String(scale),
-        overlay: '1',
-        petLayouts,
-        viewW: String(area.width),
-        viewH: String(area.height),
-        viewX: String(area.x),
-        viewY: String(area.y),
-        areas: JSON.stringify(geo.areas),
-        workAreas: JSON.stringify(geo.workAreas),
-        topInsetRatio: String(geo.topInsetRatio),
-        panels: JSON.stringify(geo.panels),
-        primaryIndex: String(geo.primaryIndex),
-        frameDiagnostics: FRAME_DIAGNOSTICS ? '1' : '0',
-      },
-    })
-    .catch((error) => {
-      console.error('[dsh-pet-desktop-helper] page load failed:', error);
-      win.destroy();
-    });
-  for (const pet of pets) windows.set(pet.id, win);
-}
 // ---------- bridge 协议（渲染端 custom scheme → 本进程 → 宿主 stdout 请求行 + 本地 HTTP 回调） ----------
 // 渲染端的每个 fetch 都落到 dsh-pet-bridge://，protocol.handle 把请求以一行 JSON 写 stdout 转发宿主。
 // 本进程先监听 127.0.0.1 随机端口，再创建渲染窗口；请求行携带回调 URL，宿主处理完 POST 应答回来。
@@ -1652,33 +1178,16 @@ app.whenReady().then(async () => {
     const height = Number(bounds?.height);
     if (![x, y, width, height].every(Number.isFinite)) return;
     const rect = { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) };
-    if (win !== overlayWindow) {
-      const previous = lastRequestedBounds.get(win.id);
-      if (!previous || previous.width !== rect.width || previous.height !== rect.height) {
-        win.setBounds(rect, false);
-      } else if (previous.x !== rect.x || previous.y !== rect.y) {
-        win.setPosition(rect.x, rect.y, false);
-      }
-      lastRequestedBounds.set(win.id, rect);
-    } else {
-      overlayPetBounds.set(petId, rect);
-      const prior = overlayInputs.get(petId) || { busy: false, dragging: false, rects: [], bodyRects: [] };
-      const body = [bounds?.bodyX, bounds?.bodyY, bounds?.bodyWidth, bounds?.bodyHeight].map(Number);
-      const bodyRects =
-        body.every(Number.isFinite) && body[2] > 0 && body[3] > 0
-          ? [
-              {
-                x: Math.round(body[0]),
-                y: Math.round(body[1]),
-                width: Math.round(body[2]),
-                height: Math.round(body[3]),
-              },
-            ]
-          : prior.bodyRects;
-      overlayInputs.set(petId, { ...prior, bodyRects });
-      updateOverlayShape();
-      if (!win.isVisible() && win.__petShapeKey) showPetWindow(win);
+    const previous = lastRequestedBounds.get(win.id);
+    if (!previous || previous.width !== rect.width || previous.height !== rect.height) {
+      win.setBounds(rect, false);
+    } else if (previous.x !== rect.x || previous.y !== rect.y) {
+      win.setPosition(rect.x, rect.y, false);
     }
+    lastRequestedBounds.set(win.id, rect);
+    const marginL = Number(bounds?.marginL);
+    const marginT = Number(bounds?.marginT);
+    if (Number.isFinite(marginL) && Number.isFinite(marginT)) winMargins.set(win.id, { l: marginL, t: marginT });
     // 碰撞站场：位置必须用**包围盒左上角**（renderer 显式上报 boxX/boxY）——
     // 窗口坐标 = 包围盒 − margin（半只宠物宽），直接拿窗口坐标会让跨窗检测整体错位
     {
@@ -1702,17 +1211,6 @@ app.whenReady().then(async () => {
         freeMotion: bounds?.freeMotion === true,
       }, { newClaim: bounds?.positionClaim === true, claimReason: 'position-command' });
     }
-  });
-
-  ipcMain.on('pet:renderer-visual-ready', (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender);
-    if (!win || win !== overlayWindow || win.isDestroyed()) return;
-    overlayRendererVisualReady = true;
-    const visibility = {};
-    for (const petId of windows.keys()) visibility[petId] = fullscreenHiddenPets.has(petId);
-    win.webContents.send('pet:fullscreen-visibility', visibility);
-    if (win.__petShapeKey) showPetWindow(win);
-    if (overlayFirstFrameReady && win.isVisible()) stopOverlayRenderStartupWatchdog();
   });
 
   registerMoveTargetHandlers({
@@ -1753,52 +1251,39 @@ app.whenReady().then(async () => {
     }
   });
 
-  // 点击穿透翻转：renderer 在光标进/出身体命中区时上报；穿透期间仍保留 forward（mousemove 继续转发）。
-  // 兜底轮询（见 createPetOverlayWindow）也走同一个出口 setWindowIgnore，共享同一份镜像状态。
+  // 点击穿透翻转：渲染端更新身体命中状态；菜单与对话框则按实际控件区域裁定。
   ipcMain.on('pet:set-interactive', (event, interactive) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return;
-    if (win !== overlayWindow) {
-      setWindowIgnore(win, interactive !== true);
-      return;
-    }
-    if (win === overlayWindow && allOverlayPetsHiddenOnFullscreen()) {
-      setWindowIgnore(win, true);
-      return;
-    }
-    const point = screen.getCursorScreenPoint();
-    const busy = [...overlayInputs].some(([petId, entry]) => !fullscreenHiddenPets.has(petId) && entry.busy);
-    const captureRequested = interactive === true || busy;
-    const ignoring = !captureRequested && !overlayPointIsInteractive(win, point);
+    const input = inputRegions.get(win.id);
+    const ignoring =
+      interactive && input && inputBusy.get(win.id)
+        ? decideWindowIgnore(
+            win.getContentBounds(),
+            screen.getCursorScreenPoint(),
+            false,
+            true,
+            0,
+            input,
+            winMargins.get(win.id),
+          )
+        : !interactive;
     setWindowIgnore(win, ignoring);
   });
 
-  // 拖拽、菜单与对话状态更新共享窗口里的逐宠物输入信息。
-  // 只存标记、不直接翻转窗口——**唯一出口**仍是 setWindowIgnore（由共享窗口轮询统一判定），
-  // 否则会出现"两条通道抢着翻同一个窗口"的竞态。
-  ipcMain.on('pet:input-busy', (event, payload) => {
+  ipcMain.on('pet:input-busy', (event, busy) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return;
-    const petId = String(payload?.petId || '');
-    if (!petId || windows.get(petId) !== win) return;
-    const prior = overlayInputs.get(petId) || { dragging: false, rects: [], bodyRects: [] };
-    overlayInputs.set(petId, { ...prior, busy: payload.busy === true });
+    inputBusy.set(win.id, !!busy);
   });
 
   ipcMain.on('pet:input-regions', (event, input) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed() || !input || !Array.isArray(input.rects)) return;
-    const petId = String(input.petId || '');
-    if (!petId || windows.get(petId) !== win) return;
     const rects = input.rects.filter(
-      (r) => r && [r.x, r.y, r.width, r.height].every(Number.isFinite) && r.width > 0 && r.height > 0,
+      (rect) => rect && [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) && rect.width > 0 && rect.height > 0,
     );
-    const bodyRects = (Array.isArray(input.bodyRects) ? input.bodyRects : []).filter(
-      (r) => r && [r.x, r.y, r.width, r.height].every(Number.isFinite) && r.width > 0 && r.height > 0,
-    );
-    const prior = overlayInputs.get(petId) || { busy: false };
-    overlayInputs.set(petId, { ...prior, dragging: input.dragging === true, rects, bodyRects });
-    updateOverlayShape();
+    inputRegions.set(win.id, { dragging: input.dragging === true, rects });
   });
 
   // 右键菜单「打开网站」：交给**系统默认浏览器**打开（等效于网页里 Ctrl+点击链接新标签页），
@@ -1960,29 +1445,12 @@ app.whenReady().then(async () => {
       });
   });
 
-  // 显示器热更新：分辨率/缩放变化、插拔屏、旋转都会让桌面几何失效。原先几何只在
-  // createPetOverlayWindow() 算一次并经 URL query 注入；显示器变化后重算并推给共享 renderer。
+  // 显示器热更新：分辨率/缩放变化、插拔屏、旋转都会让桌面几何失效。
   let displaysTimer = null;
   const pushDisplays = () => {
     const geo = deskGeometry();
-    if (overlayWindow && !overlayWindow.isDestroyed()) {
-      overlayHull = { ...geo.hull };
-      for (const [petId, entry] of overlayInputs) {
-        overlayInputs.set(petId, { ...entry, rects: [], bodyRects: [] });
-      }
-      overlayWindow.setBounds({
-        x: Math.round(geo.hull.x),
-        y: Math.round(geo.hull.y),
-        width: Math.round(geo.hull.width),
-        height: Math.round(geo.hull.height),
-      });
-      overlayWindow.__petShapeKey = null;
-      updateOverlayShape();
-      overlayWindow.webContents.send('pet:displays', geo);
-    } else {
-      for (const win of new Set(windows.values())) {
-        if (!win.isDestroyed()) win.webContents.send('pet:displays', geo);
-      }
+    for (const win of new Set(windows.values())) {
+      if (!win.isDestroyed()) win.webContents.send('pet:displays', geo);
     }
     console.error('[dsh-pet-desktop-helper] displays changed: ' + JSON.stringify(geo));
     // 主屏缩放可能一起变了（它决定宠物的尺寸补偿）。线性化生效期间 screen API 只报被强制的值，
@@ -2210,15 +1678,19 @@ app.whenReady().then(async () => {
           console.log('[dsh-pet-desktop-helper] smoke bounds:', JSON.stringify(first.getContentBounds()));
           // 点击穿透 round-trip：setInteractive(true)→窗口捕获输入（忽略鼠标=false）；
           // setInteractive(false)→恢复整窗穿透（忽略鼠标=true）。状态取自主进程镜像 windowIgnore。
-          // 期间暂停兜底轮询：它按真实光标位置翻转，冒烟时鼠标不在宠物身上会覆盖本断言的状态。
           pointerFallbackPaused = true;
-          await first.webContents.executeJavaScript('window.petBridge.setInteractive(true); true;');
-          await new Promise((r) => setTimeout(r, 80));
-          const interactiveIgnoring = windowIgnore.get(first.id);
-          await first.webContents.executeJavaScript('window.petBridge.setInteractive(false); true;');
-          await new Promise((r) => setTimeout(r, 80));
-          const passthroughIgnoring = windowIgnore.get(first.id);
-          pointerFallbackPaused = false;
+          let interactiveIgnoring;
+          let passthroughIgnoring;
+          try {
+            await first.webContents.executeJavaScript('window.petBridge.setInteractive(true); true;');
+            await new Promise((r) => setTimeout(r, 80));
+            interactiveIgnoring = windowIgnore.get(first.id);
+            await first.webContents.executeJavaScript('window.petBridge.setInteractive(false); true;');
+            await new Promise((r) => setTimeout(r, 80));
+            passthroughIgnoring = windowIgnore.get(first.id);
+          } finally {
+            pointerFallbackPaused = false;
+          }
           console.log(
             '[dsh-pet-desktop-helper] smoke interactive round-trip:',
             JSON.stringify({ interactiveIgnoring, passthroughIgnoring }),

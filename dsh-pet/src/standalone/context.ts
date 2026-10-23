@@ -18,8 +18,6 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
 import { deepseekApiKey } from './deepseek';
 import type { StandaloneAiService } from './ai-provider';
 
@@ -114,8 +112,6 @@ export interface StandaloneContextOptions {
   logger: StandaloneLogger;
   /** 注入路由收集数组（独立模式先起服务拿到端口，再 `apply`，两者共用同一个数组） */
   routes?: RegisteredRoute[];
-  /** Electron 硬件/软件合成偏好文件；保存后需重启 Electron Helper 生效 */
-  renderModeStorePath?: string;
   ai?: StandaloneAiService;
   authenticatedUrl?: (baseUrl: string) => string;
 }
@@ -220,92 +216,6 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
         },
       },
     );
-  }
-
-  if (options.renderModeStorePath) {
-    const modeOf = (): 'hardware' | 'software' =>
-      process.env.DSH_PET_RENDER_MODE === 'hardware' ? 'hardware' : 'software';
-    const sendRenderMode = (res: ServerResponse, status: number, body: unknown): void => {
-      const payload = JSON.stringify(body);
-      res.writeHead(status, {
-        'content-type': 'application/json; charset=utf-8',
-        'content-length': Buffer.byteLength(payload),
-        'cache-control': 'no-store',
-      });
-      res.end(payload);
-    };
-    routes.push({
-      kind: 'exact',
-      path: '/dsh-pet-7340/render-mode',
-      handler: async (req, res) => {
-        const storePath = options.renderModeStorePath as string;
-        let savedMode = modeOf();
-        try {
-          const stored = JSON.parse(await readFile(storePath, 'utf8')) as { renderMode?: unknown };
-          if (stored.renderMode === 'hardware' || stored.renderMode === 'software') savedMode = stored.renderMode;
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-            logger.warn(`读取渲染模式设置失败：${error instanceof Error ? error.message : String(error)}`);
-          }
-        }
-        if (req.method === 'GET') {
-          sendRenderMode(res, 200, { renderMode: savedMode, activeMode: modeOf() });
-          return;
-        }
-        if (req.method !== 'POST') {
-          sendRenderMode(res, 405, { error: 'Method not allowed' });
-          return;
-        }
-        const contentLength = Number(req.headers['content-length'] ?? 0);
-        if (contentLength > 1024) {
-          sendRenderMode(res, 413, { error: '渲染模式请求内容过大。' });
-          req.resume();
-          return;
-        }
-        const rawBody = await new Promise<string | undefined>((resolve, reject) => {
-          let body = '';
-          let tooLarge = false;
-          req.setEncoding('utf8');
-          req.on('data', (chunk: string) => {
-            if (tooLarge) return;
-            body += chunk;
-            if (Buffer.byteLength(body) > 1024) {
-              tooLarge = true;
-              body = '';
-            }
-          });
-          req.once('end', () => resolve(tooLarge ? undefined : body));
-          req.once('error', reject);
-        });
-        if (rawBody === undefined) {
-          sendRenderMode(res, 413, { error: '渲染模式请求内容过大。' });
-          return;
-        }
-        let request: { renderMode?: unknown };
-        try {
-          request = JSON.parse(rawBody) as { renderMode?: unknown };
-        } catch {
-          sendRenderMode(res, 400, { error: '无效的 JSON 请求。' });
-          return;
-        }
-        if (request.renderMode !== 'hardware' && request.renderMode !== 'software') {
-          sendRenderMode(res, 400, { error: '无效的渲染模式。' });
-          return;
-        }
-        const temporary = `${storePath}.${process.pid}.tmp`;
-        await mkdir(dirname(storePath), { recursive: true });
-        await writeFile(temporary, JSON.stringify({ renderMode: request.renderMode }), {
-          encoding: 'utf8',
-          mode: 0o600,
-        });
-        await rename(temporary, storePath);
-        sendRenderMode(res, 200, {
-          renderMode: request.renderMode,
-          activeMode: modeOf(),
-          restartRequired: request.renderMode !== modeOf(),
-        });
-      },
-    });
   }
 
   const sendAutoStart = (res: ServerResponse, status: number, body: unknown): void => {

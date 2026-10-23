@@ -72,10 +72,10 @@
  */
 import { randomUUID } from 'node:crypto';
 import { constants, createReadStream, existsSync, fstatSync, readFileSync } from 'node:fs';
-import { lstat, open, readFile, mkdir, rename, writeFile } from 'node:fs/promises';
+import { lstat, open, mkdir, writeFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
-import { dirname, join, normalize, resolve, sep } from 'node:path';
+import { join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
@@ -142,7 +142,6 @@ import {
   ensureElectronDownload,
   hasGraphicalDisplay,
   resolveElectronPath,
-  type RenderStartupTimeout,
 } from './helper-process';
 
 /** 本包目录：宿主构建产物位于 lib/，其上一级即包根。 */
@@ -958,8 +957,6 @@ export function apply(ctx: any): void {
   let disposed = false;
   /** 「无图形环境」提示只在进程生命周期内打一次，避免守护循环刷屏 */
   let displayWarned = false;
-  /** 硬件渲染启动失败后的自动回退只处理一次，避免 watchdog 与配置重启交错。 */
-  let renderFallbackInProgress = false;
 
   /** 用已确认存在的 Electron 路径拉起桌面 Helper（每只桌面宠物一个局部小窗口）。 */
   const launchHelper = (electronPath: string | undefined): void => {
@@ -1030,7 +1027,6 @@ export function apply(ctx: any): void {
             body: JSON.stringify(result.obj),
           };
         },
-        onRenderStartupTimeout: (event) => queueHardwareRenderFallback(helperInstance, electronPath, event),
       },
       log,
     );
@@ -1043,66 +1039,6 @@ export function apply(ctx: any): void {
       log.warn(`dsh-pet desktop helper start failed: ${e instanceof Error ? e.message : String(e)}`);
       helper = undefined;
     }
-  };
-
-  const queueHardwareRenderFallback = (
-    source: HelperProcess,
-    electronPath: string | undefined,
-    event: RenderStartupTimeout,
-  ): void => {
-    if (
-      process.env.DSH_PET_STANDALONE !== '1' ||
-      process.env.DSH_PET_RENDER_MODE !== 'hardware' ||
-      renderFallbackInProgress
-    ) {
-      return;
-    }
-    desktopSyncQueue = desktopSyncQueue
-      .then(async () => {
-        if (disposed || helper !== source || renderFallbackInProgress) return;
-        renderFallbackInProgress = true;
-        const storePath = process.env.DSH_PET_RENDER_MODE_FILE;
-        if (storePath) {
-          try {
-            let storedMode: unknown;
-            try {
-              const stored = JSON.parse(await readFile(storePath, 'utf8')) as { renderMode?: unknown };
-              storedMode = stored.renderMode;
-            } catch (error) {
-              if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-            }
-            if (storedMode !== 'software') {
-              const temporary = `${storePath}.${process.pid}.fallback.tmp`;
-              await mkdir(dirname(storePath), { recursive: true });
-              await writeFile(temporary, JSON.stringify({ renderMode: 'software' }), {
-                encoding: 'utf8',
-                mode: 0o600,
-              });
-              await rename(temporary, storePath);
-            }
-          } catch (error) {
-            log.warn(
-              `[dsh-pet] 自动保存软件合成设置失败，将仅在本次运行中回退：${error instanceof Error ? error.message : String(error)}`,
-            );
-          }
-        } else {
-          log.warn('[dsh-pet] 渲染模式设置文件路径不可用，将仅在本次运行中回退。');
-        }
-
-        process.env.DSH_PET_RENDER_MODE = 'software';
-        log.warn(
-          `[dsh-pet] 硬件合成启动超时（${event.elapsedMs}ms，首帧=${event.firstFrameReady}，` +
-            `渲染就绪=${event.rendererVisualReady}，窗口可见=${event.windowVisible}）；` +
-            '正在切换为软件合成并重启桌面 Helper。后续若仍无法显示，请查看运行日志。',
-        );
-        const old = helper;
-        helper = undefined;
-        await old?.stopAndWait('hardware-render-startup-fallback');
-        if (!disposed) launchHelper(electronPath);
-      })
-      .catch((error: unknown) => {
-        log.warn(`[dsh-pet] 自动切换软件合成失败：${error instanceof Error ? error.message : String(error)}`);
-      });
   };
 
   /** 拉起桌面 Helper：先探测本机 Electron；缺失时进程内异步下载

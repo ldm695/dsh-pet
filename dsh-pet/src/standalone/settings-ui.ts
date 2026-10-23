@@ -7,8 +7,6 @@ import { AiSettingsPage } from './ai-settings-react';
 import { makePetConfigSection, petBridge, zh } from './pet-settings';
 import { applySettingsTheme } from './settings-style';
 
-type RenderMode = 'hardware' | 'software';
-
 const APP_DISPLAY_NAME =
   (window as Window & { DSH_PET_APP_NAME?: string }).DSH_PET_APP_NAME === 'DSH Pet' ? 'DSH Pet' : '哦鲸鲸';
 document.title = `${APP_DISPLAY_NAME} 设置`;
@@ -115,141 +113,6 @@ function AutoStartSettings(): ReturnType<typeof jsx> | null {
   });
 }
 
-function RenderModeSettings(): ReturnType<typeof jsx> {
-  const [renderMode, setRenderMode] = useState<RenderMode>('software');
-  const [savedMode, setSavedMode] = useState<RenderMode>('software');
-  const [activeMode, setActiveMode] = useState<RenderMode>('software');
-  const [ready, setReady] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    fetch('/dsh-pet-7340/render-mode', { cache: 'no-store' })
-      .then((response) => (response.ok ? response.json() : Promise.reject(new Error('HTTP ' + response.status))))
-      .then((data: { renderMode?: unknown; activeMode?: unknown }) => {
-        if (!alive) return;
-        if (data.renderMode === 'hardware' || data.renderMode === 'software') {
-          setRenderMode(data.renderMode);
-          setSavedMode(data.renderMode);
-        }
-        if (data.activeMode === 'hardware' || data.activeMode === 'software') setActiveMode(data.activeMode);
-        setReady(true);
-      })
-      .catch((error: unknown) => {
-        if (alive) {
-          setReady(true);
-          setMessage({
-            ok: false,
-            text: '读取渲染方式失败：' + (error instanceof Error ? error.message : String(error)),
-          });
-        }
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const save = async (): Promise<void> => {
-    setBusy(true);
-    setMessage(null);
-    try {
-      const response = await fetch('/dsh-pet-7340/render-mode', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ renderMode }),
-      });
-      const data = (await response.json()) as {
-        renderMode?: unknown;
-        activeMode?: unknown;
-        restartRequired?: unknown;
-        error?: unknown;
-      };
-      if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'HTTP ' + response.status);
-      if (data.renderMode === 'hardware' || data.renderMode === 'software') {
-        setRenderMode(data.renderMode);
-        setSavedMode(data.renderMode);
-      }
-      if (data.activeMode === 'hardware' || data.activeMode === 'software') setActiveMode(data.activeMode);
-      setMessage({
-        ok: true,
-        text:
-          data.restartRequired === true
-            ? `已保存。请完全退出并重新启动${APP_DISPLAY_NAME}后生效；关闭设置窗口不会重启应用。`
-            : '已保存，当前运行方式已与设置一致。',
-      });
-    } catch (error) {
-      setMessage({ ok: false, text: error instanceof Error ? error.message : '保存渲染方式失败。' });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const option = (value: RenderMode, label: string): ReturnType<typeof jsx> =>
-    jsx('button', {
-      type: 'button',
-      role: 'radio',
-      'aria-checked': renderMode === value,
-      className: 'dsh-pet-cfg__btn' + (renderMode === value ? ' is-primary' : ''),
-      disabled: !ready || busy,
-      onClick: () => {
-        setRenderMode(value);
-        setMessage(null);
-      },
-      children: label,
-    });
-
-  return jsx('div', {
-    style: {
-      display: 'flex',
-      flexDirection: 'column',
-      gap: '8px',
-    },
-    children: [
-      jsx('div', {
-        className: 'dsh-pet-cfg__field',
-        children: [
-          jsx('span', { className: 'dsh-pet-cfg__flabel', children: '桌宠渲染方式' }),
-          jsx('div', {
-            className: 'dsh-pet-cfg__grid2',
-            role: 'radiogroup',
-            'aria-label': '桌宠渲染方式',
-            children: [option('hardware', 'GPU 硬件合成'), option('software', '软件合成')],
-          }),
-        ],
-      }),
-      jsx('div', {
-        className: 'dsh-pet-cfg__note',
-        style: { marginTop: '8px' },
-        children: ready
-          ? '当前运行：' +
-            (activeMode === 'hardware' ? 'GPU 硬件合成' : '软件合成') +
-            `。切换后需完全退出并重新启动${APP_DISPLAY_NAME}生效。`
-          : '正在读取当前设置…',
-      }),
-      jsx('div', {
-        className: 'dsh-pet-cfg__actions',
-        children: [
-          jsx('button', {
-            type: 'button',
-            className: 'dsh-pet-cfg__btn is-primary',
-            disabled: !ready || busy || renderMode === savedMode,
-            onClick: () => void save(),
-            children: busy ? '保存中…' : '保存渲染方式',
-          }),
-          message
-            ? jsx('span', {
-                className: 'dsh-pet-cfg__msg' + (message.ok ? '' : ' is-err'),
-                role: message.ok ? 'status' : 'alert',
-                children: message.text,
-              })
-            : null,
-        ],
-      }),
-    ],
-  });
-}
-
 const PetSettings = makePetConfigSection({
   h: jsx,
   useState,
@@ -278,7 +141,6 @@ const PetSettings = makePetConfigSection({
     style: { display: 'flex', flexDirection: 'column', gap: '16px' },
     children: [
       jsx(AutoStartSettings, {}),
-      jsx(RenderModeSettings, {}),
     ],
   }),
 });

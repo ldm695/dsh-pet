@@ -41,13 +41,6 @@
         left: 0;
         top: 0;
         pointer-events: none;
-        transition: opacity 0.22s ease;
-      }
-      .pet-sprite.fullscreen-hidden {
-        opacity: 0;
-      }
-      .pet-sprite.fullscreen-hidden .pet-hit {
-        pointer-events: none;
       }
       .pet-stage {
         position: relative;
@@ -174,9 +167,7 @@
       }
       /* ---- 展开态（点余额气泡后的完整额度）：每窗口一行，进度条长度 = 已用百分比 ----
          与浏览器端 src/client/bubble.ts 的规则逐条对应（两端样式各存一份，数值必须同步） */
-      /* 可点：气泡默认 pointer-events:none（不挡下层应用），只有这张可展开的余额气泡才开命中。
-         光有 DOM 可点还不够——窗口级穿透由 main 的 setIgnoreMouseEvents 管，气泡矩形要经
-         syncInputRegions 上报给主进程，见 sprite.js */
+      /* 可点：气泡默认 pointer-events:none（不挡下层应用），只有这张可展开的余额气泡才开命中。 */
       .pet-bubble.is-clickable {
         pointer-events: auto;
         cursor: pointer;

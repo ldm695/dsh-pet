@@ -176,7 +176,6 @@ window.DSH_PET_AI_SETTINGS_URL=${JSON.stringify(aiUrl)};
     routes,
     ai: standaloneAi,
     authenticatedUrl: (baseUrl) => security.authenticatedUrl(baseUrl),
-    renderModeStorePath: process.env.DSH_PET_RENDER_MODE_FILE,
   });
   // /shutdown 的回调要在服务构造时给出去，而停机函数要在服务之后定义：
   // 用一个可替换的转发器解耦（服务构造时只拿到"将来会是谁"）。

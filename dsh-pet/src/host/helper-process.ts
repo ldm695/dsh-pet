@@ -26,18 +26,6 @@ export const defaultHelperMain = resolve(packageRoot, 'runtime', 'electron-helpe
 /** stdout 中以此前缀开头的整行 JSON 属于 bridge 请求。 */
 export const BRIDGE_PREFIX = 'dsh-pet-bridge:';
 const BRIDGE_CALLBACK_URL = /^http:\/\/127\.0\.0\.1:\d+\/respond$/;
-/** Helper reports a one-time, standalone-only renderer startup failure through stdout. */
-export const RENDER_STARTUP_CONTROL_PREFIX = 'dsh-pet-render-watchdog:';
-
-export interface RenderStartupTimeout {
-  type: 'startup-timeout';
-  elapsedMs: number;
-  petCount: number;
-  firstFrameReady: boolean;
-  rendererVisualReady: boolean;
-  windowVisible: boolean;
-}
-
 /** 渲染端（经 main.js 转发）的一次请求：URL 是 /dsh-pet-7340/... 路径 + 查询串；
  *  cb 是 main.js 已监听的本地回调服务器地址，宿主将应答 POST 回去。 */
 export interface BridgeRequest {
@@ -70,8 +58,6 @@ interface HelperOptions {
   restartDelayMs?: number;
   /** bridge 协议处理器：renderer 的每条请求（配置/余额/碎碎念/素材等）都经它应答 */
   bridgeHandler?: BridgeHandler;
-  /** 独立版硬件合成启动超时通知；调用方决定是否持久化回退并重启 Helper。 */
-  onRenderStartupTimeout?: (event: RenderStartupTimeout) => void;
 }
 
 type Logger = {
@@ -403,7 +389,7 @@ export class HelperProcess {
     return child;
   }
 
-  /** stdout 按行缓冲：识别 bridge 与渲染启动诊断，其余内容作为日志。 */
+  /** stdout 按行缓冲：识别 bridge 协议，其余内容作为日志。 */
   private onStdoutChunk(chunk: string): void {
     this.stdoutBuffer += chunk;
     let nl: number;
@@ -416,39 +402,8 @@ export class HelperProcess {
         void this.handleBridgeLine(trimmed);
         continue;
       }
-      if (trimmed.startsWith(RENDER_STARTUP_CONTROL_PREFIX)) {
-        this.handleRenderStartupControlLine(trimmed);
-        continue;
-      }
       this.logger.debug?.(`[dsh-pet desktop helper] ${trimmed}`);
     }
-  }
-
-  private handleRenderStartupControlLine(line: string): void {
-    let event: RenderStartupTimeout;
-    try {
-      const parsed = JSON.parse(line.slice(RENDER_STARTUP_CONTROL_PREFIX.length)) as Partial<RenderStartupTimeout>;
-      if (
-        parsed.type !== 'startup-timeout' ||
-        !Number.isFinite(parsed.elapsedMs) ||
-        !Number.isInteger(parsed.petCount) ||
-        (parsed.petCount as number) <= 0 ||
-        typeof parsed.firstFrameReady !== 'boolean' ||
-        typeof parsed.rendererVisualReady !== 'boolean' ||
-        typeof parsed.windowVisible !== 'boolean'
-      ) {
-        throw new Error('invalid render startup watchdog payload');
-      }
-      event = parsed as RenderStartupTimeout;
-    } catch {
-      this.logger.warn?.('[dsh-pet desktop helper] 渲染启动看门狗消息无效，已忽略');
-      return;
-    }
-    this.logger.warn?.(
-      `[dsh-pet desktop helper] hardware render startup timeout after ${event.elapsedMs}ms ` +
-        `(firstFrame=${event.firstFrameReady}, rendererVisualReady=${event.rendererVisualReady}, visible=${event.windowVisible})`,
-    );
-    this.options.onRenderStartupTimeout?.(event);
   }
 
   /** 处理一条协议请求：交给宿主 bridgeHandler，结果按 id POST 回 main.js 的回调服务器

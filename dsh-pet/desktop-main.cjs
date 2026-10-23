@@ -10,15 +10,7 @@ const APP_DISPLAY_NAME = APP_EDITION === 'public' ? 'DSH Pet' : '哦鲸鲸';
 const APP_ICON_FILE = APP_EDITION === 'public' ? 'logo-rounded.png' : 'dsh-pet-icon-16.png';
 const APP_USER_MODEL_ID = APP_EDITION === 'public' ? 'cloud.pc2005.dsh-pet.public' : 'cloud.pc2005.dsh-pet';
 const TOAST_ACTIVATOR_CLSID = '{8C4174A4-DA42-4E82-9A67-A0A32D76D6B2}';
-// Diagnostic launch switches are forwarded through the standalone host to the transparent helper.
-// Example: app.exe --dsh-pet-render-mode=hardware --dsh-pet-frame-diagnostics
-for (const arg of process.argv.slice(1)) {
-  const renderMode = arg.match(/^--dsh-pet-render-mode=(software|hardware)$/i)?.[1]?.toLowerCase();
-  if (renderMode) process.env.DSH_PET_RENDER_MODE = renderMode;
-  if (arg === '--dsh-pet-frame-diagnostics') process.env.DSH_PET_FRAME_DIAGNOSTICS = '1';
-}
-// Product branding can change without relocating existing settings, logs, and credentials.
-// Tests may redirect Electron's complete per-user data tree without touching the normal profile.
+// Preserve existing user data when the product branding changes.
 if (process.env.DSH_PET_APP_DATA_DIR) {
   app.setPath('appData', resolve(process.env.DSH_PET_APP_DATA_DIR));
 }
@@ -26,16 +18,6 @@ app.setPath('userData', join(app.getPath('appData'), APP_EDITION === 'public' ? 
 process.env.DSH_PET_EDITION = APP_EDITION;
 process.env.DSH_PET_DISPLAY_NAME = APP_DISPLAY_NAME;
 process.env.DSH_PET_APP_USER_MODEL_ID = APP_USER_MODEL_ID;
-const renderModeSettingsPath = join(app.getPath('userData'), 'render-mode.json');
-process.env.DSH_PET_RENDER_MODE_FILE = renderModeSettingsPath;
-if (!process.env.DSH_PET_RENDER_MODE) {
-  try {
-    const preference = JSON.parse(readFileSync(renderModeSettingsPath, 'utf8'));
-    process.env.DSH_PET_RENDER_MODE = preference.renderMode === 'hardware' ? 'hardware' : 'software';
-  } catch {
-    process.env.DSH_PET_RENDER_MODE = 'software';
-  }
-}
 let host;
 let settingsWindow;
 let hostReady = false;

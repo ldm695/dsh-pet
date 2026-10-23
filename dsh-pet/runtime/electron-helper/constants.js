@@ -21,7 +21,6 @@ const CONFIG = {
     }
   })(),
   scale: Number(params.get('scale') || '1'),
-  overlay: params.get('overlay') === '1',
   petIndex: Number(params.get('petIndex') || '0'),
   petLayouts: (() => {
     try {
@@ -32,7 +31,6 @@ const CONFIG = {
     }
   })(),
   topInsetRatio: Number(params.get('topInsetRatio') || '0'),
-  frameDiagnostics: params.get('frameDiagnostics') === '1',
 };
 
 // ---------- 渲染端坐标系统一约定（DESIGN.md §3.5） ----------
@@ -55,9 +53,9 @@ const STANDALONE = params.get('standalone') === '1';
 // 工具项「打开网站」的去向（主进程按宿主形态经 query 注入，见 main.js 的 OPEN_TARGET）：
 // desktop = 宿主是 DSH 桌面应用，菜单项改叫「打开软件」并唤起桌面应用主窗口；site = 打开站点。
 const OPEN_TARGET = params.get('openTarget') === 'desktop' ? 'desktop' : 'site';
-// 视口 = 覆盖窗口外接矩形（Windows 使用完整面板，确保透明窗口覆盖任务栏区域）。
-// 它只是**坐标系原点与比例换算基准**：位置比例（customPos）、漫游 ratio 都按它算。
-// x/y = 外接矩形左上角（多显示器时原点非 0）——visibleClampRect 计算「窗口 ∩ 工作区」需要它。
+// 视口 = 全部显示器宠物活动区的外接矩形（多显示器时原点可能非 0）。
+// 它只是坐标系原点与比例换算基准：位置比例（customPos）、漫游 ratio 都按它算；
+// visibleClampRect 会用它换算窗口与工作区的交集。
 //
 // **宠物边界判定不用它**，改用下面 AREAS 的并集：显示器摆放不规则时外接矩形里有大片空洞
 // （实测右倒 T 型双屏 23.7% 的面积不属于任何屏），拿它当边界会让宠物走进/飞进不可见区域。
@@ -113,7 +111,7 @@ const VIEW = {
 let AREAS = [];
 /** 菜单/聊天框/提示仍限制在工作区，不能随宠物进入菜单栏或 Dock。 */
 let WORK_AREAS = [];
-/** 逐显示器**完整面板**（含任务栏区，视口相对坐标，与 AREAS 同序）：覆盖窗口与抛掷跨屏邻接探测使用 */
+/** 逐显示器完整面板（含任务栏区，视口相对坐标，与 AREAS 同序）：用于抛掷跨屏邻接探测 */
 let PANELS = [];
 /** 主屏宠物活动区（视口相对坐标）：角落定位与「回到初始位置」使用 */
 let PRIMARY_AREA = null;
@@ -211,8 +209,7 @@ const WINDOW_MARGIN_RATIO = 0.5;
 const rootEl = document.getElementById('root');
 const errorEl = document.getElementById('pet-error');
 let config = null; // { pets: 拍平后的成品实例列表, physics, confineToScreen }（loadConfig 填充）
-let sprites = []; // PetSprite[]（共享桌面 overlay 内的所有可见宠物）
-let overlayInteractiveUpdatePending = false;
+let sprites = []; // PetSprite[]（每个桌面窗口只有一只宠物）
 let balance = null; // BalanceState（本窗口单宠共用）
 let balanceTick = 0;
 let balanceNoticeKey = null; // 上次已提示的不可用原因（reason:provider）：自动轮询只在原因变化时再弹（判定在 shared，与浏览器同一份）

@@ -1,6 +1,6 @@
 /**
  * Desktop pet stage geometry shared by the renderer and host movement code.
- * Values mirror src/shared/constants.ts; pointer capture is managed by the shared overlay.
+ * Values mirror src/shared/constants.ts; each pet runs in its own transparent window.
  */
 'use strict';
 

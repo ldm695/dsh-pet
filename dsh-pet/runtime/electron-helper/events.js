@@ -302,7 +302,7 @@ PetSprite.prototype.showBalanceNow = function showBalanceNow(state, manual) {
 //  - 淡出 → 换内容 → 淡入：先在 .is-fading 里把 opacity 降到 0，250ms 后才重绘内容，
 //    否则内容会在半透明时被替换 = 看得见的硬切；
 //  - 重置 10s 气泡定时器：不重置的话，第 8 秒才点开就只剩 2 秒，"看完整信息"这个目的就落空了。
-// 命中区由 renderBubble 末尾的 syncInputBusy() 重报（is-clickable 变化会连带控件矩形变化）。
+// 余额气泡的内容与展开状态由 renderBubble 直接更新。
 PetSprite.prototype.toggleBalanceDetail = function toggleBalanceDetail() {
   if (!this.balanceClickable()) return;
   this.balanceExpanded = !this.balanceExpanded;
@@ -311,7 +311,7 @@ PetSprite.prototype.toggleBalanceDetail = function toggleBalanceDetail() {
   this.balanceFadeTimer = window.setTimeout(() => {
     this.balanceFadeTimer = null;
     this.bubble.classList.remove('is-fading');
-    this.renderBubble(); // 重绘内容 + 重报控件矩形（展开态宽度变了，矩形也得跟着变）
+    this.renderBubble(); // 重绘内容与展开排版
   }, BALANCE_FADE_MS);
   if (this.bubbleTimer !== null) window.clearTimeout(this.bubbleTimer);
   this.bubbleTimer = window.setTimeout(() => {

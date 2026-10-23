@@ -48,7 +48,6 @@ function clampPetCenterToRegion(areas, cx, cy, halfW, halfH, sideAllow, topInset
 class PetSprite {
   constructor(pet, index = CONFIG.petIndex) {
     this.pet = pet; // 这只宠物的配置段（拍平后的成品实例，条目级字段已吹入：动画池/权重/周期）
-    if (!window.__dshPetLiveStates) window.__dshPetLiveStates = new Map();
     this.index = index;
     this.layout = CONFIG.petLayouts.find((layout) => layout.id === pet.id) || CONFIG.petLayouts[index] || {};
     this.pointerOnBody = false;
@@ -115,10 +114,6 @@ class PetSprite {
     this.disposed = false;
     this.gen = 0;
     this.anim = this.animations.idle[0] ?? '';
-    this.firstVisualFrame = new Promise((resolve) => {
-      this.resolveFirstVisualFrame = resolve;
-    });
-    this.firstVisualFrameResolved = false;
     this.once = true;
     // 播放回执（issue #122 第 3 项）：当前正在播的**第三方点播**编号（null = 自播动画，不上报）。
     // 为什么要单独一个字段：this.anim 只是动画名，右键菜单点播与第三方 /anim 可以播同名动画，
@@ -137,7 +132,8 @@ class PetSprite {
     // 按下记、按下比——这次按了多久、什么时候松手都不参与判定（见 onPointerDown）。
     this.lastPressAt = 0;
     this._interactive = null; // 已上报的可交互状态（setInteractive 去重用）
-    this._inputBusy = null; // 已上报的"正在用输入"状态（syncInputBusy 去重用）
+    this._inputBusy = null;
+    this._inputRegions = null;
     // 拖拽抛掷物理（与浏览器 pet.ts 同构；纯计算在 shared-core S.*）：
     // 拖拽中弹簧跟随目标（包围盒左上角，工作区 px），松手按指针轨迹估速 → 抛掷（重力+边缘反弹）
     this.dragTrail = []; // 指针轨迹采样（screenX/Y + performance.now()，初速估算用）
@@ -189,9 +185,6 @@ class PetSprite {
     // 右键菜单（统一自绘组件，两端共用同一份：树+渲染均来自 shared-core）
     this.menuOpen = false; // 菜单开启期间强制整窗可交互（悬停菜单不触发穿透翻转）
     this.menuClose = null; // 当前菜单的 close()（打开时挂载，关闭后置空）
-    this.fullscreenHidden = false;
-    this.fullscreenResume = null;
-    this.fullscreenDeferredAnimation = null;
     // 余额气泡
     this.bubbleOn = false;
     this.bubbleTimer = null;
@@ -231,9 +224,8 @@ class PetSprite {
     // DOM：sprite 钉在窗口内 (margin.l, margin.t)；宠物"位置"= sprite 位置，窗口随余量外扩
     this.el = document.createElement('div');
     this.el.className = 'pet-sprite';
-    if (CONFIG.overlay) this.el.style.willChange = 'transform';
-    this.el.style.left = (CONFIG.overlay ? 0 : this.margin.l) + 'px';
-    this.el.style.top = (CONFIG.overlay ? 0 : this.margin.t) + 'px';
+    this.el.style.left = this.margin.l + 'px';
+    this.el.style.top = this.margin.t + 'px';
     this.el.style.setProperty('--pet-size', this.size + 'px');
     // 字号（配置 font）：按本宠物尺寸算好最终 px 注入 —— 气泡与悬浮提示的 CSS 读这两个变量
     // 使用 shared/fonts.ts 的 S.resolveFontPx 统一换算字号。
@@ -285,15 +277,6 @@ class PetSprite {
     this.el.appendChild(stage);
     rootEl.appendChild(this.el);
     this.position();
-    if (CONFIG.overlay && window.petBridge?.onFullscreenVisibility) {
-      window.petBridge.onFullscreenVisibility((visibility) => {
-        this.setFullscreenHidden(visibility && visibility[this.pet.id] === true);
-        if (this.fullscreenHidden) {
-          this.setInteractive(false);
-          this.setTip(false);
-        }
-      });
-    }
 
     // 事件（与浏览器同一套：pointerdown/move、click、window pointerup/cancel）
     const ac = new AbortController();
@@ -421,25 +404,15 @@ class PetSprite {
     if (this.poseTimer !== null) window.clearTimeout(this.poseTimer);
     this.poseTimer = null;
     window.petBridge?.moveTargets?.forget?.(this.pet.id);
-    window.__dshPetLiveStates?.delete(this.pet.id);
     this.el.remove();
   }
 
-  // 更新包围盒左上角（视口相对坐标）并同步原生窗口形状/碰撞站场。
-  // 单窗口模式下只改 sprite 的 DOM 位置；上报外扩矩形供原生 setShape 保留提示、气泡空间。
+  // 更新包围盒左上角（视口相对坐标）并同步原生窗口位置与碰撞站场。
+  // 每只宠物的小窗口跟随包围盒移动，外扩余量用于容纳提示和气泡。
   // 跨进程坐标统一 ×scale 回到屏幕物理像素（§3.5 IPC 收口）。
   sendBounds(px, py, positionClaim = false) {
     this.pos = { x: Math.round(px), y: Math.round(py) };
     window.__dshPetDebug.dragPos = { x: this.pos.x, y: this.pos.y };
-    window.__dshPetLiveStates?.set(this.pet.id, {
-      x: this.pos.x,
-      y: this.pos.y,
-      vx: this.throwState?.vx || 0,
-      vy: this.throwState?.vy || 0,
-      size: this.size,
-      bottomPad: this.bottomPad,
-      updatedAt: performance.now(),
-    });
     if (window.petBridge) {
       // 完整状态一次捎带：size/bottomPad 让静止宠物从首帧起就登记进碰撞站场
       // （此前只有 report-flight 带尺寸，从没飞过的宠物 size=0 被碰撞检测直接跳过）；
@@ -457,22 +430,11 @@ class PetSprite {
         toScreen(this.bottomPad),
         fly ? toScreen(fly.vx) : 0,
         fly ? toScreen(fly.vy) : 0,
-        // The shared transparent overlay's native mouse-passthrough poll runs in screen pixels.
-        // Keep its per-pet hit rectangle current even before any menu/drag input-region update;
-        // otherwise the poll sees no body and can immediately undo setInteractive(true).
-        toScreen(this.pos.x + this.hitRect.x),
-        toScreen(this.pos.y + this.hitRect.y),
-        toScreen(this.hitRect.w),
-        toScreen(this.hitRect.h),
+        toScreen(this.margin.l),
+        toScreen(this.margin.t),
         this.dragState.dragging || !!this.throwState,
         positionClaim,
       );
-    }
-    if (CONFIG.overlay) {
-      // Queue the native shape/bounds update before committing this frame's DOM position, so the
-      // shape is more likely to contain the sprite when Chromium submits the next compositor frame.
-      // translate3d also avoids forcing layout/paint for every rAF tick during drag/throw.
-      this.el.style.transform = `translate3d(${this.pos.x}px, ${this.pos.y}px, 0)`;
     }
     // 位置变了（宠物漫游/拖拽/飞行，窗口跟着动）：提示若正显示必须重摆一次——它跟的是光标，
     // 而光标存的是视口坐标，窗口一移，光标相对窗口的位置就变了，不重摆提示会跟着窗口漂走。
@@ -640,105 +602,7 @@ class PetSprite {
     }
   }
 
-  setFullscreenHidden(hidden) {
-    if (this.fullscreenHidden === hidden || this.disposed) return;
-    this.fullscreenHidden = hidden;
-    this.el.classList.toggle('fullscreen-hidden', hidden);
-    if (hidden) {
-      const front = this.front === 0 ? this.videoA : this.videoB;
-      this.fullscreenResume = {
-        video: front,
-        currentTime: front?.currentTime || 0,
-        shouldPlay: !!front && !front.paused && !front.ended,
-      };
-      // A fully hidden pet should not keep decoding either crossfade buffer.
-      for (const video of [this.videoA, this.videoB]) {
-        if (!video) continue;
-        video.autoplay = false;
-        video.pause();
-      }
-      // Do not unload sources or clear the current frame; keep resume cheap and flicker-free.
-      for (const timer of this.videoReleaseTimers.values()) window.clearTimeout(timer);
-      this.videoReleaseTimers.clear();
-      if (this.moveRef !== null) cancelAnimationFrame(this.moveRef);
-      this.moveRef = null;
-      return;
-    }
-    this.resumeFromFullscreen();
-  }
-
-  resumeFromFullscreen() {
-    const saved = this.fullscreenResume;
-    const deferred = this.fullscreenDeferredAnimation;
-    this.fullscreenResume = null;
-    this.fullscreenDeferredAnimation = null;
-    for (const video of [this.videoA, this.videoB]) {
-      if (video) video.autoplay = true;
-    }
-
-    const front = this.front === 0 ? this.videoA : this.videoB;
-    const desired = deferred || { anim: this.anim, once: this.once, playbackId: null };
-    const frontMatches =
-      front &&
-      front.dataset.dshPetAnimation === desired.anim &&
-      front.dataset.dshPetOnce === String(desired.once);
-
-    if (this.pendingMove && frontMatches && this.pendingMove.animationName === desired.anim) {
-      this.resolveVisualFrameAfterPaint(front);
-      this.startMoveDrive(front);
-      return;
-    }
-    if (this.pendingMove && this.pendingMove.animationName !== desired.anim) this.pendingMove = null;
-
-    // A hidden-state animation request must play as a fresh request when restored, even if
-    // its asset happens to match the frame that was visible before fullscreen.
-    if (deferred && !this.pendingMove) {
-      this.switchTo(desired.anim, desired.once, desired.playbackId || undefined);
-      return;
-    }
-
-    if (!frontMatches) {
-      this.switchTo(desired.anim, desired.once, desired.playbackId || undefined);
-      return;
-    }
-
-    front.loop = !desired.once;
-    front.onended = desired.once ? () => this.handleEnded() : null;
-    this.resolveVisualFrameAfterPaint(front);
-    if (this.moveDriving && this.moveStep && this.moveRef === null) {
-      this.moveRef = requestAnimationFrame(this.moveStep);
-    }
-    const shouldPlay = !!deferred || !!saved?.shouldPlay || this.moveDriving;
-    if (!shouldPlay) return;
-    if (Number.isFinite(saved?.currentTime) && saved.video === front && front.paused) {
-      try {
-        front.currentTime = saved.currentTime;
-      } catch {}
-    }
-    front
-      .play()
-      .then(() => {
-        if (deferred?.playbackId) {
-          this.playback = deferred.playbackId;
-          this.reportPlayback(deferred.playbackId, 'playing');
-        }
-      })
-      .catch(() => {
-        if (!deferred?.playbackId) return;
-        if (this.playback === deferred.playbackId) this.playback = null;
-        this.reportPlayback(deferred.playbackId, 'failed', 'play-rejected');
-      });
-    if (this.pendingSquash) {
-      this.pendingSquash = false;
-      this.startSquash(front);
-    }
-  }
-
   releaseInactiveVideo(video) {
-    if (this.fullscreenHidden) {
-      video.pause();
-      return;
-    }
     this.cancelVideoRelease(video);
     const timer = window.setTimeout(() => {
       this.videoReleaseTimers.delete(video);
@@ -762,11 +626,6 @@ class PetSprite {
   // 双缓冲切换（与浏览器同一套：前台 opacity 切换 + 降级视频清 handler 并停播，防残留 ended 雪崩）
   switchTo(next, nextOnce, playbackId, url) {
     if (!next) return;
-    if (this.fullscreenHidden) {
-      this.fullscreenDeferredAnimation = { anim: next, once: nextOnce, playbackId: playbackId || null };
-      if (playbackId) this.playback = playbackId;
-      return;
-    }
     const pending = this.pending;
     if (pending && pending.anim === next && pending.once === nextOnce) {
       // 防重命中（单动画点击时目标=当前动画，不重播）：仍消费 Q 弹标记，压当前前台视频，
@@ -843,11 +702,7 @@ class PetSprite {
       this.pending = null;
       this.playback = playbackId || null;
       el.style.transform = this.facing === 'right' ? 'scaleX(-1)' : '';
-      if (this.fullscreenHidden) {
-        el.autoplay = false;
-        el.pause();
-        this.fullscreenResume = { video: el, currentTime: el.currentTime || 0, shouldPlay: true };
-      } else if (this.pendingMove) this.startMoveDrive(el);
+      if (this.pendingMove) this.startMoveDrive(el);
       else {
         if (this.canRelocate()) {
           el.loop = false;
@@ -864,9 +719,8 @@ class PetSprite {
             this.reportPlayback(playbackId, 'failed', 'play-rejected');
           });
       }
-      if (!this.fullscreenHidden) this.resolveVisualFrameAfterPaint(el);
       // 点击 Q 弹：等新动画就位后才压（压的是新点击动画的首帧，与浏览器一致）
-      if (this.pendingSquash && !this.fullscreenHidden) {
+      if (this.pendingSquash) {
         this.pendingSquash = false;
         this.startSquash(el);
       }
@@ -927,27 +781,6 @@ class PetSprite {
       },
       Math.max(0, expiresAt - Date.now()),
     );
-  }
-
-  resolveVisualFrameAfterPaint(el) {
-    if (this.firstVisualFrameResolved) return;
-    let settled = false;
-    let fallbackTimer;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      if (fallbackTimer) clearTimeout(fallbackTimer);
-      this.firstVisualFrameResolved = true;
-      this.resolveFirstVisualFrame?.();
-      this.resolveFirstVisualFrame = null;
-    };
-    fallbackTimer = window.setTimeout(finish, 2500);
-    const afterFrame = () => requestAnimationFrame(() => requestAnimationFrame(finish));
-    if (typeof el.requestVideoFrameCallback === 'function') {
-      el.requestVideoFrameCallback(afterFrame);
-    } else {
-      afterFrame();
-    }
   }
 
   // 动画链（与浏览器 pickNext 语义一致，纯逻辑在 shared）
@@ -1135,7 +968,6 @@ class PetSprite {
       this.needsRelocation &&
       !working &&
       !this.inputBusy() &&
-      !this.fullscreenHidden &&
       !this.pendingMove &&
       !this.moveDriving &&
       this.throwRef === null &&
@@ -1506,10 +1338,6 @@ class PetSprite {
       });
     const step = () => {
       if (this.moveToken !== token) return;
-      if (this.fullscreenHidden) {
-        this.moveRef = null;
-        return;
-      }
       const t = el.currentTime || 0;
       const progress = t <= leadSec ? 0 : t >= duration - tailSec ? 1 : (t - leadSec) / travelWindow;
       const ratioX = startRatio + (targetRatio - startRatio) * progress;
@@ -1681,13 +1509,8 @@ class PetSprite {
       // 宠物间碰撞（仅 petCollision 开启）：飞行中的自己撞到其它宠物 → 动量弹开
       if (this.physics && this.physics.petCollision) {
         const myBody = S.bodyPixelBox({ x: state.x, y: state.y, size: this.size, bottomPad: this.bottomPad });
-        // The main-process broker broadcasts at most once per 16 ms. In single-overlay mode all
-        // sprites share this renderer, so use their same-frame positions before consulting that
-        // delayed fallback; this avoids colliding with where another pet was a frame ago.
-        const peerStates =
-          CONFIG.overlay && window.__dshPetLiveStates instanceof Map
-            ? [...window.__dshPetLiveStates.entries()]
-            : Object.entries(this.others);
+        // Each renderer uses the latest peer positions broadcast by the main-process broker.
+        const peerStates = Object.entries(this.others);
         for (const [pid, o] of peerStates) {
           if (pid === this.pet.id) continue;
           if (!o || !o.size) continue;
@@ -1793,7 +1616,7 @@ class PetSprite {
     if (this.dragState.active) return; // 用户交互优先
     this.stopThrow(); // 先显式接管：停掉飞行与走路（stopMove 顺带停掉上一次的位置跟随）
     this.stopMove();
-    // 归一化空间是**覆盖窗口外接矩形**（VIEW）；不规则布局里含大片不属于任何屏的空洞
+    // 归一化空间是全部显示器活动区的外接矩形（VIEW）；不规则布局里含大片不属于任何屏的空洞
     // （实测右倒 T 双屏：hull 的 23.7% 是空洞）。而 position() 在 customPos 分支**零夹取**
     // （原文"松手无任何边界夹取"），不夹的话落进空洞的坐标会把宠物放进看不见的地方。
     // 注意：鼠标拖拽到不了那里**不是因为代码在拦**，而是光标物理上出不去屏幕——所以位置接口
@@ -2015,11 +1838,8 @@ class PetSprite {
       petX: this.pos.x,
       petY: this.pos.y,
     };
-    // 拖拽信号（桌面端专有）：宠物会滞后于光标移动；上报输入占用，让共享 overlay 保持捕获，
-    // 确保拖拽中的 pointermove/pointerup 持续送达。
     this.syncInputBusy();
     // 弹弓：把「本次是否拉弓」与按下时的宠物中心（anchorX/Y）补进同一次拖拽状态。
-    // 放在上报之后是为了不稀释上面那条源码守卫（它要求 busy 必须在建立状态后紧跟着上报）。
     this.dragState.sling = sling;
     this.dragState.anchorX = this.pos.x + this.halfW;
     this.dragState.anchorY = this.pos.y + this.halfH;
@@ -2041,7 +1861,7 @@ class PetSprite {
       if (this.animations.drag.length) {
         this.playOnce(S.pick(this.animations.drag));
       }
-      this.syncInputBusy(); // 拖拽成立：通知共享 overlay 保持输入捕获
+      this.syncInputBusy();
     }
     // 记录指针轨迹（screenX/Y 采样：与视口坐标只差常数偏移，速度一致；初速估算用；÷scale 进 CSS 系）
     const now = performance.now();
@@ -2058,26 +1878,22 @@ class PetSprite {
     const wasDragging = d.dragging;
     d.active = false;
     d.dragging = false;
+    this.syncInputBusy();
     this.hit.classList.remove('dragging');
     this.stopDragFollow(); // 弹簧跟随立即停（位置定格在实时 this.pos）
     this.stage.style.transform = 'translateY(' + this.bottomPad + 'px)';
-    this.syncInputBusy(); // 拖拽结束：交还给常规判定（幂等，非拖拽时多调一次不发 IPC）
     // 提示复位：点击/拖拽期间收起的悬浮提示，指针仍在命中区内就恢复（与浏览器 handlePointerUp 同一处理）。
     // 用 hitRect 几何判定而不是 getBoundingClientRect：命中区是窗口坐标里的权威几何，与 onMouseMove 同源。
-    // 位置有讲究：必须留在 syncInputBusy() 之后——pointer-target.test.ts 会检查本函数的上报顺序
-    // 来找上报调用，插到它前面会把上报挤出窗口（该断言守的是"松手必上报，否则窗口粘在可交互"）。
     if (e && Number.isFinite(e.clientX)) {
       const r = this.hitRect;
-      const windowX = CONFIG.overlay ? this.pos.x : 0;
-      const windowY = CONFIG.overlay ? this.pos.y : 0;
-      const wx = e.clientX - windowX;
-      const wy = e.clientY - windowY;
-      const px = CONFIG.overlay ? wx : wx - this.margin.l;
-      const py = CONFIG.overlay ? wy : wy - this.margin.t;
+      const wx = e.clientX;
+      const wy = e.clientY;
+      const px = wx - this.margin.l;
+      const py = wy - this.margin.t;
       // 先按松手位置更新光标再摆位/显示，否则会重现拖拽前的位置（与浏览器 placeTip 同一处理）
       this.tipCursor = {
-        x: CONFIG.overlay ? e.clientX : this.pos.x - this.margin.l + e.clientX,
-        y: CONFIG.overlay ? e.clientY : this.pos.y - this.margin.t + e.clientY,
+        x: this.pos.x - this.margin.l + e.clientX,
+        y: this.pos.y - this.margin.t + e.clientY,
       };
       this.setTip(px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h);
     }
@@ -2171,12 +1987,11 @@ class PetSprite {
    * （pointermove/pointerup/click）：窗口一旦变回穿透，输入链就断了（拖拽会定格在最后一次采样上，
    * 松手也没人报 pointerup → 宠物按旧速度飞出去）。
    *
-   * 这个信号是**渲染端专有的知识**：只有它知道"我正在用输入"，主进程无从推断（光看光标位置和窗口
+   * 这个信号是渲染端专有的知识：只有它知道"我正在用输入"，主进程无从推断（光看光标位置和窗口
    * 位移分不清"拖拽跟手"和"漫游/抛掷"）。同时上报控件矩形：菜单/聊天框外的透明区域继续穿透。
    */
   inputBusy() {
     // 可点的余额气泡是第四个来源：它同样长在窗口里、同样靠窗口级 click 触发，而它悬在宠物头顶的
-    // 余量区——那一块平时是穿透的，正需要借 busy + 控件矩形把它"圈"出来（见 syncInputRegions）。
     return this.dragState.active || this.menuOpen || this.chatOpen || this.balanceClickable();
   }
 
@@ -2189,22 +2004,17 @@ class PetSprite {
     return !!(this.bubbleOn && s && s.ok && s.shape === 'windows' && !this.balanceWrap);
   }
 
-  /**
-   * 上报一次"要不要保持可交互"。**所有**状态变化点都走这里（幂等：值没变不发 IPC）。
-   * 与 setInteractive 的分工：setInteractive 表达"光标在不在身体上"（常规判定），
-   * 本方法表达"我有没有在用输入"（优先级更高，覆写常规判定）。
-   */
   syncInputBusy() {
     this.syncInputRegions();
     const busy = this.inputBusy();
     if (busy === this._inputBusy) return;
     this._inputBusy = busy;
     window.__dshPetDebug.inputBusy = busy;
-    if (window.petBridge) window.petBridge.setInputBusy(this.pet.id, busy);
+    window.petBridge?.setInputBusy(busy);
   }
 
   syncInputRegions() {
-    if (!window.petBridge || !window.petBridge.setInputRegions) return;
+    if (!window.petBridge?.setInputRegions || !this.inputRegionResize) return;
     const rects = [];
     const controls = [...document.querySelectorAll('.dsh-pet-menu-column, .dsh-pet-chat, .pet-error.visible, .pet-bubble.is-clickable')];
     for (const el of this.inputRegionElements) {
@@ -2223,40 +2033,25 @@ class PetSprite {
         rects.push({ x: toScreen(r.x), y: toScreen(r.y), width: toScreen(r.width), height: toScreen(r.height) });
       }
     }
-    const body = this.hit.getBoundingClientRect();
-    const bodyRects =
-      body.width > 0 && body.height > 0
-        ? [{ x: toScreen(body.x), y: toScreen(body.y), width: toScreen(body.width), height: toScreen(body.height) }]
-        : [];
-    const input = { dragging: this.dragState.active, bodyRects, rects };
+    const input = { dragging: this.dragState.active, rects };
     const key = JSON.stringify(input);
     if (key === this._inputRegions) return;
     this._inputRegions = key;
-    window.petBridge.setInputRegions(this.pet.id, input);
+    window.petBridge.setInputRegions(input);
   }
 
+  /**
+   * 上报一次"要不要保持可交互"。**所有**状态变化点都走这里（幂等：值没变不发 IPC）。
+   * 与 setInteractive 的分工：setInteractive 表达"光标在不在身体上"（常规判定），
+   * 本方法表达"我有没有在用输入"（优先级更高，覆写常规判定）。
+   */
   setInteractive(flag) {
     const next = !!flag;
     if (next === this._interactive) return; // 只在状态变化时发 IPC，避免逐帧刷屏
     this._interactive = next;
     this.pointerOnBody = next;
     window.__dshPetDebug.interactive = next;
-    if (!window.petBridge) return;
-    if (!CONFIG.overlay) {
-      window.petBridge.setInteractive(next);
-      return;
-    }
-    if (overlayInteractiveUpdatePending) return;
-    overlayInteractiveUpdatePending = true;
-    queueMicrotask(() => {
-      overlayInteractiveUpdatePending = false;
-      const aggregate = sprites.some(
-        (sprite) =>
-          !sprite.fullscreenHidden &&
-          (sprite.pointerOnBody || sprite.dragState.active || sprite.menuOpen || sprite.chatOpen),
-      );
-      window.petBridge?.setInteractive(aggregate);
-    });
+    window.petBridge?.setInteractive(next);
   }
 
   /**
@@ -2286,10 +2081,10 @@ class PetSprite {
     if (this.tip.textContent !== this.pet.name) this.tip.textContent = this.pet.name;
     const cursor = this.tipCursor;
     if (cursor) {
-      const winX = CONFIG.overlay ? this.pos.x : this.pos.x - this.margin.l;
-      const winY = CONFIG.overlay ? this.pos.y : this.pos.y - this.margin.t;
-      const winW = CONFIG.overlay ? this.size : this.size + this.margin.l + this.margin.r;
-      const winH = CONFIG.overlay ? this.winH : this.winH + this.margin.t + this.margin.b;
+      const winX = this.pos.x - this.margin.l;
+      const winY = this.pos.y - this.margin.t;
+      const winW = this.size + this.margin.l + this.margin.r;
+      const winH = this.winH + this.margin.t + this.margin.b;
       // 允许显示范围 = 窗口 ∩ 光标所在屏的工作区，两者必须取交集：
       // 只按窗口夹，窗口能贴到屏幕外，提示会被画到看不见的地方；只按工作区夹，提示会落到窗口外
       // （index.html 的 html,body 是 overflow:hidden，一样看不见）。
@@ -2325,7 +2120,7 @@ class PetSprite {
     }
     // 右键菜单/对话弹窗开启：整窗保持可交互（悬停菜单项/点输入框都不触发穿透翻转）；关闭后恢复命中区判定
     if (this.menuOpen || this.chatOpen) {
-      this.syncInputRegions(); // 级联菜单按悬停增减面板，及时更新其真实占用区域
+      this.syncInputRegions();
       this.setInteractive(true);
       this.setTip(false); // 菜单/弹窗期间提示让位：光标已不在身体上，也不该跟浮层抢注意力
       return;
@@ -2334,25 +2129,19 @@ class PetSprite {
     // forwarded 事件坐标以窗口为原点（与页坐标一致）；转换到 sprite 坐标需扣减窗口余量；
     // 异常时退回屏幕坐标 − 窗口屏幕位置推导（hitRect/pos 均为 CSS 系）：屏幕坐标 ÷scale 后
     // 减去窗口屏幕原点（CSS 系）即窗口内坐标
-    const wx = CONFIG.overlay
-      ? e.clientX - this.pos.x
-      : Number.isFinite(e.clientX)
-        ? e.clientX
-        : toLocal(e.screenX) - (this.pos.x + VIEW.x - this.margin.l);
-    const wy = CONFIG.overlay
-      ? e.clientY - this.pos.y
-      : Number.isFinite(e.clientY)
-        ? e.clientY
-        : toLocal(e.screenY) - (this.pos.y + VIEW.y - this.margin.t);
-    const px = CONFIG.overlay ? wx : wx - this.margin.l;
-    const py = CONFIG.overlay ? wy : wy - this.margin.t;
+    const wx = Number.isFinite(e.clientX)
+      ? e.clientX
+      : toLocal(e.screenX) - (this.pos.x + VIEW.x - this.margin.l);
+    const wy = Number.isFinite(e.clientY)
+      ? e.clientY
+      : toLocal(e.screenY) - (this.pos.y + VIEW.y - this.margin.t);
+    const px = wx - this.margin.l;
+    const py = wy - this.margin.t;
     const inBody = px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
     // 光标位置存**视口坐标**（窗口原点 + 窗口内坐标）：窗口随宠物移动时贴光标不会漂，见 renderTip。
     // 必须在 setTip 之前更新：setTip 变显隐时会立刻渲染一次，晚一步就会用上一次的光标摆位。
     if (inBody)
-      this.tipCursor = CONFIG.overlay
-        ? { x: e.clientX, y: e.clientY }
-        : { x: this.pos.x - this.margin.l + wx, y: this.pos.y - this.margin.t + wy };
+      this.tipCursor = { x: this.pos.x - this.margin.l + wx, y: this.pos.y - this.margin.t + wy };
     this.setInteractive(inBody);
     // 悬浮提示与可交互判定同源（同一个 inBody）：光标进身体 → 提示出现，离开 → 收起
     this.setTip(inBody);
@@ -2396,7 +2185,6 @@ class PetSprite {
     // 不属于任何显示器的区域（看不见）；菜单本来也不该跨屏显示。
     const area = S.resolveRect(WORK_AREAS, this.pos.x + this.halfW, this.pos.y + this.halfH);
     if (!area) return null;
-    if (CONFIG.overlay) return { x: area.x, y: area.y, w: area.width, h: area.height };
     const winX = this.pos.x + VIEW.x - this.margin.l;
     const winY = this.pos.y + VIEW.y - this.margin.t;
     const winW = this.size + this.margin.l + this.margin.r;
@@ -2490,7 +2278,7 @@ class PetSprite {
       },
     });
     this.menuClose = m.close;
-    this.syncInputRegions(); // mountContextMenu 完成布局后才能读取菜单矩形
+    this.syncInputRegions();
   }
 
   onMenuAction(leaf, options = {}) {
@@ -2579,7 +2367,7 @@ class PetSprite {
     }
     this.menuOpen = false;
     window.__dshPetDebug.menuOpen = false;
-    this.syncInputBusy(); // 菜单关：若没有别的占用（拖拽/弹窗）则交还常规判定
+    this.syncInputBusy();
     if (!this.inputBusy()) this.setInteractive(false);
   }
 
@@ -2640,7 +2428,7 @@ class PetSprite {
         this.chatClose = null;
         this.chatOpen = false;
         window.__dshPetDebug.chatOpen = false;
-        this.syncInputBusy(); // 弹窗关：交还常规判定（菜单还开着的话仍保持忙，见 inputBusy）
+        this.syncInputBusy();
         if (!this.menuOpen) this.setInteractive(false); // 弹窗关了且无菜单：恢复命中区穿透
       },
     });
@@ -2798,8 +2586,8 @@ class PetSprite {
     }
     this.bubble.classList.add('is-on');
     window.__dshPetDebug.lastBubbleTitle = this.bubble.textContent.slice(0, 60);
+    this.syncInputBusy();
     // 气泡内容/尺寸变了 → 重报控件矩形（可点的余额气泡要靠它拿点击），并同步 busy 标记。
     // 这里是所有显隐/换内容的汇聚点，放在这里就不会漏掉任何一条路径。
-    this.syncInputBusy();
   }
 }
