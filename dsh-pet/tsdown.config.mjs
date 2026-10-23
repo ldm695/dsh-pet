@@ -25,7 +25,11 @@ export default defineConfig([
       standalone: 'src/standalone/cli.ts',
     },
     // 这三个 DSH 依赖由独立模式的本地替代实现提供；其他 DSH 模块不得进入 EXE。
-    noExternal: [/^@deepseek-ai\/(?:dsh-home-paths|dsh-credentials|dsh-llm)$/],
+    noExternal: [
+      /^@deepseek-ai\/(?:dsh-home-paths|dsh-credentials|dsh-llm)$/,
+      /^openai$/,
+      /^@anthropic-ai\/sdk$/,
+    ],
     external: [/^@electron\//, /^node:/, /^@deepseek-ai\/(?!dsh-home-paths$|dsh-credentials$|dsh-llm$)/],
     alias: {
       '@deepseek-ai/dsh-home-paths': shim('dsh-home-paths'),

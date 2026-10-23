@@ -68,8 +68,8 @@ contextBridge.exposeInMainWorld('petBridge', {
   workStatusDiagnostic(record) {
     ipcRenderer.send('pet:work-status-diagnostic', record);
   },
-  reconcileWorkStatus(agents, eligiblePetIds) {
-    ipcRenderer.send('pet:work-status-snapshot', { agents, eligiblePetIds });
+  reconcileWorkStatus(agents, eligiblePetIds, stateCounter) {
+    ipcRenderer.send('pet:work-status-snapshot', { agents, eligiblePetIds, stateCounter });
   },
   onWorkStatusAssignments(cb) {
     ipcRenderer.on('pet:work-status-assignments', (_event, result) => cb(result));

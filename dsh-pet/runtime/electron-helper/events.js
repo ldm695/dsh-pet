@@ -409,11 +409,14 @@ function logWorkStatusDiagnostic(event, details) {
   }
 }
 
-function applyWorkStatusAgents(snapshot) {
-  const eligiblePetIds = (config?.pets || [])
+function eligibleWorkStatusPetIds() {
+  return (config?.pets || [])
     .filter((pet) => S.isDesktopVisible(pet.display) && pet.workStatusEnabled)
     .map((pet) => pet.id);
-  window.petBridge?.reconcileWorkStatus(snapshot.agents, eligiblePetIds);
+}
+
+function applyWorkStatusAgents(snapshot, stateCounter) {
+  window.petBridge?.reconcileWorkStatus(snapshot.agents, eligibleWorkStatusPetIds(), stateCounter);
 }
 
 function applyWorkStatusAssignmentResult(result) {
@@ -433,7 +436,7 @@ function applyWorkStatusAssignmentResult(result) {
       petId,
       assignmentRevision,
     })),
-    eligiblePetIds,
+    eligiblePetIds: eligibleWorkStatusPetIds(),
   });
 
   for (const owner of result.released) {
@@ -493,7 +496,7 @@ window.petBridge?.onWorkStatusAssignments(applyWorkStatusAssignmentResult);
 function applyWorkStatusLeaf(leaf) {
   const snap = S.toWorkStatus(leaf.data);
   if (!snap) return;
-  applyWorkStatusAgents(snap);
+  applyWorkStatusAgents(snap, leaf.counter);
 }
 
 /** DSH 桥接通知 → 系统通知（总开关与宠物对话回复共用 notificationsEnabled）。 */

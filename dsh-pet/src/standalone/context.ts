@@ -406,7 +406,7 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
       context[name] = value;
       return context;
     },
-    get(name: string): unknown {
+    get(name: string, _required = false): unknown {
       return services.get(name) ?? context[name];
     },
     /**

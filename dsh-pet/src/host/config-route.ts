@@ -28,6 +28,7 @@ export interface ConfigRouteDependencies {
   writeConfigChanged: () => void;
   reloadDesktop: () => void;
   mapResponseConfig: (config: ConfigRecord) => unknown;
+  logWarning?: (message: string) => void;
   releasePetLock?: (petId: string) => void;
 }
 
@@ -57,8 +58,14 @@ export function createConfigRoute(
       }
 
       if (method === 'PUT') {
+        let parsed: unknown;
         try {
-          const parsed = JSON.parse(body ?? '');
+          parsed = JSON.parse(body ?? '');
+        } catch {
+          return { kind: 'json', status: 400, obj: { error: 'invalid JSON body' } };
+        }
+
+        try {
           const clean = saveUserConfig(parsed, deps.readUser());
           if (!clean) {
             return {
@@ -89,8 +96,13 @@ export function createConfigRoute(
           }
           deps.reloadDesktop();
           return { kind: 'json', status: 200, obj: deps.mapResponseConfig(deps.readAll()) };
-        } catch {
-          return { kind: 'json', status: 400, obj: { error: 'invalid JSON body' } };
+        } catch (error) {
+          try {
+            deps.logWarning?.(`[dsh-pet] config save failed: ${errorMessage(error)} (${deps.userConfigPath})`);
+          } catch {
+            // A logging failure must not replace the config-save response.
+          }
+          return { kind: 'json', status: 500, obj: { error: 'failed to save config' } };
         }
       }
 
@@ -252,6 +264,7 @@ export function createHostConfigRouteDependencies(
   writeConfigChanged: () => void,
   reloadDesktop: () => void,
   mapResponseConfig: (config: ConfigRecord) => unknown,
+  logWarning?: (message: string) => void,
 ): ConfigRouteDependencies {
   return {
     userRoot,
@@ -269,5 +282,6 @@ export function createHostConfigRouteDependencies(
     writeConfigChanged,
     reloadDesktop,
     mapResponseConfig,
+    logWarning,
   };
 }

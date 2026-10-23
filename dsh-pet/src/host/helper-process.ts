@@ -16,7 +16,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
-import { downloadArtifact } from '@electron/get';
+import type { LoggerLike } from './log-file';
 
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -180,6 +180,8 @@ export interface EnsureElectronOptions {
   timeoutMs?: number;
   /** 面向桌宠工作气泡的短提示；错误细节仅进入宿主日志，不传入气泡。 */
   onLog?: (event: ElectronDownloadLog) => void;
+  /** 统一日志出口；未提供时退回 console。 */
+  logger?: LoggerLike;
 }
 
 export interface ElectronDownloadLog {
@@ -202,9 +204,10 @@ export async function ensureElectronDownload(options: EnsureElectronOptions = {}
   const exe = defaultElectronExe();
   if (existsSync(exe)) return exe;
 
-  // 下载日志用 console 直出（ctx.logger 在部分宿主不映射到终端，排障时看不到）。
-  const log = (message: string): void => console.log(`[dsh-pet] ${message}`);
-  const warn = (message: string): void => console.warn(`[dsh-pet] ${message}`);
+  // 静态导入会把下载器及其依赖带入所有启动路径；只有缺少 Electron、确实需要下载时才加载。
+  const sink = options.logger ?? console;
+  const log = (message: string): void => sink.info?.(`[dsh-pet] ${message}`);
+  const warn = (message: string): void => sink.warn?.(`[dsh-pet] ${message}`);
   const info = (consoleText: string, text: string, done = false): void => {
     log(consoleText);
     options.onLog?.({ text, level: 'info', done });
@@ -230,6 +233,7 @@ export async function ensureElectronDownload(options: EnsureElectronOptions = {}
     timer.unref?.();
     let nextLogAt = Date.now() + 3000;
     try {
+      const { downloadArtifact } = await import('@electron/get');
       const zipPath = await downloadArtifact({
         version: `v${version}`,
         artifactName: 'electron',

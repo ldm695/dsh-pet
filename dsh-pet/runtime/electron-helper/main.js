@@ -572,6 +572,61 @@ const lastRequestedBounds = new Map();
  */
 const petStates = new Map();
 const workStatusAssignments = new WorkStatusAssignmentManager();
+// Every pet has its own renderer, but work-status ownership is shared by this Electron process.
+// Keep each renderer's eligible pets and reconcile against their union; passing one window's
+// local list directly would make the same Agent migrate between pets on every renderer poll.
+const workStatusEligiblePetIdsByWindow = new Map();
+let workStatusSnapshotSourceId = null;
+let latestWorkStatusAgents = [];
+let latestWorkStatusStateCounter = -1;
+
+function broadcastWorkStatusAssignments() {
+  const eligiblePetIds = [...new Set([...workStatusEligiblePetIdsByWindow.values()].flat())];
+  const result = workStatusAssignments.reconcile(latestWorkStatusAgents, eligiblePetIds);
+  const payload = { agents: latestWorkStatusAgents, ...result };
+  for (const target of new Set(windows.values())) {
+    if (!target.isDestroyed()) target.webContents.send('pet:work-status-assignments', payload);
+  }
+}
+
+function acceptWorkStatusSnapshot(event, snapshot) {
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!sourceWindow || sourceWindow.isDestroyed() || ![...windows.values()].includes(sourceWindow)) return;
+  if (!Array.isArray(snapshot?.agents) || !Array.isArray(snapshot?.eligiblePetIds)) return;
+
+  // A pet renderer may report only its own local eligibility. In overlay mode the one renderer
+  // owns every pet in `windows`, so the same filtering also supports that layout.
+  const ownedPetIds = new Set([...windows].filter(([, win]) => win === sourceWindow).map(([petId]) => petId));
+  const eligiblePetIds = snapshot.eligiblePetIds.filter(
+    (petId) => typeof petId === 'string' && ownedPetIds.has(petId),
+  );
+  workStatusEligiblePetIdsByWindow.set(event.sender.id, eligiblePetIds);
+
+  // All windows poll the same state leaf. Its counter rejects delayed responses arriving after a
+  // newer state, while the source pin remains as a fallback for older renderers without a counter.
+  if (Number.isSafeInteger(snapshot.stateCounter) && snapshot.stateCounter >= 0) {
+    if (snapshot.stateCounter >= latestWorkStatusStateCounter) {
+      latestWorkStatusStateCounter = snapshot.stateCounter;
+      latestWorkStatusAgents = snapshot.agents;
+      workStatusSnapshotSourceId = event.sender.id;
+    }
+  } else {
+    if (workStatusSnapshotSourceId === null) workStatusSnapshotSourceId = event.sender.id;
+    if (workStatusSnapshotSourceId === event.sender.id) latestWorkStatusAgents = snapshot.agents;
+  }
+  broadcastWorkStatusAssignments();
+}
+
+function releaseWorkStatusRenderer(rendererId) {
+  workStatusEligiblePetIdsByWindow.delete(rendererId);
+  if (workStatusSnapshotSourceId === rendererId) workStatusSnapshotSourceId = null;
+  if (workStatusEligiblePetIdsByWindow.size === 0) {
+    latestWorkStatusStateCounter = -1;
+    latestWorkStatusAgents = [];
+  }
+  broadcastWorkStatusAssignments();
+}
+
 let petStateBroadcastTimer = null;
 // Normal movement claims receive a stable priority. O-relief moves update only their
 // endpoint, so a pet cannot pass its O marker to another pet while trying to yield.
@@ -1132,6 +1187,7 @@ function createPetWindows() {
       if (diagnosticsFile) persistWorkStatusDiagnostic(record, diagnosticsFile);
     };
     ipcMain.on('pet:work-status-diagnostic', onWorkStatusDiagnostic);
+    const workStatusRendererId = win.webContents.id;
 
     win.once('closed', () => {
       ipcMain.removeListener('pet:work-status-diagnostic', onWorkStatusDiagnostic);
@@ -1142,6 +1198,7 @@ function createPetWindows() {
       if (moveTargets.remove(pet.id)) traceMoveTarget('remove-target', { petId: pet.id, reason: 'window-closed' });
       lastRequestedBounds.delete(win.id);
       windowIgnore.delete(win.id);
+      releaseWorkStatusRenderer(workStatusRendererId);
       broadcastPetStates();
     });
 
@@ -1229,6 +1286,7 @@ function createPetOverlayWindow() {
     win.setTitle(`${APP_DISPLAY_NAME} 桌宠（桌面模式）`);
   });
   overlayWindow = win;
+  const workStatusRendererId = win.webContents.id;
   overlayFirstFrameReady = false;
   overlayRendererVisualReady = false;
   overlayInitialCompositionReady = false;
@@ -1365,6 +1423,7 @@ function createPetOverlayWindow() {
       overlayPetBounds.delete(petId);
       if (moveTargets.remove(petId)) traceMoveTarget('remove-target', { petId, reason: 'window-closed' });
     }
+    releaseWorkStatusRenderer(workStatusRendererId);
     broadcastPetStates();
     if (fullscreenZOrderTimer) {
       clearTimeout(fullscreenZOrderTimer);
@@ -1578,16 +1637,7 @@ app.whenReady().then(async () => {
   createPetWindows();
 
   // 工作状态 Agent→桌宠归属由主进程统一仲裁；独立 renderer 不能各自把同一 Agent 分给本窗口的宠物。
-  ipcMain.on('pet:work-status-snapshot', (event, snapshot) => {
-    const sourceWindow = BrowserWindow.fromWebContents(event.sender);
-    if (!sourceWindow || sourceWindow.isDestroyed() || ![...windows.values()].includes(sourceWindow)) return;
-    if (!Array.isArray(snapshot?.agents) || !Array.isArray(snapshot?.eligiblePetIds)) return;
-    const result = workStatusAssignments.reconcile(snapshot.agents, snapshot.eligiblePetIds);
-    const payload = { agents: snapshot.agents, ...result };
-    for (const target of new Set(windows.values())) {
-      if (!target.isDestroyed()) target.webContents.send('pet:work-status-assignments', payload);
-    }
-  });
+  ipcMain.on('pet:work-status-snapshot', acceptWorkStatusSnapshot);
 
   // 宠物位置：renderer 逐帧上报坐标与碰撞状态。旧式独立小窗口尺寸恒定，只更新原生窗口位置，
   // 避免每帧 setBounds 重设宽高并反复触发 Windows layered surface resize。

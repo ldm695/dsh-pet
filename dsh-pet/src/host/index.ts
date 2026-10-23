@@ -94,8 +94,9 @@ import { createStandaloneControlRoute } from './standalone-control-route';
 import type { RouteRequest, RouteResult } from './route-contract';
 import { listBalanceProviders, queryBalance, registerBalanceProvider } from './balance/index';
 import { generateWhisper } from './whisper';
-import { automaticWhisperSchedule } from './whisper-policy';
+import { automaticWhisperSchedule, type StandaloneWhisperPolicy } from './whisper-policy';
 import { generateChat, type ChatMemoryMessage } from './chat';
+import { createFileLogger, isFileLogger, setDefaultLogger } from './log-file';
 import { configuredModel } from './model-selection';
 import { limitPool, pickMeme, readMemePool } from './memes';
 import { PlaybackStore } from './playback';
@@ -270,6 +271,42 @@ export function apply(ctx: any): void {
   // 用户数据根：配置与用户素材统一收敛于此（扩展包按 <插件id> 各自建目录）
   const dshHome = resolveDshHome();
   const userRoot = join(dshHome, 'dsh-pet');
+  // DSH Desktop 没有可见控制台；把宿主日志和纯模块日志统一写入用户目录。
+  // 独立版已经在 ctx.logger 上安装文件 logger，复用它以免两个缓冲器同时写同一文件。
+  const reusedLog = isFileLogger(ctx.logger) ? ctx.logger : undefined;
+  const log =
+    reusedLog ??
+    createFileLogger({
+      file: join(userRoot, 'logs.txt'),
+      base: ctx.logger,
+      debugEnabled: process.env.DSH_PET_LOG_DEBUG === '1',
+    });
+  setDefaultLogger(log);
+  if (!reusedLog) {
+    ctx.effect(
+      () => () => {
+        void log.flush();
+        log.dispose();
+      },
+      'dsh-pet: log file',
+    );
+  }
+
+  // DSH 的 ctx 对未注入的服务使用严格 getter；可选能力必须通过 get(name, false) 读取。
+  const optionalService = (name: string): unknown => {
+    const get = (ctx as { get?: (name: string, required?: boolean) => unknown }).get;
+    if (typeof get === 'function') return get.call(ctx, name, false);
+    return (ctx as unknown as Record<string, unknown>)[name];
+  };
+  type StandaloneAiService = StandaloneWhisperPolicy & {
+    chatMemoryRounds(): number;
+    chatImageLimit(): number;
+    chatEnabled(): boolean;
+    balanceQuerySupported(): boolean;
+  };
+  const standaloneAiPolicy = (): StandaloneAiService | undefined =>
+    optionalService('standaloneAi') as StandaloneAiService | undefined;
+
   // 用户主配置（可编辑层）与文件宠物目录；配置读取/合并统一走 readAllConfig（./config）。
   // 主配置是 **JSONC**（main-config.jsonc）——与包内默认 config.jsonc 同名同格式：
   // 「同步」写进去的就是带注释的原文，扩展名如实反映内容。
@@ -534,7 +571,7 @@ export function apply(ctx: any): void {
       if (typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT') {
         return {}; // 文件不存在 = 尚无记忆
       }
-      console.error(
+      log.error(
         `dsh-pet: 读取对话记忆失败，已阻止写入：${memoryPath}（${e instanceof Error ? e.message : String(e)}）`,
       );
       throw new Error('无法读取对话历史，原数据未更改；请检查文件权限后重试。', { cause: e });
@@ -570,7 +607,7 @@ export function apply(ctx: any): void {
         await handle.close();
       }
     } catch (e) {
-      console.error(
+      log.error(
         `dsh-pet: 读取对话记忆失败，已阻止写入：${memoryPath}（${e instanceof Error ? e.message : String(e)}）`,
       );
       throw new Error('无法安全读取对话历史，原数据未更改；请检查文件类型和权限后重试。', { cause: e });
@@ -581,16 +618,16 @@ export function apply(ctx: any): void {
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
       return parsed as Record<string, Record<string, { messages: ChatMemoryMessage[] }>>;
     } catch (e) {
-      console.error(
+      log.error(
         `dsh-pet: 记忆文件损坏，已阻止本次读写以保护原数据：${memoryPath}（${e instanceof Error ? e.message : String(e)}）`,
       );
       const backupPath = `${memoryPath}.bak-${Date.now()}-${randomUUID()}`;
       try {
         await mkdir(userRoot, { recursive: true });
         await writePrivateTextAsync(backupPath, raw);
-        console.warn(`dsh-pet: 对话历史原文已私密备份至：${backupPath}`);
+        log.warn(`dsh-pet: 对话历史原文已私密备份至：${backupPath}`);
       } catch (backupError) {
-        console.warn(
+        log.warn(
           `dsh-pet: 对话历史备份失败，原文件仍未更改：${backupPath}（${backupError instanceof Error ? backupError.message : String(backupError)}）`,
         );
       }
@@ -633,8 +670,9 @@ export function apply(ctx: any): void {
 
   /** 对话记忆轮数（1 轮 = 1 问 1 答）：所属条目/主条目的 chatMemoryRounds（合并器已填默认非负数字） */
   const memoryRounds = (petId: string, cfg: Record<string, Record<string, unknown>>): number => {
-    if (ctx.standaloneAi) {
-      const value = Number(ctx.standaloneAi.chatMemoryRounds());
+    const standaloneAi = standaloneAiPolicy();
+    if (standaloneAi) {
+      const value = Number(standaloneAi.chatMemoryRounds());
       return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 5;
     }
     const found = findPetInstance(cfg, petId);
@@ -659,11 +697,11 @@ export function apply(ctx: any): void {
     // 配图：全局开关关闭 / 池为空 / 池内图片全缺失 → 纯文本（不报错，退化为原行为）
     const meme = conf.whisperImageEnabled === true ? pickMeme(readMemePool(conf.memes, memeDirsFor(entry))) : undefined;
     // 独立模式统一使用独立 AI 设置页的模型；DSH 宿主模式仍允许条目级模型覆盖。
-    const model = ctx.standaloneAi ? undefined : configuredModel(conf, 'whisperModel');
+    const model = standaloneAiPolicy() ? undefined : configuredModel(conf, 'whisperModel');
     const result = await generateWhisper(ctx, system, meme, model);
     if (!result.ok) {
-      // 失败**不写 S**（与改造前一致：静默跳过 + console.warn，不伪造文案、不弹错误气泡）
-      console.warn(
+      // 失败不写 S，不伪造文案、不弹错误气泡；详情进入统一日志。
+      log.warn(
         '[dsh-pet] 碎碎念生成失败 pet=' +
           petId +
           ' reason=' +
@@ -679,6 +717,7 @@ export function apply(ctx: any): void {
         ? { text: result.text, image: result.image, kind: 'whisper' }
         : { text: result.text, kind: 'whisper' },
     );
+    log.info(`[dsh-pet] 碎碎念生成成功 pet=${petId}，${result.text.length} 字${result.image ? `，配图=${result.image}` : ''}`);
     return { ok: true, text: result.text, ...(result.image ? { image: result.image } : {}) };
   };
 
@@ -701,11 +740,12 @@ export function apply(ctx: any): void {
       const system = petSystemPrompt(petId, cfg);
       // 配图：开关关闭 → 空池（指令与解析都不介入，与旧行为逐字一致）；目录链按所属条目取。
       // 张数上限（chatImageLimit，0 = 不限制）：整张清单每条消息都要附，截断后费用上限可控。
+      const standaloneAi = standaloneAiPolicy();
       const pool =
         conf.chatImageEnabled === true
           ? limitPool(
               readMemePool(conf.memes, memeDirsFor(found?.entry ?? 'main')),
-              Number(ctx.standaloneAi ? ctx.standaloneAi.chatImageLimit() : conf.chatImageLimit),
+              Number(standaloneAi ? standaloneAi.chatImageLimit() : conf.chatImageLimit),
             )
           : [];
       const mem = await readMemory();
@@ -716,7 +756,7 @@ export function apply(ctx: any): void {
       // 不能写 slice(-rounds * 2)：-0 在 JS 里 === 0，slice(-0) 返回整个数组而不是空。
       const list = sliceMemoryRounds(entry.messages, rounds);
       // 独立模式统一使用独立 AI 设置页的模型；DSH 宿主模式仍允许条目级模型覆盖。
-      const model = ctx.standaloneAi ? undefined : configuredModel(conf, 'chatModel');
+      const model = standaloneAi ? undefined : configuredModel(conf, 'chatModel');
       const generated = await generateChat(ctx, system, list, text, pool, model);
       if (!generated.ok) return generated;
       const now = Date.now();
@@ -797,6 +837,7 @@ export function apply(ctx: any): void {
       manual ? { ...v, manual: true, ...(targetPetId ? { targetPetId } : {}) } : v;
     try {
       const sel = ctx.agentDefaultModel.currentSelection();
+      log.info(`[dsh-pet] 余额查询开始${manual ? '（手动）' : ''} provider=${sel.provider}`);
       const result = await queryBalance(
         sel.provider,
         async (ref) => {
@@ -813,7 +854,12 @@ export function apply(ctx: any): void {
         },
       );
       state.writeSection('balance', mark(result));
+      log.info(
+        `[dsh-pet] 余额查询${result.ok ? '成功' : '失败'} provider=${result.provider}` +
+          (result.ok ? '' : ` reason=${result.reason}`),
+      );
     } catch (e) {
+      log.warn(`[dsh-pet] 余额查询异常：${e instanceof Error ? e.message : String(e)}`);
       state.writeSection(
         'balance',
         mark({
@@ -858,7 +904,7 @@ export function apply(ctx: any): void {
     try {
       hasDesktopPet = effectivePetList().some((p) => isDesktopVisible(p.display));
     } catch (e) {
-      ctx.logger?.warn?.(`[dsh-pet] 宠物配置非法，桌面模式已跳过：${e instanceof Error ? e.message : String(e)}`);
+      log.warn(`[dsh-pet] 宠物配置非法，桌面模式已跳过：${e instanceof Error ? e.message : String(e)}`);
     }
   };
   refreshDesktop();
@@ -966,15 +1012,15 @@ export function apply(ctx: any): void {
         },
         onRenderStartupTimeout: (event) => queueHardwareRenderFallback(helperInstance, electronPath, event),
       },
-      ctx.logger ?? console,
+      log,
     );
     try {
       helper = helperInstance;
       helperInstance.start();
       desktopModeEverActive = true; // 此后即使桌面宠物清零也保留 Helper：托盘常驻，可随时切回来
-      ctx.logger?.info?.(`dsh-pet desktop helper started (config: ${configUrl})`);
+      log.info(`dsh-pet desktop helper started (config: ${configUrl})`);
     } catch (e) {
-      ctx.logger?.warn?.(`dsh-pet desktop helper start failed: ${e instanceof Error ? e.message : String(e)}`);
+      log.warn(`dsh-pet desktop helper start failed: ${e instanceof Error ? e.message : String(e)}`);
       helper = undefined;
     }
   };
@@ -1015,16 +1061,16 @@ export function apply(ctx: any): void {
               await rename(temporary, storePath);
             }
           } catch (error) {
-            ctx.logger?.warn?.(
+            log.warn(
               `[dsh-pet] 自动保存软件合成设置失败，将仅在本次运行中回退：${error instanceof Error ? error.message : String(error)}`,
             );
           }
         } else {
-          ctx.logger?.warn?.('[dsh-pet] 渲染模式设置文件路径不可用，将仅在本次运行中回退。');
+          log.warn('[dsh-pet] 渲染模式设置文件路径不可用，将仅在本次运行中回退。');
         }
 
         process.env.DSH_PET_RENDER_MODE = 'software';
-        ctx.logger?.warn?.(
+        log.warn(
           `[dsh-pet] 硬件合成启动超时（${event.elapsedMs}ms，首帧=${event.firstFrameReady}，` +
             `渲染就绪=${event.rendererVisualReady}，窗口可见=${event.windowVisible}）；` +
             '正在切换为软件合成并重启桌面 Helper。后续若仍无法显示，请查看运行日志。',
@@ -1035,7 +1081,7 @@ export function apply(ctx: any): void {
         if (!disposed) launchHelper(electronPath);
       })
       .catch((error: unknown) => {
-        ctx.logger?.warn?.(`[dsh-pet] 自动切换软件合成失败：${error instanceof Error ? error.message : String(error)}`);
+        log.warn(`[dsh-pet] 自动切换软件合成失败：${error instanceof Error ? error.message : String(error)}`);
       });
   };
 
@@ -1049,7 +1095,7 @@ export function apply(ctx: any): void {
     if (!hasGraphicalDisplay()) {
       if (!displayWarned) {
         displayWarned = true;
-        ctx.logger?.warn?.(
+        log.warn(
           '[dsh-pet] 未检测到图形显示环境（DISPLAY/WAYLAND_DISPLAY 均为空），已跳过桌面宠物。' +
             '浏览器内宠物不受影响；如需在服务器上启用桌面模式，请配置 Xvfb 后设置 DSH_PET_DESKTOP_FORCE=1。',
         );
@@ -1061,8 +1107,9 @@ export function apply(ctx: any): void {
       launchHelper(found);
       return;
     }
-    console.warn(`[dsh-pet] Electron not found, downloading to ${defaultElectronExe()} ...`);
+    log.info(`[dsh-pet] Electron not found, downloading to ${defaultElectronExe()} ...`);
     electronEnsure = ensureElectronDownload({
+      logger: log,
       onLog: ({ text, level, done }) =>
         reportElectronDownload(text, level === 'warn' ? 'error' : done ? 'success' : 'working', done),
     })
@@ -1070,7 +1117,7 @@ export function apply(ctx: any): void {
         if (path) {
           launchHelper(path);
         } else {
-          console.warn(
+          log.warn(
             '[dsh-pet] Electron download failed; desktop pet unavailable. Set DSH_PET_ELECTRON_PATH and restart, or retry later.',
           );
         }
@@ -1118,7 +1165,7 @@ export function apply(ctx: any): void {
         startHelper();
       })
       .catch((e: unknown) => {
-        ctx.logger?.warn?.(`[dsh-pet] 重启桌面 Helper 失败：${e instanceof Error ? e.message : String(e)}`);
+        log.warn(`[dsh-pet] 重启桌面 Helper 失败：${e instanceof Error ? e.message : String(e)}`);
       });
     return desktopSyncQueue;
   };
@@ -1127,14 +1174,15 @@ export function apply(ctx: any): void {
   const standaloneMoveTestConfig = (
     config: Record<string, Record<string, unknown>>,
   ): Record<string, Record<string, unknown>> => {
+    const standaloneAi = standaloneAiPolicy();
     const withStandaloneAi =
       process.env.DSH_PET_STANDALONE === '1'
         ? {
             ...config,
             main: {
               ...(config.main ?? {}),
-              dshPetAiChatEnabled: ctx.standaloneAi?.chatEnabled() === true,
-              dshPetBalanceQuerySupported: ctx.standaloneAi?.balanceQuerySupported() === true,
+              dshPetAiChatEnabled: standaloneAi?.chatEnabled() === true,
+              dshPetBalanceQuerySupported: standaloneAi?.balanceQuerySupported() === true,
             },
           }
         : config;
@@ -1215,6 +1263,7 @@ export function apply(ctx: any): void {
         void syncDesktop();
       },
       standaloneMoveTestConfig,
+      (message) => log.warn(message),
     ),
     releasePetLock: (petId) => locks.release({ petId, force: true }),
   });
@@ -1521,9 +1570,14 @@ export function apply(ctx: any): void {
         sec = balancePeriodSec(cfg);
         // 没有任何启用余额的宠物 → 不查（省外部调用）；配置改了下一拍自然跟上
         if (flattenPetList(cfg).some((p) => p.balanceEnabled === true)) await refreshBalance();
-      } catch {
+        else log.info('[dsh-pet] 余额周期跳过：没有启用余额的宠物');
+      } catch (error) {
         // 读配置抛错 = 安装损坏（readAllConfig 只在**内置默认**缺失/损坏时抛，用户层写坏只会告警回退）：
         // 不再重排——每 30 分钟重试一次没有意义，而且会白占一个常驻定时器。修好安装后重启 DSH 即可。
+        log.warn(
+          '[dsh-pet] 余额周期读配置失败，周期刷新已停止（重启 DSH 后恢复）：' +
+            (error instanceof Error ? error.message : String(error)),
+        );
         return;
       }
       arm(sec);
@@ -1550,16 +1604,25 @@ export function apply(ctx: any): void {
       try {
         const cfg = readAllConfig(configPaths);
         const now = Date.now();
+        const standaloneAi = standaloneAiPolicy();
         const enabledIds = new Set<string>();
+        let checked = 0;
+        let due = 0;
+        let notDue = 0;
+        const skipped: string[] = [];
         for (const pet of flattenPetList(cfg)) {
           const petId = String(pet.id ?? '');
           if (!petId) continue;
+          checked += 1;
           const schedule = automaticWhisperSchedule(
-            ctx.standaloneAi,
+            standaloneAi,
             pet.whisperEnabled === true,
             whisperPeriodSec(cfg, petId),
           );
-          if (!schedule.enabled) continue;
+          if (!schedule.enabled) {
+            skipped.push(petId + ': ' + (pet.whisperEnabled === true ? '独立模式未授权自动碎碎念' : 'whisperEnabled=false'));
+            continue;
+          }
           enabledIds.add(petId);
           const sec = schedule.periodSec;
           const periodMs = sec * 1000;
@@ -1575,7 +1638,17 @@ export function apply(ctx: any): void {
             nextWhisperAt.set(petId, dueAt);
             // 占用锁期间跳过自动碎碎念；显式菜单请求仍可执行。
             // 不 await：生成要几秒，别把调度拍拖住（每只宠物独立生成，互不阻塞）
-            if (!locks.locked(petId)) void publishWhisper(petId).catch(() => {});
+            if (locks.locked(petId)) {
+              skipped.push(petId + ': 占用锁跳过');
+            } else {
+              due += 1;
+              log.info(`[dsh-pet] 碎碎念到点 pet=${petId}（周期 ${sec}s），开始生成`);
+              void publishWhisper(petId).catch((error: unknown) =>
+                log.warn(`[dsh-pet] 自动碎碎念失败 pet=${petId}: ${error instanceof Error ? error.message : String(error)}`),
+              );
+            }
+          } else {
+            notDue += 1;
           }
           nextDelayMs = Math.min(nextDelayMs, dueAt - now);
         }
@@ -1585,8 +1658,15 @@ export function apply(ctx: any): void {
         if (!Number.isFinite(nextDelayMs)) {
           nextDelayMs = 300_000;
         }
-      } catch {
+        const nextSec = Math.max(1, Math.ceil(nextDelayMs / 1000));
+        log.info(
+          `[dsh-pet] 碎碎念调度：检查 ${checked} 只 → 到点 ${due}、未到点 ${notDue}、跳过 ${skipped.length}` +
+            (skipped.length > 0 ? `（${skipped.join('；')}）` : '') +
+            `；下一拍 ${nextSec}s`,
+        );
+      } catch (error) {
         // 读配置抛错 = 安装损坏（同余额定时器）：不再重排，别白占常驻句柄
+        log.warn(`[dsh-pet] 碎碎念调度停止：${error instanceof Error ? error.message : String(error)}`);
         return;
       }
       arm(nextDelayMs);
@@ -1668,14 +1748,14 @@ export function apply(ctx: any): void {
           const text = rawInput.trim();
           if (!text) {
             void publishWhisper(petId).catch((e: unknown) =>
-              console.warn('[dsh-pet] 碎碎念异常：' + (e instanceof Error ? e.message : String(e))),
+              log.warn('[dsh-pet] 碎碎念异常：' + (e instanceof Error ? e.message : String(e))),
             );
             return { kind: 'success', text: '已让桌宠碎碎念一句' };
           }
           if (text.length > 2000) return { kind: 'error', text: '消息过长（限 2000 字）' };
           void chatWithPet(petId, text).then((r) => {
             if (!r.ok) {
-              console.warn('[dsh-pet] 对话失败 reason=' + r.reason + (r.message ? ' ' + r.message : ''));
+              log.warn('[dsh-pet] 对话失败 reason=' + r.reason + (r.message ? ' ' + r.message : ''));
             }
           });
           return { kind: 'success', text: '已发送，桌宠马上回应' };
