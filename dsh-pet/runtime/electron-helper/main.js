@@ -59,6 +59,7 @@ const { shouldLinearize, resolveForcedScale, resolvePetScale } = require('./dpi-
 const { buildDeskGeometry } = require('./desktop-geometry.js');
 const { MoveTargets } = require('./move-targets.js');
 const { MOVE_TARGETS_CHANNELS, registerMoveTargetHandlers } = require('./move-ipc.js');
+const { WorkStatusAssignmentManager } = require('./shared-core.js');
 
 // 允许无用户手势直接播放（余额动画等）
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
@@ -570,6 +571,7 @@ const lastRequestedBounds = new Map();
  * 任何更新都广播全量给所有窗口——每窗飞行方用它做跨窗碰撞检测（滞后 ≤ 1 帧，可接受）。
  */
 const petStates = new Map();
+const workStatusAssignments = new WorkStatusAssignmentManager();
 let petStateBroadcastTimer = null;
 // Normal movement claims receive a stable priority. O-relief moves update only their
 // endpoint, so a pet cannot pass its O marker to another pet while trying to yield.
@@ -1042,6 +1044,140 @@ function deskGeometry() {
   return buildDeskGeometry(screen.getAllDisplays(), screen.getPrimaryDisplay().id, process.platform);
 }
 
+/** 每只桌宠使用独立的小型透明窗口，避免整块虚拟桌面参与持续合成。 */
+function createPetWindows() {
+  const geo = deskGeometry();
+  const area = geo.hull;
+  const configUrl = process.env.DSH_PET_CONFIG_URL || 'http://127.0.0.1:6952/dsh-pet-7340/config';
+  const lastPositions = readPetPositions();
+  const pets = petsFromEnv().map((pet) => ({ ...pet, lastPosition: lastPositions[pet.id] || null }));
+  const scale = petScale();
+  const petLayouts = JSON.stringify(
+    pets.map(({ id, size, position, lastPosition }) => ({ id, size, position, lastPosition })),
+  );
+  const notificationIcons = Object.fromEntries(
+    ['notify-done', 'notify-error', 'notify-truncated', 'notify-approval', 'notify-question', 'notify-test'].map(
+      (name) => [name, pathToFileURL(path.resolve(__dirname, '..', '..', 'assets', 'pic', name + '.png')).href],
+    ),
+  );
+
+  for (const pet of pets) {
+    const { width, height } = petWindowSize(pet.size * scale);
+    const win = new BrowserWindow({
+      width,
+      height,
+      title: `${APP_DISPLAY_NAME} 桌宠（桌面模式）`,
+      x: area.x,
+      y: area.y,
+      show: false,
+      useContentSize: true,
+      enableLargerThanScreen: true,
+      transparent: true,
+      backgroundColor: '#00000000',
+      frame: false,
+      icon: path.resolve(
+        __dirname,
+        '..',
+        '..',
+        'assets',
+        APP_EDITION === 'public' ? 'logo-rounded.png' : 'dsh-pet-icon.ico',
+      ),
+      alwaysOnTop: DISPLAY_PRIORITY !== 'normal',
+      skipTaskbar: true,
+      resizable: false,
+      hasShadow: false,
+      focusable: true,
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: false,
+        paintWhenInitiallyHidden: false,
+        spellcheck: false,
+      },
+    });
+    win.on('page-title-updated', (event) => {
+      event.preventDefault();
+      win.setTitle(`${APP_DISPLAY_NAME} 桌宠（桌面模式）`);
+    });
+    win.setAlwaysOnTop(DISPLAY_PRIORITY !== 'normal', topmostLevel(process.platform));
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: !HIDE_ON_FULLSCREEN });
+    win.webContents.setBackgroundThrottling(false);
+    win.webContents.on('context-menu', (event) => event.preventDefault());
+    win.webContents.on('did-finish-load', () => win.webContents.setZoomFactor(scale));
+    setWindowIgnore(win, true);
+    win.once('ready-to-show', () => showPetWindow(win));
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        if (!win.isDestroyed() && !win.isVisible() && !shouldHideOnFullscreen(win)) showPetWindow(win);
+      }, 400);
+    });
+    win.webContents.on('console-message', (_event, details) => {
+      const message = typeof details?.message === 'string' ? details.message : undefined;
+      if (message?.startsWith('[dsh-pet-workdiag]')) console.error(message);
+      if (FRAME_DIAGNOSTICS && message?.startsWith('[dsh-pet-frame-diagnostics]')) console.error(message);
+      if (MOVE_DIAGNOSTICS_ENABLED && message?.startsWith('[dsh-pet-move]')) {
+        console.error(message);
+        try {
+          const record = JSON.parse(message.slice('[dsh-pet-move]'.length).trim());
+          if (record && typeof record === 'object' && !Array.isArray(record)) persistMoveDiagnostic(record, 'renderer');
+        } catch (error) {
+          warnMoveDiagnosticsError('parse-failed', error);
+        }
+      }
+    });
+    const onWorkStatusDiagnostic = (event, record) => {
+      if (event.sender !== win.webContents || !record || typeof record !== 'object') return;
+      const diagnosticsFile = process.env.DSH_PET_WORK_STATUS_DIAGNOSTICS_FILE;
+      if (diagnosticsFile) persistWorkStatusDiagnostic(record, diagnosticsFile);
+    };
+    ipcMain.on('pet:work-status-diagnostic', onWorkStatusDiagnostic);
+
+    win.once('closed', () => {
+      ipcMain.removeListener('pet:work-status-diagnostic', onWorkStatusDiagnostic);
+      windows.delete(pet.id);
+      petStates.delete(pet.id);
+      overlayInputs.delete(pet.id);
+      overlayPetBounds.delete(pet.id);
+      if (moveTargets.remove(pet.id)) traceMoveTarget('remove-target', { petId: pet.id, reason: 'window-closed' });
+      lastRequestedBounds.delete(win.id);
+      windowIgnore.delete(win.id);
+      broadcastPetStates();
+    });
+
+    win.loadFile(path.join(__dirname, 'index.html'), {
+      query: {
+        configUrl,
+        notificationIcon: pathToFileURL(
+          path.resolve(__dirname, '..', '..', 'assets', APP_EDITION === 'public' ? 'logo-rounded.png' : 'dsh-pet-icon-16.png'),
+        ).href,
+        notificationIcons: JSON.stringify(notificationIcons),
+        bridge: BRIDGE ? '1' : '0',
+        standalone: process.env.DSH_PET_STANDALONE === '1' ? '1' : '0',
+        openTarget: OPEN_TARGET,
+        scale: String(scale),
+        petIndex: String(pet.index),
+        overlay: '0',
+        petLayouts,
+        viewW: String(area.width),
+        viewH: String(area.height),
+        viewX: String(area.x),
+        viewY: String(area.y),
+        areas: JSON.stringify(geo.areas),
+        workAreas: JSON.stringify(geo.workAreas),
+        topInsetRatio: String(geo.topInsetRatio),
+        panels: JSON.stringify(geo.panels),
+        primaryIndex: String(geo.primaryIndex),
+        frameDiagnostics: FRAME_DIAGNOSTICS ? '1' : '0',
+      },
+    }).catch((error) => {
+      console.error(`[dsh-pet-desktop-helper] page load failed (${pet.id}):`, error);
+      win.destroy();
+    });
+    windows.set(pet.id, win);
+  }
+}
+
 function createPetOverlayWindow() {
   const geo = deskGeometry();
   const area = geo.hull;
@@ -1439,7 +1575,19 @@ app.whenReady().then(async () => {
   if (process.platform === 'darwin' && app.dock) app.dock.hide();
 
   startFullscreenWatcher();
-  createPetOverlayWindow();
+  createPetWindows();
+
+  // 工作状态 Agent→桌宠归属由主进程统一仲裁；独立 renderer 不能各自把同一 Agent 分给本窗口的宠物。
+  ipcMain.on('pet:work-status-snapshot', (event, snapshot) => {
+    const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+    if (!sourceWindow || sourceWindow.isDestroyed() || ![...windows.values()].includes(sourceWindow)) return;
+    if (!Array.isArray(snapshot?.agents) || !Array.isArray(snapshot?.eligiblePetIds)) return;
+    const result = workStatusAssignments.reconcile(snapshot.agents, snapshot.eligiblePetIds);
+    const payload = { agents: snapshot.agents, ...result };
+    for (const target of new Set(windows.values())) {
+      if (!target.isDestroyed()) target.webContents.send('pet:work-status-assignments', payload);
+    }
+  });
 
   // 宠物位置：renderer 逐帧上报坐标与碰撞状态。旧式独立小窗口尺寸恒定，只更新原生窗口位置，
   // 避免每帧 setBounds 重设宽高并反复触发 Windows layered surface resize。
@@ -1560,6 +1708,10 @@ app.whenReady().then(async () => {
   ipcMain.on('pet:set-interactive', (event, interactive) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return;
+    if (win !== overlayWindow) {
+      setWindowIgnore(win, interactive !== true);
+      return;
+    }
     if (win === overlayWindow && allOverlayPetsHiddenOnFullscreen()) {
       setWindowIgnore(win, true);
       return;

@@ -397,8 +397,7 @@ function applySayLeaf(petId, leaf) {
   }
 }
 
-// Assignment policy is shared with the browser client; this runtime owns its own manager instance.
-const workStatusAssignments = new S.WorkStatusAssignmentManager();
+// The desktop main process owns one assignment manager shared by all per-pet windows.
 const lastWorkStatusAssignmentRevisions = new Map();
 
 function logWorkStatusDiagnostic(event, details) {
@@ -411,10 +410,15 @@ function logWorkStatusDiagnostic(event, details) {
 }
 
 function applyWorkStatusAgents(snapshot) {
-  const agents = snapshot.agents;
-  const eligibleSprites = sprites.filter((sprite) => sprite.pet.workStatusEnabled);
-  const eligiblePetIds = eligibleSprites.map((sprite) => sprite.pet.id);
-  const result = workStatusAssignments.reconcile(agents, eligiblePetIds);
+  const eligiblePetIds = (config?.pets || [])
+    .filter((pet) => S.isDesktopVisible(pet.display) && pet.workStatusEnabled)
+    .map((pet) => pet.id);
+  window.petBridge?.reconcileWorkStatus(snapshot.agents, eligiblePetIds);
+}
+
+function applyWorkStatusAssignmentResult(result) {
+  if (!result || !Array.isArray(result.agents) || !Array.isArray(result.assignments)) return;
+  const agents = result.agents;
   const assignmentByPetId = new Map(result.assignments.map((assignment) => [assignment.petId, assignment]));
 
   logWorkStatusDiagnostic('snapshot', {
@@ -482,6 +486,8 @@ function applyWorkStatusAgents(snapshot) {
     );
   }
 }
+
+window.petBridge?.onWorkStatusAssignments(applyWorkStatusAssignmentResult);
 
 /** 工作状态叶子 → 每段工作只由一只宠物显示气泡并播放动画。 */
 function applyWorkStatusLeaf(leaf) {

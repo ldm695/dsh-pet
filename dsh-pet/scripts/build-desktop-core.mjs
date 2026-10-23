@@ -12,6 +12,7 @@
  */
 import { rolldown } from 'rolldown';
 import { join, resolve } from 'node:path';
+import { appendFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -21,11 +22,15 @@ try {
     input: join(ROOT, 'src', 'shared', 'index.ts'),
     platform: 'browser',
   });
+  const output = join(ROOT, 'runtime', 'electron-helper', 'shared-core.js');
   await bundle.write({
     format: 'iife',
     name: 'PetShared',
-    file: join(ROOT, 'runtime', 'electron-helper', 'shared-core.js'),
+    file: output,
   });
+  // The renderer consumes the classic-script global; the Electron main process also needs
+  // the same policy implementation through CommonJS without changing browser behavior.
+  await appendFile(output, '\nif (typeof module !== "undefined" && module.exports) module.exports = PetShared;\n');
   console.log('[build-desktop-core] ✓ runtime/electron-helper/shared-core.js (window.PetShared)');
 } catch (error) {
   console.error('[build-desktop-core] build failed:', error);

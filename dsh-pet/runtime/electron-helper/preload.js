@@ -68,6 +68,12 @@ contextBridge.exposeInMainWorld('petBridge', {
   workStatusDiagnostic(record) {
     ipcRenderer.send('pet:work-status-diagnostic', record);
   },
+  reconcileWorkStatus(agents, eligiblePetIds) {
+    ipcRenderer.send('pet:work-status-snapshot', { agents, eligiblePetIds });
+  },
+  onWorkStatusAssignments(cb) {
+    ipcRenderer.on('pet:work-status-assignments', (_event, result) => cb(result));
+  },
   moveTargets: {
     begin(petId, moveId, point, kind = 'claim', reason = 'movement') {
       ipcRenderer.send(MOVE_TARGETS_CHANNELS.begin, { ...point, petId, moveId, kind, reason });
