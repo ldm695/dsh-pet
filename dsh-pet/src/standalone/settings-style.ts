@@ -194,10 +194,13 @@ export const SETTINGS_COMPONENT_CSS = [
   '.dsh-pet-cfg__grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px 16px;align-items:end}',
   '.dsh-pet-cfg__grid5{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px 16px;align-items:end}',
   '.dsh-pet-cfg__grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 16px;align-items:end}',
+  '.dsh-pet-cfg__globalToggles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px 16px;align-items:center}',
   '.dsh-pet-cfg__apiKey{display:flex;flex-direction:column;gap:6px;padding:0 0 10px;border-bottom:1px solid var(--dsw-alias-border-l2)}',
 
   '@container (max-width:600px){.dsh-pet-cfg__grid4{grid-template-columns:repeat(2,minmax(0,1fr))}}',
   '@container (max-width:600px){.dsh-pet-cfg__grid5{grid-template-columns:repeat(2,minmax(0,1fr))}}',
+  '@container (max-width:700px){.dsh-pet-cfg__globalToggles{grid-template-columns:repeat(2,minmax(0,1fr))}}',
+  '@container (max-width:400px){.dsh-pet-cfg__globalToggles{grid-template-columns:minmax(0,1fr)}}',
   '@container (max-width:400px){.dsh-pet-cfg__grid2,.dsh-pet-cfg__grid3,.dsh-pet-cfg__grid4,.dsh-pet-cfg__grid5{grid-template-columns:minmax(0,1fr)}}',
   '@container (max-width:520px){.dsh-pet-cfg__petListCard{grid-template-columns:minmax(0,1fr) auto;gap:4px 10px}.dsh-pet-cfg__petListMeta{grid-column:1}.dsh-pet-cfg__petListAction{grid-column:2;grid-row:1 / span 2}}',
   '@media (max-width:560px){.dsh-pet-cfg__headerActions{width:100%;margin-left:0;justify-content:flex-start}}',

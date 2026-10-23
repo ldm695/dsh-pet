@@ -142,7 +142,8 @@ PetSprite.prototype.onWorkTick = function onWorkTick(snapshot, tick, animateWork
 
 // ---- 余额事件（自动轮询按 balanceEnabled 门控，手动请求无条件；档位与气泡内容来自 shared） ----
 // manual = 这次刷新是用户主动要的（右键「查看余额」/ `/balance` 命令）：不受开关限制，一律给答复。
-// 自动余额报告只选一只启用了余额功能的桌宠，并在多只桌宠间轮流分配。
+// 自动余额报告由 host 传入全局 targetPetId，只播给轮到的桌宠；本地轮流选择保留给
+// 未指定目标的旧状态/多宠物 renderer。每宠物独立窗口时不能在各 renderer 各自轮流，否则会同时命中所有窗口。
 // 手动菜单请求传 targetPetId，气泡和可用动画仍只作用于被点击的桌宠。
 let lastAutoBalancePetId = null;
 
@@ -352,15 +353,15 @@ function applyBalanceLeaf(leaf) {
   window.__dshPetDebug.lastBalanceOk = hit.state && hit.state.ok === true;
   if (hit.state.ok) {
     balanceTick++;
-    selectBalancePet(hit.manual ? hit.targetPetId : undefined)?.onBalanceTick(
+    selectBalancePet(hit.targetPetId)?.onBalanceTick(
       hit.state,
       balanceTick,
       hit.manual,
-      hit.manual ? hit.targetPetId : undefined,
+      hit.targetPetId,
     );
   } else {
     // 不可用：manual（用户主动要的）一律弹，周期刷新只在原因变化时弹一次
-    applyBalanceNotice(hit.state, hit.manual, hit.manual ? hit.targetPetId : undefined);
+    applyBalanceNotice(hit.state, hit.manual, hit.targetPetId);
   }
 }
 

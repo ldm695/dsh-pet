@@ -126,7 +126,8 @@ export function takeChanged(s: PollState, baseline: Record<string, number>): Sta
  * 类型收窄：余额叶子 → `{ state, manual, targetPetId? }`。
  * `manual` = 这次写入是**手动触发**的（`/balance` 命令、桌面「查看余额」菜单）——
  * 由 host 在写入时标记（`{...result, manual: true}`），因为只有 host 知道这次刷新是谁要的。
- * `targetPetId` = 桌面单只宠物菜单请求的目标；缺省表示面向所有宠物（如 /balance 命令）。
+ * `targetPetId` = 本次余额展示的目标宠物：桌面菜单指向被点击宠物，周期刷新由 host 轮流指定；
+ *   缺省表示由消费端自行选择（如 /balance 命令）。
  * 消费端据此决定"余额不可用时要不要必弹文字说明"（decideBalanceNotice 的 explicit 参数）。
  * 形状非法 → null（消费端跳过这一拍，不抛）。
  */

@@ -543,6 +543,9 @@ export function apply(ctx: any): void {
   // 改造前这份节流靠 whisperCache（缓存 + ts 比较），现在"该不该生成"由调度侧决定、
   // "生成结果"直接写 S——多端共享同一句由 S 天然保证，不再需要第二份缓存。
   const nextWhisperAt = new Map<string, number>();
+  // 周期余额报告按桌面可见宠物轮流分配。窗口架构改为每宠物一个 renderer 后，
+  // renderer 内部的轮询选择会在每个窗口各自命中自己，必须由 host 统一指定目标。
+  let lastAutomaticBalancePetId = '';
 
   // 对话记忆文件（唯一读写方 = 本进程；设置页和桌面 Helper 通过同一实例共享记忆）。
   // 结构双层：{ <种类桶 assetRoot ?? petId>: { <实例 id>: { messages: ChatMemoryMessage[] } } }
@@ -792,6 +795,19 @@ export function apply(ctx: any): void {
     return Number.isFinite(n) && n > 0 ? n : 1800;
   };
 
+  /** 周期余额报告全局只分配给一只宠物，并在桌面可见宠物间轮流切换。 */
+  const nextAutomaticBalancePetId = (enabled: Record<string, unknown>[]): string | undefined => {
+    if (enabled.length === 0) return undefined;
+    // 桌面 Helper 的每只宠物是独立窗口；优先选桌面可见宠物，避免事件落到当前没有 renderer 的 web/none 宠物。
+    const desktop = enabled.filter((pet) => isDesktopVisible(pet.display));
+    const candidates = desktop.length > 0 ? desktop : enabled.filter((pet) => pet.display !== 'none');
+    const eligible = candidates.length > 0 ? candidates : enabled;
+    const previousIndex = eligible.findIndex((pet) => String(pet.id) === lastAutomaticBalancePetId);
+    const selected = eligible[(previousIndex + 1) % eligible.length];
+    lastAutomaticBalancePetId = String(selected.id);
+    return lastAutomaticBalancePetId;
+  };
+
   /** 碎碎念周期（秒）：该宠物**所属条目**的 eventsRefreshSec.whisper（合并器已填默认；非法兜底 300） */
   const whisperPeriodSec = (cfg: Record<string, Record<string, unknown>>, petId: string): number => {
     const conf = (findPetInstance(cfg, petId) ?? { conf: cfg.main ?? {} }).conf;
@@ -810,6 +826,7 @@ export function apply(ctx: any): void {
    * 文字说明气泡，不能静默；意外异常同样落成 fetch-error，不吞。
    *
    * @param manual 这次刷新是不是"用户要的"（/balance 命令、桌面「查看余额」菜单）。
+   * @param targetPetId 本次结果的显示目标；手动桌面菜单指向被点击宠物，周期刷新由 host 轮流指定。
    *   标记随数据一起写进叶子：只有 host 知道是谁要的，前端据此决定余额不可用时要不要**必弹**
    *   文字说明（decideBalanceNotice 的 explicit；周期刷新则只在原因变化时弹一次，免得反复刷屏）。
    */
@@ -833,8 +850,11 @@ export function apply(ctx: any): void {
   };
 
   const refreshBalance = async (manual = false, targetPetId?: string): Promise<void> => {
-    const mark = <T>(v: T): T | (T & { manual: true; targetPetId?: string }) =>
-      manual ? { ...v, manual: true, ...(targetPetId ? { targetPetId } : {}) } : v;
+    const mark = <T extends object>(v: T): T & { manual?: true; targetPetId?: string } => ({
+      ...v,
+      ...(manual ? { manual: true as const } : {}),
+      ...(targetPetId ? { targetPetId } : {}),
+    });
     try {
       const sel = ctx.agentDefaultModel.currentSelection();
       log.info(`[dsh-pet] 余额查询开始${manual ? '（手动）' : ''} provider=${sel.provider}`);
@@ -1569,8 +1589,12 @@ export function apply(ctx: any): void {
         const cfg = readAllConfig(configPaths);
         sec = balancePeriodSec(cfg);
         // 没有任何启用余额的宠物 → 不查（省外部调用）；配置改了下一拍自然跟上
-        if (flattenPetList(cfg).some((p) => p.balanceEnabled === true)) await refreshBalance();
-        else log.info('[dsh-pet] 余额周期跳过：没有启用余额的宠物');
+        const enabledPets = flattenPetList(cfg).filter((pet) => pet.balanceEnabled === true);
+        if (enabledPets.length > 0) {
+          await refreshBalance(false, nextAutomaticBalancePetId(enabledPets));
+        } else {
+          log.info('[dsh-pet] 余额周期跳过：没有启用余额的宠物');
+        }
       } catch (error) {
         // 读配置抛错 = 安装损坏（readAllConfig 只在**内置默认**缺失/损坏时抛，用户层写坏只会告警回退）：
         // 不再重排——每 30 分钟重试一次没有意义，而且会白占一个常驻定时器。修好安装后重启 DSH 即可。

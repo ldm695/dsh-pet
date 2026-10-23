@@ -1358,7 +1358,7 @@ export function makePetConfigSection(rt: {
           className: 'dsh-pet-cfg__settingsSection',
           style: { display: activeTab === 'system' ? 'flex' : 'none' },
           children: [
-        // 全局开关卡（需求 4：四个开关一行）。
+        // 全局开关分三列：通知与配图占首行，桌面/应用行为设置排在次行，避免托盘开关单独落行。
         // 四个开关行为**一致**：切换只改本地状态，随「保存」整包写入用户级配置——不做即时写入
         // （即时写盘会触发宿主重启桌面 Helper，把全部桌面宠物窗口重建一遍）。系统通知额外在保存后
         // 系统通知由桌面宿主处理。
@@ -1368,7 +1368,7 @@ export function makePetConfigSection(rt: {
           children: [
             cardHead(t('globalControlsTitle'), t('globalHint'), false, t('allPetsScope')),
             h('div', {
-              className: 'dsh-pet-cfg__grid4',
+              className: 'dsh-pet-cfg__globalToggles',
               children: [
                 toggleCell('notifyToggle', notifyEnabled, busy, (v) => void toggleNotify(v)),
                 toggleCell('whisperImageToggle', whisperImage, busy, setWhisperImage),
