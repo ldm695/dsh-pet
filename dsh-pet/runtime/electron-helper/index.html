@@ -24,6 +24,19 @@
           sans-serif;
         user-select: none;
       }
+      body {
+        opacity: 1;
+      }
+      body.dsh-pet-fullscreen-hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+      body.dsh-pet-fullscreen-transition {
+        transition: opacity var(--dsh-pet-fullscreen-fade-duration, 220ms) ease;
+      }
+      body.dsh-pet-fullscreen-transition video.pet-video {
+        transition: none;
+      }
       button,
       input,
       select,
@@ -251,6 +264,9 @@
         display: block;
       }
       @media (prefers-reduced-motion: reduce) {
+        body.dsh-pet-fullscreen-transition {
+          transition: none;
+        }
         video.pet-video {
           transition: none;
         }

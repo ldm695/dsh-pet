@@ -10,13 +10,17 @@ DSH Pet 是面向 Windows 的便携桌面宠物应用。它使用 Electron 透�
 
 每次公开 GitHub Release 固定包含五个文件：大众版 Portable EXE、同版本大众版 ZIP，以及 DSH Desktop、Codex、Claude Code 三个公开桥接插件 ZIP。个人版及其专属图标只保留在维护者本机，不得上传到公开 Release。
 
+从上游 `dsh-pet@0.3.8` 插件/独立版切换到 `0.3.8-ldm.1` 时，继续使用原来的 `$DSH_HOME\dsh-pet\` 即可；桌宠配置、记忆、文件宠物和自定义动画会直接沿用。首次启动会兼容旧名 `main-config.json`（复制为 `main-config.jsonc`，保留旧文件）；若独立版的 `standalone-ai.json` 含有上游明文 API 密钥，会先导入当前用户 DPAPI，再从 JSON 中移除。上游 DSH 插件使用的 DSH 托管凭证不在桌宠配置内，迁移到不依赖 DSH 的独立程序后，需要在「独立 AI 设置」重新填写该密钥。此流程不替代旧 Fork 用户先运行 `0.3.7-ldm.11` 的要求。
+
+迁移步骤抛出异常时，程序会先把整个 `$DSH_HOME\dsh-pet\` 复制到 `$DSH_HOME\dsh-pet-migration-backups\migration-failure-<时间>-<随机标识>\dsh-pet\`，逐文件校验后，才将主配置恢复为安装包默认值并关闭独立 AI，以便继续启动。备份目录仅允许当前 Windows 用户访问。启动后可在「全局设置」查看备份位置、打开原配置文件夹，或确认后还原原配置；还原前会另存当前目录，并在还原完成后立即退出桌宠进程。若全量备份无法完成或校验失败，程序不会执行默认配置回写，也不会继续启动。
+
 **升级到 `0.3.7-ldm.12` 前请先运行一次 `0.3.7-ldm.11`。** `.11` 负责迁移旧主配置路径和旧独立 AI 密钥；运行后请确认原有桌宠设置仍在，曾配置独立 AI 的用户还应测试连接成功。若迁移失败或设置、AI 不可用，请先留在 `.11` 处理，不要继续升级。随后 `.12` 首次启动会整理显示位置旧值和对话上下文格式，但不再提供旧配置路径或旧密钥的常驻回退。
 
 [0.3.7-ldm.11 大众版仍可在此下载](https://github.com/ldm695/dsh-pet/releases/tag/dsh-pet-0.3.7-ldm.11)；该 Release 会保留，供旧版用户完成迁移。升级步骤详见[安装与构建说明](../INSTALL.md#从旧版升级到-037-ldm12必须按顺序)。个人版及其专属资源不会进入公开 Release。
 
 设置页和托盘菜单中的显示选项为「仅桌面」与「不显示」。升级到 `0.3.7-ldm.12` 时，首次启动会将旧配置中的显示值 `both` 转为 `desktop`、`web` 转为 `none` 并写回当前配置；后续版本只使用当前值。
 
-配置和用户数据默认位于 `%USERPROFILE%\.dsh\dsh-pet\`；若设置了 `DSH_HOME`，则使用对应目录。独立 AI 设置可配置 DeepSeek、OpenAI 兼容或 Anthropic 接口。Windows 上保存的 API 密钥使用当前用户 DPAPI 加密；密钥不会从设置页回显。旧版保存在 JSON 中的明文密钥会在成功迁移到 DPAPI 后移除；迁移失败时会保留原文件并记录提示。
+配置和用户数据默认位于 `%USERPROFILE%\.dsh\dsh-pet\`；若设置了 `DSH_HOME`，则使用对应目录。独立 AI 设置可配置 DeepSeek、OpenAI 兼容或 Anthropic 接口。Windows 上保存的 API 密钥使用当前用户 DPAPI 加密；密钥不会从设置页回显。旧版 JSON 中的明文密钥成功迁移到 DPAPI 后会从活动配置移除；迁移异常时，完整原始目录保存在迁移备份中，活动主配置会恢复为可启动的安全默认值。
 
 环境变量 `DSH_PET_STANDALONE_DEEPSEEK_API_KEY` 可作为 DeepSeek 余额查询的环境密钥；首次配置独立 AI 时也可作为初始密钥，保存后写入 DPAPI 加密存储。旧版通用环境变量 `DEEPSEEK_API_KEY` 已停止读取；请改用应用专用变量或独立 AI 设置页。
 

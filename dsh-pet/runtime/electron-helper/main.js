@@ -35,7 +35,7 @@ try {
   );
   process.exit(3);
 }
-const { app, BrowserWindow, ipcMain, screen, shell, protocol } = electronApi;
+const { app, BrowserWindow, ipcMain, screen, shell, protocol, Notification } = electronApi;
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { execFileSync, spawn } = require('node:child_process');
@@ -58,6 +58,8 @@ const { buildDeskGeometry } = require('./desktop-geometry.js');
 const { MoveTargets } = require('./move-targets.js');
 const { MOVE_TARGETS_CHANNELS, registerMoveTargetHandlers } = require('./move-ipc.js');
 const { WorkStatusAssignmentManager } = require('./shared-core.js');
+const { createNotificationRevisionGate } = require('./notification-revisions.js');
+const { FullscreenDisplayStabilizer } = require('./fullscreen-state.js');
 
 // 允许无用户手势直接播放（余额动画等）
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
@@ -288,6 +290,16 @@ if (BRIDGE) {
 
 /** 窗口表：petId -> BrowserWindow */
 const windows = new Map();
+let notificationWorkerWindow = null;
+const notificationRevisionGate = createNotificationRevisionGate();
+const fullscreenDisplayStabilizer = new FullscreenDisplayStabilizer(2);
+const fullscreenWindowTargets = new Map();
+const fullscreenVisibilitySequences = new Map();
+const reducedMotionByRenderer = new Map();
+const fullscreenTransitionWaiters = new Map();
+let fullscreenTransitionSequence = 0;
+const FULLSCREEN_FADE_MS = 220;
+const NATIVE_SHOW_SETTLE_MS = 260;
 const pendingPetPositions = new Map();
 let petPositionSaveTimer = null;
 function petPositionFile() {
@@ -333,14 +345,168 @@ function rememberPetPosition(id, x, y) {
   petPositionSaveTimer.unref?.();
 }
 app.on('before-quit', flushPetPositions);
-const DISPLAY_PRIORITY = ['hide-on-fullscreen', 'hide-on-fullscreen-or-maximized', 'normal'].includes(process.env.DSH_PET_DISPLAY_PRIORITY)
+const DISPLAY_PRIORITY = ['hide-on-fullscreen', 'hide-on-fullscreen-or-maximized', 'normal'].includes(
+  process.env.DSH_PET_DISPLAY_PRIORITY,
+)
   ? process.env.DSH_PET_DISPLAY_PRIORITY
   : 'always-on-top';
-const HIDE_ON_FULLSCREEN = DISPLAY_PRIORITY === 'hide-on-fullscreen' || DISPLAY_PRIORITY === 'hide-on-fullscreen-or-maximized';
+const HIDE_ON_FULLSCREEN =
+  DISPLAY_PRIORITY === 'hide-on-fullscreen' || DISPLAY_PRIORITY === 'hide-on-fullscreen-or-maximized';
 const HIDE_ON_MAXIMIZED = DISPLAY_PRIORITY === 'hide-on-fullscreen-or-maximized';
 const fullscreenDisplayIds = new Set();
 let fullscreenPollTimer;
 let fullscreenStateReady = false;
+
+function petIdForWindow(win) {
+  for (const [petId, target] of windows) {
+    if (target === win) return petId;
+  }
+  return null;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function requestFullscreenRendererTransition(win, hidden, transitioning, durationMs) {
+  if (win.isDestroyed() || win.webContents.isDestroyed()) return Promise.resolve(false);
+  const id = ++fullscreenTransitionSequence;
+  return new Promise((resolve) => {
+    const timeout = setTimeout(
+      () => {
+        fullscreenTransitionWaiters.delete(id);
+        resolve(false);
+      },
+      Math.max(350, durationMs + 150),
+    );
+    fullscreenTransitionWaiters.set(id, {
+      rendererId: win.webContents.id,
+      timeout,
+      resolve,
+    });
+    try {
+      win.webContents.send('pet:fullscreen-visibility-transition', {
+        id,
+        hidden,
+        transitioning,
+        durationMs,
+      });
+    } catch {
+      clearTimeout(timeout);
+      fullscreenTransitionWaiters.delete(id);
+      resolve(false);
+    }
+  });
+}
+
+function completeFullscreenRendererTransition(event, id) {
+  const waiter = fullscreenTransitionWaiters.get(id);
+  if (!waiter || waiter.rendererId !== event.sender.id) return;
+  clearTimeout(waiter.timeout);
+  fullscreenTransitionWaiters.delete(id);
+  waiter.resolve(true);
+}
+
+function isHelperRenderer(sender) {
+  const win = BrowserWindow.fromWebContents(sender);
+  return !!win && (win === notificationWorkerWindow || [...windows.values()].includes(win));
+}
+
+function registerNotificationAndFullscreenIpc() {
+  ipcMain.on('pet:dsh-notification', (event, payload) => {
+    if (!isHelperRenderer(event.sender)) return;
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const data = payload?.data;
+    if (
+      !data ||
+      data.type !== 'standalone' ||
+      data.source !== 'dsh' ||
+      data.sourceForeground === true ||
+      typeof data.title !== 'string' ||
+      typeof data.body !== 'string' ||
+      (win?.isFocused() && win.isVisible()) ||
+      !Notification?.isSupported?.() ||
+      !notificationRevisionGate.claim(payload?.revision)
+    ) {
+      return;
+    }
+    const iconNames = [
+      'notify-done',
+      'notify-error',
+      'notify-truncated',
+      'notify-approval',
+      'notify-question',
+      'notify-test',
+    ];
+    const iconName = iconNames.includes(data.icon) ? data.icon : 'notify-done';
+    const icon = path.resolve(__dirname, '..', '..', 'assets', 'pic', iconName + '.png');
+    try {
+      new Notification({
+        title: data.title,
+        body: data.body.length > 80 ? data.body.slice(0, 80) + '…' : data.body,
+        icon,
+      }).show();
+    } catch (error) {
+      console.warn('[dsh-pet-desktop-helper] DSH notification failed:', String(error?.message || error));
+    }
+  });
+
+  ipcMain.on('pet:motion-preference', (event, reducedMotion) => {
+    if (!isHelperRenderer(event.sender) || typeof reducedMotion !== 'boolean') return;
+    const previous = reducedMotionByRenderer.get(event.sender.id);
+    reducedMotionByRenderer.set(event.sender.id, reducedMotion);
+    if (previous === reducedMotion || reducedMotion !== true) return;
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || petIdForWindow(win) === null) return;
+    const target = fullscreenWindowTargets.get(win.id);
+    if (target !== undefined) void transitionFullscreenVisibility(win, target);
+  });
+
+  ipcMain.on('pet:fullscreen-transition-complete', completeFullscreenRendererTransition);
+}
+
+async function transitionFullscreenVisibility(win, hidden) {
+  if (!win || win.isDestroyed()) return;
+  const sequence = (fullscreenVisibilitySequences.get(win.id) || 0) + 1;
+  fullscreenVisibilitySequences.set(win.id, sequence);
+  const isCurrent = () =>
+    !win.isDestroyed() &&
+    fullscreenVisibilitySequences.get(win.id) === sequence &&
+    fullscreenWindowTargets.get(win.id) === hidden;
+  const reducedMotion = reducedMotionByRenderer.get(win.webContents.id) !== false;
+  const durationMs = reducedMotion ? 0 : FULLSCREEN_FADE_MS;
+
+  if (hidden) {
+    if (!win.isVisible()) return;
+    await requestFullscreenRendererTransition(win, true, true, durationMs);
+    if (!isCurrent()) return;
+    win.hide();
+    await requestFullscreenRendererTransition(win, true, false, 0);
+    return;
+  }
+
+  if (!win.isVisible()) {
+    await requestFullscreenRendererTransition(win, true, true, 0);
+    if (!isCurrent()) return;
+    win.showInactive();
+    if (!reducedMotion) await delay(NATIVE_SHOW_SETTLE_MS);
+    if (!isCurrent()) return;
+  }
+
+  await requestFullscreenRendererTransition(win, false, true, durationMs);
+  if (!isCurrent()) return;
+  await requestFullscreenRendererTransition(win, false, false, 0);
+}
+
+function matchesDisplayBounds(rect, bounds) {
+  const tolerance = Math.max(10, Math.round(Math.min(bounds.width, bounds.height) * 0.02));
+  return (
+    Math.abs(rect.left - bounds.x) <= tolerance &&
+    Math.abs(rect.top - bounds.y) <= tolerance &&
+    Math.abs(rect.right - (bounds.x + bounds.width)) <= tolerance &&
+    Math.abs(rect.bottom - (bounds.y + bounds.height)) <= tolerance
+  );
+}
 
 function shouldHideOnFullscreen(win) {
   if (!HIDE_ON_FULLSCREEN || process.platform !== 'win32') return false;
@@ -354,22 +520,33 @@ function shouldHideOnFullscreen(win) {
 }
 
 function showPetWindow(win) {
-  if (win.isDestroyed() || shouldHideOnFullscreen(win)) return;
-  if (!win.isVisible()) win.showInactive();
+  if (win.isDestroyed() || shouldHideOnFullscreen(win) || fullscreenWindowTargets.get(win.id) === true) return;
+  if (!win.isVisible()) {
+    win.showInactive();
+  }
 }
 
 function applyFullscreenVisibility() {
   for (const win of new Set(windows.values())) {
     if (win.isDestroyed()) continue;
-    if (shouldHideOnFullscreen(win)) {
-      if (win.isVisible()) win.hide();
-    } else {
-      showPetWindow(win);
+    const hidden = shouldHideOnFullscreen(win);
+    const previous = fullscreenWindowTargets.get(win.id);
+    if (previous === undefined) {
+      fullscreenWindowTargets.set(win.id, hidden);
+      if (hidden && win.isVisible()) void transitionFullscreenVisibility(win, true);
+      else if (!hidden) showPetWindow(win);
+      continue;
+    }
+    if (previous !== hidden) {
+      fullscreenWindowTargets.set(win.id, hidden);
+      void transitionFullscreenVisibility(win, hidden);
+    } else if (!hidden && !win.isVisible()) {
+      void transitionFullscreenVisibility(win, false);
     }
   }
 }
 
-function updateFullscreenDisplays(sample) {
+function updateFullscreenDisplays(sample, losslessScalingWindows = []) {
   const {
     left: sampleLeft = 0,
     top: sampleTop = 0,
@@ -388,16 +565,7 @@ function updateFullscreenDisplays(sample) {
   if (!isDesktopShell && width > 0 && height > 0) {
     if (HIDE_ON_FULLSCREEN) {
       for (const display of screen.getAllDisplays()) {
-        const b = display.bounds;
-        const tolerance = Math.max(10, Math.round(Math.min(b.width, b.height) * 0.02));
-        if (
-          Math.abs(left - b.x) <= tolerance &&
-          Math.abs(top - b.y) <= tolerance &&
-          Math.abs(right - (b.x + b.width)) <= tolerance &&
-          Math.abs(bottom - (b.y + b.height)) <= tolerance
-        ) {
-          next.add(String(display.id));
-        }
+        if (matchesDisplayBounds({ left, top, right, bottom }, display.bounds)) next.add(String(display.id));
       }
     }
     if (HIDE_ON_MAXIMIZED && isMaximized) {
@@ -407,8 +575,32 @@ function updateFullscreenDisplays(sample) {
       } catch {}
     }
   }
+  if (HIDE_ON_FULLSCREEN) {
+    for (const window of losslessScalingWindows) {
+      const rect = window?.rect;
+      if (![rect?.left, rect?.top, rect?.right, rect?.bottom].every((value) => Number.isFinite(Number(value)))) {
+        continue;
+      }
+      const windowLeft = Number(rect.left);
+      const windowTop = Number(rect.top);
+      const windowRight = Number(rect.right);
+      const windowBottom = Number(rect.bottom);
+      if (windowRight <= windowLeft || windowBottom <= windowTop) continue;
+      for (const display of screen.getAllDisplays()) {
+        if (
+          matchesDisplayBounds(
+            { left: windowLeft, top: windowTop, right: windowRight, bottom: windowBottom },
+            display.bounds,
+          )
+        ) {
+          next.add(String(display.id));
+        }
+      }
+    }
+  }
+  const stableNext = fullscreenDisplayStabilizer.update(next);
   fullscreenDisplayIds.clear();
-  for (const id of next) fullscreenDisplayIds.add(id);
+  for (const id of stableNext) fullscreenDisplayIds.add(id);
   fullscreenStateReady = true;
   applyFullscreenVisibility();
 }
@@ -426,12 +618,26 @@ function startFullscreenWatcher() {
   };
 
   try {
-    const { createForegroundWindowProbe } = require('./win32-fullscreen.js');
-    const getForegroundWindow = createForegroundWindowProbe();
+    const { createFullscreenWindowProbe } = require('./win32-fullscreen.js');
+    const { readForegroundWindow, enumerateLosslessScalingWindows } = createFullscreenWindowProbe();
     let failed = false;
+    let enumerationWarningShown = false;
     const poll = () => {
       try {
-        updateFullscreenDisplays(getForegroundWindow());
+        let losslessWindows = [];
+        try {
+          const displayBounds = screen.getAllDisplays().map((display) => display.bounds);
+          losslessWindows = enumerateLosslessScalingWindows(displayBounds);
+        } catch (error) {
+          if (!enumerationWarningShown) {
+            enumerationWarningShown = true;
+            console.warn(
+              '[dsh-pet desktop helper] Lossless Scaling window enumeration skipped:',
+              String(error?.message || error),
+            );
+          }
+        }
+        updateFullscreenDisplays(readForegroundWindow(), losslessWindows);
       } catch (error) {
         failed = true;
         failOpen(error);
@@ -493,9 +699,7 @@ function acceptWorkStatusSnapshot(event, snapshot) {
 
   // Each renderer may report only the pet eligibility owned by its window.
   const ownedPetIds = new Set([...windows].filter(([, win]) => win === sourceWindow).map(([petId]) => petId));
-  const eligiblePetIds = snapshot.eligiblePetIds.filter(
-    (petId) => typeof petId === 'string' && ownedPetIds.has(petId),
-  );
+  const eligiblePetIds = snapshot.eligiblePetIds.filter((petId) => typeof petId === 'string' && ownedPetIds.has(petId));
   workStatusEligiblePetIdsByWindow.set(event.sender.id, eligiblePetIds);
 
   // All windows poll the same state leaf. Its counter rejects delayed responses arriving after a
@@ -528,96 +732,6 @@ let petStateBroadcastTimer = null;
 // endpoint, so a pet cannot pass its O marker to another pet while trying to yield.
 const moveTargets = new MoveTargets();
 let lastMoveTargetsJSON = '';
-let lastMoveTargetFlags = new Map();
-// Movement diagnostics are opt-in. Keep diagnostic persistence off the Electron main-thread
-// hot path and cap both queued data and the resulting file.
-const MOVE_DIAGNOSTICS_ENABLED = process.env.DSH_PET_MOVE_DIAGNOSTICS === '1';
-const MOVE_DIAGNOSTICS_MAX_FILE_BYTES = 5 * 1024 * 1024;
-const MOVE_DIAGNOSTICS_MAX_RECORD_BYTES = 64 * 1024;
-const MOVE_DIAGNOSTICS_MAX_QUEUE_BYTES = 512 * 1024;
-const MOVE_DIAGNOSTICS_SESSION = `${Date.now()}-${process.pid}`;
-const moveDiagnosticsQueue = [];
-let moveDiagnosticsQueueBytes = 0;
-let moveDiagnosticsFileBytes = 0;
-let moveDiagnosticsFileSizeLoaded = false;
-let moveDiagnosticsDrainActive = false;
-let moveDiagnosticsWarningShown = false;
-
-function persistMoveDiagnostic(record, source) {
-  if (!MOVE_DIAGNOSTICS_ENABLED) return;
-
-  let line;
-  try {
-    line = `${JSON.stringify({ ...record, at: new Date().toISOString(), sessionId: MOVE_DIAGNOSTICS_SESSION, source })}\n`;
-  } catch (error) {
-    warnMoveDiagnosticsError('serialize-failed', error);
-    return;
-  }
-
-  const lineBytes = Buffer.byteLength(line, 'utf8');
-  if (lineBytes > MOVE_DIAGNOSTICS_MAX_RECORD_BYTES) return;
-  if (moveDiagnosticsQueueBytes + lineBytes > MOVE_DIAGNOSTICS_MAX_QUEUE_BYTES) return;
-  moveDiagnosticsQueue.push({ line, bytes: lineBytes });
-  moveDiagnosticsQueueBytes += lineBytes;
-  if (!moveDiagnosticsDrainActive) void drainMoveDiagnostics();
-}
-
-function traceMoveTarget(event, detail) {
-  if (!MOVE_DIAGNOSTICS_ENABLED) return;
-  const record = { event, ...detail };
-  console.error('[dsh-pet-move] ' + JSON.stringify(record));
-  persistMoveDiagnostic(record, 'helper-main');
-}
-
-function warnMoveDiagnosticsError(operation, error) {
-  if (moveDiagnosticsWarningShown) return;
-  moveDiagnosticsWarningShown = true;
-  console.error(
-    `[dsh-pet-move] diagnostics-${operation} ${error instanceof Error ? error.message : String(error)}`,
-  );
-}
-
-async function drainMoveDiagnostics() {
-  if (moveDiagnosticsDrainActive || !MOVE_DIAGNOSTICS_ENABLED) return;
-  moveDiagnosticsDrainActive = true;
-  try {
-    const file =
-      process.env.DSH_PET_MOVE_DIAGNOSTICS_FILE || path.join(app.getPath('userData'), 'logs', 'move-diagnostics.jsonl');
-    await fsPromises.mkdir(path.dirname(file), { recursive: true });
-
-    if (!moveDiagnosticsFileSizeLoaded) {
-      try {
-        moveDiagnosticsFileBytes = (await fsPromises.stat(file)).size;
-      } catch (error) {
-        if (error?.code !== 'ENOENT') throw error;
-      }
-      moveDiagnosticsFileSizeLoaded = true;
-    }
-
-    while (moveDiagnosticsQueue.length > 0) {
-      const batch = moveDiagnosticsQueue.splice(0);
-      const content = batch.map((entry) => entry.line).join('');
-      const batchBytes = batch.reduce((total, entry) => total + entry.bytes, 0);
-      moveDiagnosticsQueueBytes = 0;
-
-      if (moveDiagnosticsFileBytes + batchBytes > MOVE_DIAGNOSTICS_MAX_FILE_BYTES) {
-        await fsPromises.writeFile(file, content, 'utf8');
-        moveDiagnosticsFileBytes = batchBytes;
-      } else {
-        await fsPromises.appendFile(file, content, 'utf8');
-        moveDiagnosticsFileBytes += batchBytes;
-      }
-    }
-  } catch (error) {
-    moveDiagnosticsQueue.length = 0;
-    moveDiagnosticsQueueBytes = 0;
-    warnMoveDiagnosticsError('write-failed', error);
-  } finally {
-    moveDiagnosticsDrainActive = false;
-    if (moveDiagnosticsQueue.length > 0) void drainMoveDiagnostics();
-  }
-}
-
 // Work-status diagnostics retain their own opt-in file path and bounded async queue.
 const WORK_STATUS_DIAGNOSTICS_MAX_FILE_BYTES = 5 * 1024 * 1024;
 const WORK_STATUS_DIAGNOSTICS_MAX_RECORD_BYTES = 64 * 1024;
@@ -702,25 +816,6 @@ function broadcastMoveTargets() {
   const encoded = JSON.stringify(targets);
   if (encoded === lastMoveTargetsJSON) return;
   lastMoveTargetsJSON = encoded;
-  for (const target of targets) {
-    if (target.needsMove !== (lastMoveTargetFlags.get(target.petId) || false)) {
-      traceMoveTarget('overlap-marker', {
-        petId: target.petId,
-        O: target.needsMove,
-        reason: target.needsMove
-          ? target.moveKind === 'yield'
-            ? 'yield-endpoint-still-overlaps'
-            : 'newer-claim-overlap'
-          : 'endpoint-no-longer-overlaps',
-        blockers: target.blockers,
-        x: target.x,
-        y: target.y,
-        priority: target.priority,
-        moveKind: target.moveKind,
-      });
-    }
-  }
-  lastMoveTargetFlags = new Map(targets.map((target) => [target.petId, target.needsMove]));
   for (const win of new Set(windows.values())) {
     if (!win.isDestroyed()) win.webContents.send(MOVE_TARGETS_CHANNELS.snapshot, targets);
   }
@@ -747,13 +842,12 @@ function broadcastPetStates() {
 }
 
 /** 记录/更新一只宠物的状态并广播 */
-function updatePetState(petId, partial, { newClaim = false, claimReason = 'direct-position' } = {}) {
+function updatePetState(petId, partial, { newClaim = false } = {}) {
   const prev = petStates.get(petId) || { x: 0, y: 0, vx: 0, vy: 0, size: 0, bottomPad: 0 };
   const state = Object.assign({}, prev, partial, { updatedAt: Date.now() });
   petStates.set(petId, state);
   const settledFreeMotion = prev.freeMotion === true && state.freeMotion !== true;
   const priorTarget = moveTargets.targets.get(petId);
-  const previousPriority = priorTarget?.priority ?? null;
   moveTargets.updateActual(
     petId,
     {
@@ -763,18 +857,6 @@ function updatePetState(petId, partial, { newClaim = false, claimReason = 'direc
     },
     { freeMotion: state.freeMotion === true, newClaim: newClaim || settledFreeMotion },
   );
-  const nextTarget = moveTargets.targets.get(petId);
-  if (nextTarget && nextTarget.priority !== previousPriority) {
-    traceMoveTarget('claim-priority', {
-      petId,
-      from: previousPriority,
-      to: nextTarget.priority,
-      kind: nextTarget.moveKind,
-      reason: settledFreeMotion ? 'free-motion-settled' : previousPriority === null ? 'initial-position' : claimReason,
-      x: nextTarget.x,
-      y: nextTarget.y,
-    });
-  }
   if (petStateBroadcastTimer !== null) return;
   petStateBroadcastTimer = setTimeout(() => {
     petStateBroadcastTimer = null;
@@ -837,6 +919,72 @@ function deskGeometry() {
   return buildDeskGeometry(screen.getAllDisplays(), screen.getPrimaryDisplay().id, process.platform);
 }
 
+function createNotificationWorkerWindow({ geo, configUrl, scale, notificationIcons }) {
+  if (notificationWorkerWindow && !notificationWorkerWindow.isDestroyed()) return;
+  const area = geo.hull;
+  const win = new BrowserWindow({
+    width: 1,
+    height: 1,
+    x: area.x,
+    y: area.y,
+    show: false,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    focusable: false,
+    skipTaskbar: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      paintWhenInitiallyHidden: true,
+      spellcheck: false,
+    },
+  });
+  notificationWorkerWindow = win;
+  win.webContents.setBackgroundThrottling(false);
+  win.once('closed', () => {
+    if (notificationWorkerWindow === win) notificationWorkerWindow = null;
+    reducedMotionByRenderer.delete(win.webContents.id);
+  });
+  win
+    .loadFile(path.join(__dirname, 'index.html'), {
+      query: {
+        configUrl,
+        notificationIcon: pathToFileURL(
+          path.resolve(
+            __dirname,
+            '..',
+            '..',
+            'assets',
+            APP_EDITION === 'public' ? 'logo-rounded.png' : 'dsh-pet-icon-16.png',
+          ),
+        ).href,
+        notificationIcons: JSON.stringify(notificationIcons),
+        bridge: BRIDGE ? '1' : '0',
+        standalone: process.env.DSH_PET_STANDALONE === '1' ? '1' : '0',
+        openTarget: OPEN_TARGET,
+        scale: String(scale),
+        petIndex: '0',
+        petLayouts: '[]',
+        viewW: String(area.width),
+        viewH: String(area.height),
+        viewX: String(area.x),
+        viewY: String(area.y),
+        areas: JSON.stringify(geo.areas),
+        workAreas: JSON.stringify(geo.workAreas),
+        topInsetRatio: String(geo.topInsetRatio),
+        panels: JSON.stringify(geo.panels),
+        primaryIndex: String(geo.primaryIndex),
+      },
+    })
+    .catch((error) => {
+      console.error('[dsh-pet-desktop-helper] notification worker page load failed:', error);
+      win.destroy();
+    });
+}
+
 /** 每只桌宠使用独立的小型透明窗口。 */
 function createPetWindows() {
   const geo = deskGeometry();
@@ -853,6 +1001,11 @@ function createPetWindows() {
       (name) => [name, pathToFileURL(path.resolve(__dirname, '..', '..', 'assets', 'pic', name + '.png')).href],
     ),
   );
+
+  if (pets.length === 0) {
+    createNotificationWorkerWindow({ geo, configUrl, scale, notificationIcons });
+    return;
+  }
 
   for (const pet of pets) {
     const { width, height } = petWindowSize(pet.size * scale);
@@ -902,7 +1055,9 @@ function createPetWindows() {
     win.once('ready-to-show', () => showPetWindow(win));
     win.webContents.once('did-finish-load', () => {
       setTimeout(() => {
-        if (!win.isDestroyed() && !win.isVisible() && !shouldHideOnFullscreen(win)) showPetWindow(win);
+        if (!win.isDestroyed() && !win.isVisible() && !shouldHideOnFullscreen(win)) {
+          showPetWindow(win);
+        }
       }, 400);
     });
     const pointerTimer = setInterval(() => {
@@ -916,7 +1071,15 @@ function createPetWindows() {
       const zone = pointerZone(bounds, point, margins);
       const offBodyDuration = !busy && zone === 'margin' ? (offBodyMs.get(win.id) ?? 0) + POINTER_POLL_MS : 0;
       offBodyMs.set(win.id, offBodyDuration);
-      const next = decideWindowIgnore(bounds, point, ignoring, busy, offBodyDuration, inputRegions.get(win.id), margins);
+      const next = decideWindowIgnore(
+        bounds,
+        point,
+        ignoring,
+        busy,
+        offBodyDuration,
+        inputRegions.get(win.id),
+        margins,
+      );
       if (next !== ignoring) setWindowIgnore(win, next);
     }, POINTER_POLL_MS);
     let lastTopmostAssertMs = Date.now();
@@ -936,18 +1099,10 @@ function createPetWindows() {
       lastTopmostAssertMs = nowMs;
       if (DISPLAY_PRIORITY !== 'normal') win.setAlwaysOnTop(true, topmostLevel(process.platform));
     }, TOPMOST_WATCHDOG_TICK_MS);
-    win.webContents.on('console-message', (_event, details) => {
+    win.webContents.on('console-message', (...args) => {
+      const details = args.find((arg) => typeof arg?.message === 'string');
       const message = typeof details?.message === 'string' ? details.message : undefined;
       if (message?.startsWith('[dsh-pet-workdiag]')) console.error(message);
-      if (MOVE_DIAGNOSTICS_ENABLED && message?.startsWith('[dsh-pet-move]')) {
-        console.error(message);
-        try {
-          const record = JSON.parse(message.slice('[dsh-pet-move]'.length).trim());
-          if (record && typeof record === 'object' && !Array.isArray(record)) persistMoveDiagnostic(record, 'renderer');
-        } catch (error) {
-          warnMoveDiagnosticsError('parse-failed', error);
-        }
-      }
     });
     const onWorkStatusDiagnostic = (event, record) => {
       if (event.sender !== win.webContents || !record || typeof record !== 'object') return;
@@ -963,44 +1118,61 @@ function createPetWindows() {
       ipcMain.removeListener('pet:work-status-diagnostic', onWorkStatusDiagnostic);
       windows.delete(pet.id);
       petStates.delete(pet.id);
-      if (moveTargets.remove(pet.id)) traceMoveTarget('remove-target', { petId: pet.id, reason: 'window-closed' });
+      moveTargets.remove(pet.id);
       lastRequestedBounds.delete(win.id);
       winMargins.delete(win.id);
       inputBusy.delete(win.id);
       inputRegions.delete(win.id);
       offBodyMs.delete(win.id);
       windowIgnore.delete(win.id);
+      reducedMotionByRenderer.delete(workStatusRendererId);
+      fullscreenWindowTargets.delete(win.id);
+      fullscreenVisibilitySequences.delete(win.id);
+      for (const [id, waiter] of fullscreenTransitionWaiters) {
+        if (waiter.rendererId !== workStatusRendererId) continue;
+        clearTimeout(waiter.timeout);
+        fullscreenTransitionWaiters.delete(id);
+        waiter.resolve(false);
+      }
       releaseWorkStatusRenderer(workStatusRendererId);
       broadcastPetStates();
     });
 
-    win.loadFile(path.join(__dirname, 'index.html'), {
-      query: {
-        configUrl,
-        notificationIcon: pathToFileURL(
-          path.resolve(__dirname, '..', '..', 'assets', APP_EDITION === 'public' ? 'logo-rounded.png' : 'dsh-pet-icon-16.png'),
-        ).href,
-        notificationIcons: JSON.stringify(notificationIcons),
-        bridge: BRIDGE ? '1' : '0',
-        standalone: process.env.DSH_PET_STANDALONE === '1' ? '1' : '0',
-        openTarget: OPEN_TARGET,
-        scale: String(scale),
-        petIndex: String(pet.index),
-        petLayouts,
-        viewW: String(area.width),
-        viewH: String(area.height),
-        viewX: String(area.x),
-        viewY: String(area.y),
-        areas: JSON.stringify(geo.areas),
-        workAreas: JSON.stringify(geo.workAreas),
-        topInsetRatio: String(geo.topInsetRatio),
-        panels: JSON.stringify(geo.panels),
-        primaryIndex: String(geo.primaryIndex),
-      },
-    }).catch((error) => {
-      console.error(`[dsh-pet-desktop-helper] page load failed (${pet.id}):`, error);
-      win.destroy();
-    });
+    win
+      .loadFile(path.join(__dirname, 'index.html'), {
+        query: {
+          configUrl,
+          notificationIcon: pathToFileURL(
+            path.resolve(
+              __dirname,
+              '..',
+              '..',
+              'assets',
+              APP_EDITION === 'public' ? 'logo-rounded.png' : 'dsh-pet-icon-16.png',
+            ),
+          ).href,
+          notificationIcons: JSON.stringify(notificationIcons),
+          bridge: BRIDGE ? '1' : '0',
+          standalone: process.env.DSH_PET_STANDALONE === '1' ? '1' : '0',
+          openTarget: OPEN_TARGET,
+          scale: String(scale),
+          petIndex: String(pet.index),
+          petLayouts,
+          viewW: String(area.width),
+          viewH: String(area.height),
+          viewX: String(area.x),
+          viewY: String(area.y),
+          areas: JSON.stringify(geo.areas),
+          workAreas: JSON.stringify(geo.workAreas),
+          topInsetRatio: String(geo.topInsetRatio),
+          panels: JSON.stringify(geo.panels),
+          primaryIndex: String(geo.primaryIndex),
+        },
+      })
+      .catch((error) => {
+        console.error(`[dsh-pet-desktop-helper] page load failed (${pet.id}):`, error);
+        win.destroy();
+      });
     windows.set(pet.id, win);
   }
 }
@@ -1159,6 +1331,7 @@ app.whenReady().then(async () => {
   // macOS：桌面宠物 Helper 不该单独占 Dock；常驻入口由 desktop-main.cjs 提供。
   if (process.platform === 'darwin' && app.dock) app.dock.hide();
 
+  registerNotificationAndFullscreenIpc();
   startFullscreenWatcher();
   createPetWindows();
 
@@ -1201,15 +1374,19 @@ app.whenReady().then(async () => {
       // 位置 + 尺寸 + 速度一并登记：set-bounds 是每次位置变化都会触发的全量上报
       // （此前只更新 x/y，静止宠物 size 永远为 0，跨窗碰撞检测 `!o.size` 直接跳过它）；
       // 速度取渲染端上报值（飞行中实时、静止/拖拽 = 0），落地后不再残留旧飞行速度。
-      updatePetState(petId, {
-        x: Number.isFinite(bx) ? bx : x,
-        y: Number.isFinite(by) ? by : y,
-        size: Number.isFinite(size) && size > 0 ? size : petStates.get(petId)?.size || 0,
-        bottomPad: Number.isFinite(bottomPad) && bottomPad > 0 ? bottomPad : petStates.get(petId)?.bottomPad || 0,
-        vx: Number.isFinite(vx) ? vx : 0,
-        vy: Number.isFinite(vy) ? vy : 0,
-        freeMotion: bounds?.freeMotion === true,
-      }, { newClaim: bounds?.positionClaim === true, claimReason: 'position-command' });
+      updatePetState(
+        petId,
+        {
+          x: Number.isFinite(bx) ? bx : x,
+          y: Number.isFinite(by) ? by : y,
+          size: Number.isFinite(size) && size > 0 ? size : petStates.get(petId)?.size || 0,
+          bottomPad: Number.isFinite(bottomPad) && bottomPad > 0 ? bottomPad : petStates.get(petId)?.bottomPad || 0,
+          vx: Number.isFinite(vx) ? vx : 0,
+          vy: Number.isFinite(vy) ? vy : 0,
+          freeMotion: bounds?.freeMotion === true,
+        },
+        { newClaim: bounds?.positionClaim === true },
+      );
     }
   });
 
@@ -1218,7 +1395,6 @@ app.whenReady().then(async () => {
     BrowserWindow,
     windows,
     moveTargets,
-    traceMoveTarget,
     broadcastMoveTargets,
   });
 
@@ -1281,7 +1457,8 @@ app.whenReady().then(async () => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed() || !input || !Array.isArray(input.rects)) return;
     const rects = input.rects.filter(
-      (rect) => rect && [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) && rect.width > 0 && rect.height > 0,
+      (rect) =>
+        rect && [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) && rect.width > 0 && rect.height > 0,
     );
     inputRegions.set(win.id, { dragging: input.dragging === true, rects });
   });
@@ -1334,21 +1511,28 @@ app.whenReady().then(async () => {
     const candidates = [];
     try {
       const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-      candidates.push(...execFileSync(path.join(systemRoot, 'System32', 'where.exe'), ['dsh'], { encoding: 'utf8', windowsHide: true })
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter((line) => line && /dsh\.(cmd|exe)$/i.test(line)));
+      candidates.push(
+        ...execFileSync(path.join(systemRoot, 'System32', 'where.exe'), ['dsh'], {
+          encoding: 'utf8',
+          windowsHide: true,
+        })
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter((line) => line && /dsh\.(cmd|exe)$/i.test(line)),
+      );
     } catch {
       /* PATH 可能未由启动器继承，继续查安装记录 */
     }
     if (process.platform === 'win32') {
       try {
-        const uninstall = execFileSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'reg.exe'), [
-          'query', 'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
-          '/s', '/f', 'DeepSeek Harness',
-        ], { encoding: 'utf8', windowsHide: true });
+        const uninstall = execFileSync(
+          path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'reg.exe'),
+          ['query', 'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall', '/s', '/f', 'DeepSeek Harness'],
+          { encoding: 'utf8', windowsHide: true },
+        );
         const installLocation = uninstall.match(/^\s*InstallLocation\s+REG_SZ\s+(.+)$/im)?.[1]?.trim();
-        if (installLocation) candidates.push(path.join(installLocation, 'resources', 'runtime', 'cli', 'bin', 'dsh.cmd'));
+        if (installLocation)
+          candidates.push(path.join(installLocation, 'resources', 'runtime', 'cli', 'bin', 'dsh.cmd'));
       } catch {
         /* 找不到用户级安装记录时，最后仍可尝试 PATH 命令 */
       }
@@ -1376,7 +1560,17 @@ app.whenReady().then(async () => {
     const safeLabel = String(label).replace(/[\r\n\"]+/g, '');
     const installRoot = path.resolve(workingDirectory, '..', '..', '..', '..');
     const dshExe = path.join(installRoot, 'DeepSeek Harness.exe');
-    const dshCliEntry = path.join(installRoot, 'resources', 'app.asar', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'cli.js');
+    const dshCliEntry = path.join(
+      installRoot,
+      'resources',
+      'app.asar',
+      'dsh',
+      'node_modules',
+      '@deepseek-ai',
+      'dsh-desktop-host',
+      'lib',
+      'cli.js',
+    );
     if (!existsSync(dshExe)) {
       console.error('[dsh-pet-desktop-helper] DSH Node runtime executable not found:', dshExe);
       return;
@@ -1392,9 +1586,15 @@ app.whenReady().then(async () => {
       cwd: workingDirectory,
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     });
-    child.on('spawn', () => console.warn(`[dsh-pet-desktop-helper] ${label} visible console dispatched via cmd START with direct Node runtime: pid=${child.pid}`));
+    child.on('spawn', () =>
+      console.warn(
+        `[dsh-pet-desktop-helper] ${label} visible console dispatched via cmd START with direct Node runtime: pid=${child.pid}`,
+      ),
+    );
     child.on('error', (error) => console.error(`[dsh-pet-desktop-helper] launch ${label} failed:`, error));
-    child.on('close', (code) => console.warn(`[dsh-pet-desktop-helper] ${label} terminal launcher exited: code=${code}`));
+    child.on('close', (code) =>
+      console.warn(`[dsh-pet-desktop-helper] ${label} terminal launcher exited: code=${code}`),
+    );
     child.unref();
   };
   ipcMain.on('pet:open-app', (_event, payload) => {

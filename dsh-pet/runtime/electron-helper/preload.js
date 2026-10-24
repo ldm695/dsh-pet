@@ -14,10 +14,8 @@
 //       onPetHit：订阅「你被撞了」→ 用新初速 startThrow 抛出去（与浏览器 onHit 同语义）。
 const { contextBridge, ipcRenderer } = require('electron');
 const { MOVE_TARGETS_CHANNELS } = require('./move-ipc.js');
-const moveDiagnosticsEnabled = process.env.DSH_PET_MOVE_DIAGNOSTICS === '1';
 
 contextBridge.exposeInMainWorld('petBridge', {
-  moveDiagnosticsEnabled,
   setBounds(
     petId,
     x,
@@ -55,6 +53,20 @@ contextBridge.exposeInMainWorld('petBridge', {
   },
   workStatusDiagnostic(record) {
     ipcRenderer.send('pet:work-status-diagnostic', record);
+  },
+  showDshNotification(revision, data) {
+    ipcRenderer.send('pet:dsh-notification', { revision, data });
+  },
+  setReducedMotionPreference(reduced) {
+    ipcRenderer.send('pet:motion-preference', !!reduced);
+  },
+  onFullscreenVisibilityTransition(cb) {
+    const listener = (_event, payload) => cb(payload);
+    ipcRenderer.on('pet:fullscreen-visibility-transition', listener);
+    return () => ipcRenderer.removeListener('pet:fullscreen-visibility-transition', listener);
+  },
+  completeFullscreenVisibilityTransition(id) {
+    ipcRenderer.send('pet:fullscreen-transition-complete', id);
   },
   reconcileWorkStatus(agents, eligiblePetIds, stateCounter) {
     ipcRenderer.send('pet:work-status-snapshot', { agents, eligiblePetIds, stateCounter });

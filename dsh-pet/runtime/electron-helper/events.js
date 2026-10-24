@@ -353,12 +353,7 @@ function applyBalanceLeaf(leaf) {
   window.__dshPetDebug.lastBalanceOk = hit.state && hit.state.ok === true;
   if (hit.state.ok) {
     balanceTick++;
-    selectBalancePet(hit.targetPetId)?.onBalanceTick(
-      hit.state,
-      balanceTick,
-      hit.manual,
-      hit.targetPetId,
-    );
+    selectBalancePet(hit.targetPetId)?.onBalanceTick(hit.state, balanceTick, hit.manual, hit.targetPetId);
   } else {
     // 不可用：manual（用户主动要的）一律弹，周期刷新只在原因变化时弹一次
     applyBalanceNotice(hit.state, hit.manual, hit.targetPetId);
@@ -518,16 +513,10 @@ function applyNotifyLeaf(leaf) {
   ) {
     return;
   }
-  try {
-    new Notification(data.title, {
-      body: data.body.length > 80 ? data.body.slice(0, 80) + '…' : data.body,
-      icon:
-        (typeof data.icon === 'string' && CONFIG.notificationIcons[data.icon]) ||
-        CONFIG.notificationIcons['notify-done'] ||
-        CONFIG.notificationIcon,
-    });
-  } catch (error) {
-    console.warn('[dsh-pet] DSH 桥接系统通知发送失败：' + String(error));
+  if (window.petBridge && typeof window.petBridge.showDshNotification === 'function') {
+    window.petBridge.showDshNotification(leaf.counter, data);
+  } else {
+    console.warn('[dsh-pet] DSH 桥接系统通知未发送：主进程通知桥不可用');
   }
 }
 

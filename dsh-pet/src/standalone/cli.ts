@@ -19,14 +19,13 @@
  * 独立模式自己的对话回复；若 DSH 同时运行且安装了 dsh-pet，可选中对话状态经本地文件桥接同步。
  */
 import { existsSync, readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
 import { flattenPetList, readAllConfig } from '../host/config';
 import { dshHomeDir, packageRoot } from '../host/helper-process';
 import { apply } from '../host/index';
-import { loadProtectedApiKey, saveProtectedApiKey } from './api-key-store';
 import { createStandaloneAi } from './ai-provider';
-import { migrateMissingChatContextSettings } from './ai-config';
 import { settingsPage as standaloneAiPage } from './ai-settings-page';
 import { runCheck, packageVersion } from './check';
 import {
@@ -40,58 +39,65 @@ import { STANDALONE_SETTINGS_HTML } from './settings-page';
 import { listenStandaloneServer } from './server';
 import { standaloneAiEnvironmentApiKey } from './deepseek';
 import { createRequestSecurity } from './request-security';
+import { getMigrationRecovery, prepareStandaloneMigrations, restoreMigrationConfiguration } from './migrations';
 
 /** 启动独立模式：先起服务拿到端口，再 `apply`（插件据此拼桌面 Helper 的 configUrl） */
 async function run(logger: StandaloneLogger, options: { port: number }): Promise<void> {
   const home = dshHomeDir();
   const paths = configPathsFor(packageRoot, home);
   const aiApiKeyStorePath = join(home, 'dsh-pet', 'standalone-ai-key.dpapi');
-  const aiSettingsPath = join(home, 'dsh-pet', 'standalone-ai.json');
-  const hadAiSettings = existsSync(aiSettingsPath);
-  let storedApiKey: string | undefined;
-  let apiKeyStoreReadFailed = false;
-  try {
-    // .11's current DPAPI credential remains the supported persisted key source.
-    storedApiKey = await loadProtectedApiKey(aiApiKeyStorePath);
-  } catch (error) {
-    apiKeyStoreReadFailed = true;
-    logger.warn(`读取独立 AI DPAPI 密钥失败：${error instanceof Error ? error.message : String(error)}`);
-  }
-  const environmentApiKey = !hadAiSettings ? standaloneAiEnvironmentApiKey() : undefined;
-  let keepEnvironmentKeyBootstrap = false;
-  if (!storedApiKey && environmentApiKey && !apiKeyStoreReadFailed) {
-    try {
-      // The context migration creates standalone-ai.json. Persist the app-specific env key
-      // first so that creating that file cannot make this one-time bootstrap disappear.
-      await saveProtectedApiKey(aiApiKeyStorePath, environmentApiKey);
-      const verifiedApiKey = await loadProtectedApiKey(aiApiKeyStorePath);
-      if (verifiedApiKey !== environmentApiKey) throw new Error('DPAPI read-back verification failed');
-      storedApiKey = verifiedApiKey;
-      logger.info('已将应用环境密钥安全保存到当前 DPAPI 存储。');
-    } catch (error) {
-      // Keep the env key usable for this run, but leave standalone-ai.json absent so the
-      // same app-specific bootstrap remains available on the next run.
-      keepEnvironmentKeyBootstrap = true;
-      logger.warn(`无法安全保存应用环境密钥，跳过聊天上下文迁移以保留环境变量回退：${error instanceof Error ? error.message : String(error)}`);
-    }
-  } else if (!storedApiKey && environmentApiKey && apiKeyStoreReadFailed) {
-    // Do not overwrite an unreadable key store, and do not create the settings file that
-    // would disable the environment fallback on the next launch.
-    keepEnvironmentKeyBootstrap = true;
-    logger.warn('DPAPI 密钥存储读取失败，已跳过聊天上下文迁移以保留环境变量回退。');
-  }
-  const legacyAiConfig = readAllConfig(paths).main ?? {};
-  if (!keepEnvironmentKeyBootstrap) migrateMissingChatContextSettings(home, legacyAiConfig, logger);
-  // Preserve the documented app-specific environment key behavior based on whether the
-  // settings file existed before the one-time context migration writes it.
-  const aiInitialApiKey = storedApiKey ?? environmentApiKey;
+  const migration = await prepareStandaloneMigrations({
+    home,
+    packageRoot,
+    environmentApiKey: standaloneAiEnvironmentApiKey(),
+    logger,
+  });
   const security = createRequestSecurity();
   // The packaged Electron shell owns the native tray and sends authenticated local API requests.
   // Pass the per-run capability only through the private child-process IPC channel; never log it.
   const ipcProcess = process as NodeJS.Process & { send?: (message: unknown) => boolean };
   ipcProcess.send?.({ channel: 'dsh-pet:request-token', token: security.token });
+  const pendingFolderOpen = new Map<
+    string,
+    { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
+  >();
+  process.on('message', (message: unknown) => {
+    if (!message || typeof message !== 'object') return;
+    const response = message as { channel?: unknown; requestId?: unknown; ok?: unknown; error?: unknown };
+    if (response.channel !== 'dsh-pet:open-migration-backup-result' || typeof response.requestId !== 'string') return;
+    const pending = pendingFolderOpen.get(response.requestId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingFolderOpen.delete(response.requestId);
+    if (response.ok === true) pending.resolve();
+    else pending.reject(new Error(typeof response.error === 'string' ? response.error : '无法打开备份文件夹。'));
+  });
+  const openBackupFolder = (backupDirectory: string): Promise<void> =>
+    new Promise((resolve, reject) => {
+      if (!ipcProcess.send) {
+        reject(new Error('请从桌面应用内打开备份文件夹。'));
+        return;
+      }
+      const requestId = randomUUID();
+      const timer = setTimeout(() => {
+        pendingFolderOpen.delete(requestId);
+        reject(new Error('桌面应用打开备份文件夹超时。'));
+      }, 10_000);
+      timer.unref();
+      pendingFolderOpen.set(requestId, { resolve: () => resolve(), reject, timer });
+      try {
+        if (ipcProcess.send({ channel: 'dsh-pet:open-migration-backup', requestId, path: backupDirectory })) return;
+        clearTimeout(timer);
+        pendingFolderOpen.delete(requestId);
+        reject(new Error('桌面应用当前无法打开备份文件夹。'));
+      } catch (error) {
+        clearTimeout(timer);
+        pendingFolderOpen.delete(requestId);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
   const standaloneAi = createStandaloneAi(home, logger, {
-    initialApiKey: aiInitialApiKey,
+    initialApiKey: migration.initialApiKey,
     apiKeyStorePath: aiApiKeyStorePath,
   });
 
@@ -166,6 +172,64 @@ window.DSH_PET_AI_SETTINGS_URL=${JSON.stringify(aiUrl)};
           'cache-control': 'no-store',
         });
         res.end(bundle);
+      },
+    },
+  );
+  const sendRecoveryJson = (res: Parameters<RegisteredRoute['handler']>[1], status: number, body: unknown): void => {
+    const payload = JSON.stringify(body);
+    res.writeHead(status, {
+      'content-type': 'application/json; charset=utf-8',
+      'content-length': Buffer.byteLength(payload),
+      'cache-control': 'no-store',
+    });
+    res.end(payload);
+  };
+  routes.push(
+    {
+      kind: 'exact',
+      path: '/dsh-pet-7340/migration-recovery',
+      handler: (req, res) => {
+        if (req.method !== 'GET') {
+          sendRecoveryJson(res, 405, { error: 'Method not allowed' });
+          return;
+        }
+        const recovery = getMigrationRecovery(home);
+        sendRecoveryJson(res, 200, recovery ? { available: true, ...recovery } : { available: false });
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/dsh-pet-7340/migration-recovery/open',
+      handler: async (req, res) => {
+        if (req.method !== 'POST') {
+          sendRecoveryJson(res, 405, { error: 'Method not allowed' });
+          return;
+        }
+        try {
+          const recovery = getMigrationRecovery(home);
+          if (!recovery) throw new Error('没有可打开的迁移异常备份。');
+          await openBackupFolder(join(recovery.backupDirectory, 'dsh-pet'));
+          sendRecoveryJson(res, 200, { ok: true });
+        } catch (error) {
+          sendRecoveryJson(res, 503, { error: error instanceof Error ? error.message : String(error) });
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/dsh-pet-7340/migration-recovery/restore',
+      handler: async (req, res) => {
+        if (req.method !== 'POST') {
+          sendRecoveryJson(res, 405, { error: 'Method not allowed' });
+          return;
+        }
+        try {
+          await restoreMigrationConfiguration(home);
+          sendRecoveryJson(res, 200, { ok: true, stopping: true });
+          setTimeout(() => forwardShutdown(), 100);
+        } catch (error) {
+          sendRecoveryJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+        }
       },
     },
   );

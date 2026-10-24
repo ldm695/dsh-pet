@@ -20,14 +20,17 @@ function fixture() {
     process: { env: {} },
     window: {
       petBridge: {
-        beginMove: (...args) => messages.push(['begin', ...args]),
-        endMove: (...args) => messages.push(['end', ...args]),
+        moveTargets: {
+          begin: (...args) => messages.push(['begin', ...args]),
+          end: (...args) => messages.push(['end', ...args]),
+        },
       },
     },
     Math: math,
     console: { info() {}, log() {}, warn() {} },
     performance: { now: () => 0 },
     VIEW: { w: 1000, h: 600 },
+    CONFIG: { topInsetRatio: 0, petLayouts: [], petIndex: 0, scale: 1 },
     AREAS: [{ x: 0, y: 0, width: 1000, height: 600 }],
     toScreen: (v) => v * 1.5,
     requestAnimationFrame: (cb) => {
@@ -304,8 +307,8 @@ test('completed moves commit the exact endpoint even if ended beats the last rAF
 test('renderer begin/end messages and registry preserve newest ownership across interruption', () => {
   const { context, sprite, messages } = fixture();
   const registry = new MoveTargets();
-  context.window.petBridge.beginMove = (petId, id, target, kind) => registry.begin(petId, id, target, kind);
-  context.window.petBridge.endMove = (petId, id, actual) => registry.end(petId, id, actual);
+  context.window.petBridge.moveTargets.begin = (petId, id, target, kind) => registry.begin(petId, id, target, kind);
+  context.window.petBridge.moveTargets.end = (petId, id, actual) => registry.end(petId, id, actual);
   sprite.beginMoveTarget(700, 300);
   registry.begin('B', 'b', { x: 1050, y: 450, size: 480 });
   sprite.updateMoveTargets(registry.snapshot());
@@ -339,33 +342,45 @@ test('preload carries endpoint messages, snapshots, and unknown drag/throw desti
   const subscriptions = new Map();
   vm.runInNewContext(readFileSync(new URL('preload.js', helper), 'utf8'), {
     process: { env: {} },
-    require: () => ({
-      contextBridge: {
-        exposeInMainWorld(_name, value) {
-          bridge = value;
+    require: (modulePath) => {
+      if (modulePath === './move-ipc.js') {
+        return {
+          MOVE_TARGETS_CHANNELS: {
+            begin: 'pet:begin-move',
+            end: 'pet:end-move',
+            snapshot: 'pet:move-targets',
+            forget: 'pet:forget-move-target',
+          },
+        };
+      }
+      return {
+        contextBridge: {
+          exposeInMainWorld(_name, value) {
+            bridge = value;
+          },
         },
-      },
-      ipcRenderer: {
-        send: (...args) => sends.push(args),
-        on: (channel, callback) => subscriptions.set(channel, callback),
-      },
-    }),
+        ipcRenderer: {
+          send: (...args) => sends.push(args),
+          on: (channel, callback) => subscriptions.set(channel, callback),
+        },
+      };
+    },
   });
-  bridge.setBounds('A', 0, 0, 600, 400, 100, 200, 480, 20, 0, 0, 100, 100, 0, 0, 100, 100, true, true);
+  bridge.setBounds('A', 0, 0, 600, 400, 100, 200, 480, 20, 0, 0, 100, 100, true, true);
   assert.equal(sends[0][1].freeMotion, true);
   assert.equal(sends[0][1].positionClaim, true);
   assert.equal(sends[0][1].size, 480);
-  bridge.beginMove('A', '1', { x: 600, y: 400, size: 480 }, 'yield', 'overlap-yield');
+  bridge.moveTargets.begin('A', '1', { x: 600, y: 400, size: 480 }, 'yield', 'overlap-yield');
   assert.equal(sends[1][1].kind, 'yield');
   assert.equal(sends[1][1].reason, 'overlap-yield');
-  bridge.endMove('A', '1', { x: 300, y: 400, size: 480 }, 'interrupted');
-  bridge.forgetMoveTarget('A');
+  bridge.moveTargets.end('A', '1', { x: 300, y: 400, size: 480 }, 'interrupted');
+  bridge.moveTargets.forget('A');
   assert.deepEqual(
     sends.slice(1).map((message) => message[0]),
     ['pet:begin-move', 'pet:end-move', 'pet:forget-move-target'],
   );
   let received;
-  bridge.onMoveTargets((snapshot) => {
+  bridge.moveTargets.subscribe((snapshot) => {
     received = snapshot;
   });
   const targets = [{ petId: 'A', needsMove: true }];

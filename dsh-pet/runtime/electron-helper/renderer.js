@@ -19,6 +19,54 @@
  */
 'use strict';
 
+const fullscreenMotionPreference = window.matchMedia('(prefers-reduced-motion: reduce)');
+const reportFullscreenMotionPreference = () =>
+  window.petBridge?.setReducedMotionPreference?.(fullscreenMotionPreference.matches);
+reportFullscreenMotionPreference();
+if (fullscreenMotionPreference.addEventListener) {
+  fullscreenMotionPreference.addEventListener('change', reportFullscreenMotionPreference);
+} else {
+  fullscreenMotionPreference.addListener?.(reportFullscreenMotionPreference);
+}
+
+let activeFullscreenTransition = null;
+function acknowledgeFullscreenTransition(id) {
+  if (activeFullscreenTransition?.id !== id) return;
+  if (activeFullscreenTransition.timer) clearTimeout(activeFullscreenTransition.timer);
+  activeFullscreenTransition = null;
+  document.body.classList.remove('dsh-pet-fullscreen-transition');
+  window.petBridge?.completeFullscreenVisibilityTransition?.(id);
+}
+
+window.petBridge?.onFullscreenVisibilityTransition?.((payload) => {
+  if (!payload || !Number.isSafeInteger(payload.id)) return;
+  if (activeFullscreenTransition) {
+    const previous = activeFullscreenTransition;
+    clearTimeout(previous.timer);
+    activeFullscreenTransition = null;
+    // Reverse from the current opacity instead of letting the unfinished fade snap to its endpoint.
+    window.petBridge?.completeFullscreenVisibilityTransition?.(previous.id);
+  }
+
+  const durationMs = Math.max(0, Number(payload.durationMs) || 0);
+  document.body.style.setProperty('--dsh-pet-fullscreen-fade-duration', `${durationMs}ms`);
+  document.body.classList.toggle('dsh-pet-fullscreen-transition', payload.transitioning === true && durationMs > 0);
+  document.body.classList.toggle('dsh-pet-fullscreen-hidden', payload.hidden === true);
+
+  const transition = { id: payload.id, timer: null };
+  activeFullscreenTransition = transition;
+  const waitMs = payload.transitioning === true && durationMs > 0 ? durationMs + 80 : 0;
+  transition.timer = setTimeout(() => {
+    acknowledgeFullscreenTransition(payload.id);
+  }, waitMs);
+});
+
+document.body.addEventListener('transitionend', (event) => {
+  if (event.target === document.body && event.propertyName === 'opacity' && activeFullscreenTransition) {
+    acknowledgeFullscreenTransition(activeFullscreenTransition.id, 'transitionend');
+  }
+});
+
 // ---------- 配置（大声报错；失败 5s 重试） ----------
 function showError(message) {
   console.error('[dsh-pet] ' + message);

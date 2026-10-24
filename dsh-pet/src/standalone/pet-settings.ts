@@ -12,7 +12,13 @@
  * 样式沿用 DSH 主题 token；页面由独立应用的设置窗口加载。
  */
 import { flattenConfigPets, PET_DISPLAYS } from '../shared/config';
-import { SettingsCardHeader, SettingsHelp, SettingsPageHeader, SettingsPageTab, SettingsPageTabs } from './settings-components';
+import {
+  SettingsCardHeader,
+  SettingsHelp,
+  SettingsPageHeader,
+  SettingsPageTab,
+  SettingsPageTabs,
+} from './settings-components';
 import { applySettingsTheme, SETTINGS_COMPONENT_CSS } from './settings-style';
 import { DEFAULT_FONT, FONT_PRESETS, FONT_SIZE_MAX, FONT_SIZE_MIN, fontStackOf } from '../shared/fonts';
 import { NOTIFY_ICONS as NOTIFY_ICON_NAMES } from '../shared/notify';
@@ -32,8 +38,7 @@ import type * as ReactNS from 'react';
 import type { jsx } from 'react/jsx-runtime';
 
 type NotificationPermissionResult =
-  | { ok: true }
-  | { ok: false; reason: 'unsupported' | 'denied' | 'rejected' | 'error'; message?: string };
+  { ok: true } | { ok: false; reason: 'unsupported' | 'denied' | 'rejected' | 'error'; message?: string };
 
 async function requestNotificationPermission(): Promise<NotificationPermissionResult> {
   if (typeof Notification === 'undefined') return { ok: false, reason: 'unsupported' };
@@ -129,7 +134,8 @@ export const zh = {
   balanceEnabled: '余额功能',
   balanceEnabledHint: '启用后该宠物触发余额动画并显示余额气泡。',
   whisperEnabled: '碎碎念',
-  whisperEnabledHint: '启用后该宠物参加定时自动碎碎念；全局开关和间隔在独立 AI 设置页配置。右键菜单手动触发不受此项限制。',
+  whisperEnabledHint:
+    '启用后该宠物参加定时自动碎碎念；全局开关和间隔在独立 AI 设置页配置。右键菜单手动触发不受此项限制。',
   workStatusEnabled: '工作状态联动',
   workStatusEnabledHint:
     '启用后该宠物跟随 DSH 工作状态：思考/工作中/等待确认/完成/出错时自动切对应动画并弹气泡（动画池在配置顶层，仅监听不调用模型）。',
@@ -164,6 +170,18 @@ export const zh = {
   configMeta: '高级配置（文件）',
   configMetaHint:
     '用户配置可覆盖宠物列表 / 动画池 / 播放权重。手动修改后，使用桌宠右键菜单中的「重载配置」应用；默认配置为完整参考。',
+  migrationRecoveryTitle: '迁移异常备份',
+  migrationRecoveryHint:
+    '检测到一次配置迁移异常。异常发生前的整个桌宠数据目录已备份；可打开文件夹查看，或确认后恢复原配置。',
+  migrationRecoveryOpen: '打开原配置文件夹',
+  migrationRecoveryRestore: '还原原配置',
+  migrationRecoveryOpened: '已打开迁移备份文件夹。',
+  migrationRecoveryRestoring: '正在还原配置并退出桌宠…',
+  migrationRecoveryRestoreTitle: '确认还原原配置',
+  migrationRecoveryRestoreBody:
+    '这会将当前桌宠数据目录替换为异常发生前的备份，并立即退出桌宠进程。当前目录会先另存一份。若旧配置再次触发迁移异常，下次启动时程序可能再次恢复为安全默认配置。备份位置：{path}',
+  migrationRecoveryRestoreConfirm: '还原并退出',
+  migrationRecoveryError: '迁移配置操作失败：{error}',
   defaultConfig: '默认配置（只读，完整参考）',
   userConfig: '用户配置（自定义覆盖）',
   animationDir: '动画素材目录（可自定义/扩充动画）',
@@ -185,8 +203,7 @@ export const zh = {
   chatImageToggleHint:
     '对话时由 AI 按当前语境从表情包池挑一张配图（可不挑；图片映射在配置文件顶层 memes）。token：每条消息都要把整张清单附进请求，当前约 1.1k 字符（≈650 token，约碎碎念配图的 11 倍），并随图片数量线性增长；关掉则一个字符都不附。',
   confineToggle: '抛掷锁定在当前屏幕',
-  confineToggleHint:
-    '多屏用户：甩出去的宠物只在松手时所在那块屏幕内弹（屏缝当墙，不飞到隔壁屏）；关掉则照常跨屏飞行。',
+  confineToggleHint: '多屏用户：甩出去的宠物只在松手时所在那块屏幕内弹（屏缝当墙，不飞到隔壁屏）；关掉则照常跨屏飞行。',
   trayToggle: '系统托盘',
   trayToggleHint:
     '关闭后隐藏系统托盘图标。桌面仍有宠物时，可从桌宠右键菜单打开设置或退出；没有桌面宠物时会自动打开设置页，关闭设置页将退出应用。保存后生效。',
@@ -198,8 +215,7 @@ export const zh = {
   'displayPriority.hide-on-fullscreen-or-maximized': '全屏或最大化时自动隐藏',
   'displayPriority.normal': '不置顶',
   physicsTitle: '物理（拖拽抛掷手感）',
-  physicsHint:
-    '全局默认，所有宠物共用（pet pack 可在自己种类文件里单独覆盖）；点击「保存」后写入配置并重载桌宠窗口。',
+  physicsHint: '全局默认，所有宠物共用（pet pack 可在自己种类文件里单独覆盖）；点击「保存」后写入配置并重载桌宠窗口。',
   'physics.gravity': '重力 gravity',
   'physics.gravityHint': 'px/s²，越大落得越快；0 = 无重力（抛出去匀速直线飞）',
   'physics.restitution': '弹性 restitution',
@@ -274,7 +290,8 @@ export const en = {
   globalDefaultScope: 'Global default; overridable',
   appWideScope: 'App-wide',
   applicationTitle: 'Application',
-  globalHint: 'Notification and display settings apply to all pets; click Save Settings to apply them. Use each control to save settings under Application.',
+  globalHint:
+    'Notification and display settings apply to all pets; click Save Settings to apply them. Use each control to save settings under Application.',
   cornerHint:
     'Used on the first launch or when no saved position exists; later launches restore the last position. The right-click “Go home” action also returns here (primary display work area in desktop mode).',
   marginXHint: 'Horizontal offset (px) for the first-launch position and the right-click “Go home” position.',
@@ -295,7 +312,8 @@ export const en = {
   sizeLabel: 'Size (width px)',
   sizeHint: 'Height is automatic = width × 9/16.',
   personaLabel: 'Persona (optional)',
-  personaHint: 'Applies to this pet only. Leave empty to follow the entry persona; the name and current time are appended automatically.',
+  personaHint:
+    'Applies to this pet only. Leave empty to follow the entry persona; the name and current time are appended automatically.',
   nameLabel: 'Name',
   nameHint:
     'Shown on hover and added to AI personas ("your name is X"). Duplicates allowed; empty falls back to the pet id.',
@@ -325,8 +343,10 @@ export const en = {
   marginX: 'Horizontal offset',
   marginY: 'Vertical offset',
   save: 'Save settings',
-  saveHintPets: 'Save pet settings and any changed global settings, then apply them to the pets. Use the controls under Application to save those settings.',
-  saveHintGlobal: 'Save global settings and any changed pet settings, then apply them to the pets. Use the controls under Application to save those settings.',
+  saveHintPets:
+    'Save pet settings and any changed global settings, then apply them to the pets. Use the controls under Application to save those settings.',
+  saveHintGlobal:
+    'Save global settings and any changed pet settings, then apply them to the pets. Use the controls under Application to save those settings.',
   sync: 'Restore defaults',
   confirmSync:
     'Restore the default configuration? This overwrites the user config with the bundled defaults and removes current customizations.',
@@ -393,7 +413,8 @@ export const en = {
   invalidPhysics: 'Check the physics values: gravity / ground friction ≥ 0, bounciness 0–1, throw power > 0.',
   fontTitle: 'Appearance & font',
   uiThemeLabel: 'Theme',
-  uiThemeHint: 'Controls the settings interface and pet context menu. System follows the Windows appearance. Save to apply.',
+  uiThemeHint:
+    'Controls the settings interface and pet context menu. System follows the Windows appearance. Save to apply.',
   'uiTheme.system': 'System',
   'uiTheme.light': 'Light',
   'uiTheme.dark': 'Dark',
@@ -431,7 +452,8 @@ export const en = {
     'Quit the app from the DSH Pet system tray menu. Deleting user data removes config, chat memory, and custom assets.',
   'storage.userData':
     'Plugin user data: custom config main-config.jsonc, chat memory memory.json, custom animation assets main-animation/, file pets pet/',
-  'storage.electron': 'Electron runtime used by the desktop pet (large; re-downloaded automatically the next time the app starts)',
+  'storage.electron':
+    'Electron runtime used by the desktop pet (large; re-downloaded automatically the next time the app starts)',
   'storage.desktopCache':
     'Desktop pet window cache and primary-monitor scale cache (safe to delete, rebuilt automatically)',
   'storage.electronCache': 'Electron installer download cache (safe to delete, re-downloaded when needed)',
@@ -715,7 +737,8 @@ export function makePetConfigSection(rt: {
 
   return function PetConfigSection() {
     const initPets = petBridge.current.filter((p) => !p.extra);
-    const standaloneAiUrl = (window as Window & { DSH_PET_AI_SETTINGS_URL?: string }).DSH_PET_AI_SETTINGS_URL ?? '/standalone-ai/';
+    const standaloneAiUrl =
+      (window as Window & { DSH_PET_AI_SETTINGS_URL?: string }).DSH_PET_AI_SETTINGS_URL ?? '/standalone-ai/';
     const initialTab = new URLSearchParams(window.location.search).get('tab') === 'system' ? 'system' : 'pets';
     const [activeTab, setActiveTab] = useState<'pets' | 'system'>(initialTab);
     const [visiblePetCount, setVisiblePetCount] = useState(5);
@@ -729,9 +752,9 @@ export function makePetConfigSection(rt: {
     const [saving, setBusy] = useState(false);
     const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
     const [loadAttempt, setLoadAttempt] = useState(0);
-    const [standaloneWhisperState, setStandaloneWhisperState] = useState<'loading' | 'enabled' | 'disabled' | 'unavailable'>(
-      'loading',
-    );
+    const [standaloneWhisperState, setStandaloneWhisperState] = useState<
+      'loading' | 'enabled' | 'disabled' | 'unavailable'
+    >('loading');
     const busy = saving || loadState !== 'ready';
     const [msg, setMsg] = useState<{ kind: 'ok' | 'err' | ''; text: string }>({ kind: '', text: '' });
     // 确认/提示弹窗（仿官方弹窗：遮罩 + 居中卡片 + 按钮）：
@@ -742,7 +765,12 @@ export function makePetConfigSection(rt: {
     //   sync    —— 同步（说明会用内置默认整份覆盖）
     //   corrupt —— 保存时发现用户配置**已损坏**（解析不了）：取消 = 不动文件，确认 = 强行白名单重建
     const [dialog, setDialog] = useState<
-      null | { kind: 'remove'; petId: string } | { kind: 'lastOne' } | { kind: 'sync' } | { kind: 'corrupt'; path: string }
+      | null
+      | { kind: 'remove'; petId: string }
+      | { kind: 'lastOne' }
+      | { kind: 'sync' }
+      | { kind: 'corrupt'; path: string }
+      | { kind: 'restoreMigration' }
     >(null);
 
     useEffect(() => {
@@ -800,12 +828,58 @@ export function makePetConfigSection(rt: {
       /** 插件落盘的全部位置（路径 + 是否已存在），host 按平台推导 */
       storage?: Array<{ key: string; path: string; exists?: boolean }>;
     }>(null);
+    const [migrationRecovery, setMigrationRecovery] = useState<null | {
+      backupDirectory: string;
+      fileCount: number;
+      totalBytes: number;
+    }>(null);
+    const [migrationRecoveryBusy, setMigrationRecoveryBusy] = useState(false);
     useEffect(() => {
       fetch('/dsh-pet-7340/config/meta')
         .then((r) => (r.ok ? r.json() : null))
         .then((p) => setPaths(p))
         .catch(() => console.warn('[dsh-pet] 读取配置文件路径失败'));
+      fetch('/dsh-pet-7340/migration-recovery', { cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((result) => {
+          if (result?.available === true && typeof result.backupDirectory === 'string') {
+            setMigrationRecovery({
+              backupDirectory: result.backupDirectory,
+              fileCount: Number(result.fileCount) || 0,
+              totalBytes: Number(result.totalBytes) || 0,
+            });
+          }
+        })
+        .catch(() => {});
     }, []);
+
+    const openMigrationBackup = async (): Promise<void> => {
+      setMigrationRecoveryBusy(true);
+      try {
+        const response = await fetch('/dsh-pet-7340/migration-recovery/open', { method: 'POST' });
+        const result = (await response.json()) as { error?: unknown };
+        if (!response.ok) throw new Error(String(result.error ?? response.status));
+        setMsg({ kind: 'ok', text: t('migrationRecoveryOpened') });
+      } catch (error) {
+        setMsg({ kind: 'err', text: t('migrationRecoveryError').replace('{error}', String(error)) });
+      } finally {
+        setMigrationRecoveryBusy(false);
+      }
+    };
+
+    const restoreOriginalMigrationBackup = async (): Promise<void> => {
+      setMigrationRecoveryBusy(true);
+      try {
+        const response = await fetch('/dsh-pet-7340/migration-recovery/restore', { method: 'POST' });
+        const result = (await response.json()) as { error?: unknown };
+        if (!response.ok) throw new Error(String(result.error ?? response.status));
+        setMsg({ kind: 'ok', text: t('migrationRecoveryRestoring') });
+      } catch (error) {
+        setMsg({ kind: 'err', text: t('migrationRecoveryError').replace('{error}', String(error)) });
+      } finally {
+        setMigrationRecoveryBusy(false);
+      }
+    };
 
     // 系统通知总开关（全局：写用户级配置 main-config.jsonc 的 notificationsEnabled）。
     // 与其余三个全局开关**完全同构**：切换只改本地 UI 状态，随「保存」一起整包写入。
@@ -898,7 +972,6 @@ export function makePetConfigSection(rt: {
       };
     }, [applyConfig, loadAttempt]);
 
-
     // 切换系统通知：与配图/抛掷锁定开关同构——只改本地状态（开启时顺带借这次用户手势申请权限），
     // 配置在点「保存」时整包写入；通知配置由桌面宿主处理。
     const toggleNotify = async (v: boolean) => {
@@ -940,7 +1013,10 @@ export function makePetConfigSection(rt: {
     };
 
     // position 子字段整体替换；新宠物草稿保存在列表之外，直到单独保存成功。
-    const updatePet = (petId: string, patch: Partial<Omit<Pet, 'position'>> & { position?: Partial<Pet['position']> }) => {
+    const updatePet = (
+      petId: string,
+      patch: Partial<Omit<Pet, 'position'>> & { position?: Partial<Pet['position']> },
+    ) => {
       const update = (p: Pet): Pet => {
         const { position: posPatch, ...rest } = patch;
         return { ...p, ...rest, position: posPatch ? { ...p.position, ...posPatch } : p.position };
@@ -1171,20 +1247,28 @@ export function makePetConfigSection(rt: {
             actions: isDraft
               ? [
                   h('button', {
-                    key: 'cancel', type: 'button', disabled: busy,
-                    onClick: () => { setDraftPet(null); setSelId(pets[0]?.id ?? ''); },
+                    key: 'cancel',
+                    type: 'button',
+                    disabled: busy,
+                    onClick: () => {
+                      setDraftPet(null);
+                      setSelId(pets[0]?.id ?? '');
+                    },
                     className: 'dsh-pet-cfg__btn is-sm',
                     children: t('cancelAddPet'),
                   }),
                   h('button', {
-                    key: 'save', type: 'button', disabled: busy,
+                    key: 'save',
+                    type: 'button',
+                    disabled: busy,
                     onClick: () => void saveNewPet(),
                     className: 'dsh-pet-cfg__btn is-primary is-sm',
                     children: busy ? t('busy') : t('savePet'),
                   }),
                 ]
               : h('button', {
-                  type: 'button', disabled: busy,
+                  type: 'button',
+                  disabled: busy,
                   onClick: () => removeSel(pet.id),
                   className: 'dsh-pet-cfg__btn is-danger is-sm',
                   children: t('remove'),
@@ -1193,46 +1277,96 @@ export function makePetConfigSection(rt: {
           h('div', {
             className: 'dsh-pet-cfg__grid3',
             children: [
-              field(t('nameLabel'), h('input', {
-                type: 'text', className: inputClass, value: String(pet.name ?? ''), disabled: busy,
-                maxLength: 50, onChange: (e: ChangeEvent<HTMLInputElement>) => update({ name: e.target.value }),
-              }), t('nameHint')),
-              field(t('sizeLabel'), numInput('size', pet.size, (v) => update({ size: v })), t('sizeHint')),
-              field(t('displayLabel'), h(ConfigSelect, {
-                label: t('displayLabel'), value: pet.display, fontFamily: appliedFontFamily, disabled: busy,
-                options: displayOptions.map((d) => ({ value: d, label: t('display.' + d) })),
-                onChange: (value: string) => update({ display: value as PetDisplay }),
-              }), t('displayHint'), true),
+              field(
+                t('nameLabel'),
+                h('input', {
+                  type: 'text',
+                  className: inputClass,
+                  value: String(pet.name ?? ''),
+                  disabled: busy,
+                  maxLength: 50,
+                  onChange: (e: ChangeEvent<HTMLInputElement>) => update({ name: e.target.value }),
+                }),
+                t('nameHint'),
+              ),
+              field(
+                t('sizeLabel'),
+                numInput('size', pet.size, (v) => update({ size: v })),
+                t('sizeHint'),
+              ),
+              field(
+                t('displayLabel'),
+                h(ConfigSelect, {
+                  label: t('displayLabel'),
+                  value: pet.display,
+                  fontFamily: appliedFontFamily,
+                  disabled: busy,
+                  options: displayOptions.map((d) => ({ value: d, label: t('display.' + d) })),
+                  onChange: (value: string) => update({ display: value as PetDisplay }),
+                }),
+                t('displayHint'),
+                true,
+              ),
             ],
           }),
           h('div', {
             className: 'dsh-pet-cfg__grid3',
             children: [
-              field(t('cornerLabel'), h(ConfigSelect, {
-                label: t('cornerLabel'), value: pet.position.corner, fontFamily: appliedFontFamily, disabled: busy,
-                options: CORNERS.map((c) => ({ value: c, label: cornerLabel(c) })),
-                onChange: (value: string) => update({ position: { corner: value as Corner } }),
-              }), t('cornerHint')),
-              field(t('marginX'), numInput('marginX', pet.position.marginX, (v) => update({ position: { marginX: v } })), t('marginXHint')),
-              field(t('marginY'), numInput('marginY', pet.position.marginY, (v) => update({ position: { marginY: v } })), t('marginYHint'), true),
+              field(
+                t('cornerLabel'),
+                h(ConfigSelect, {
+                  label: t('cornerLabel'),
+                  value: pet.position.corner,
+                  fontFamily: appliedFontFamily,
+                  disabled: busy,
+                  options: CORNERS.map((c) => ({ value: c, label: cornerLabel(c) })),
+                  onChange: (value: string) => update({ position: { corner: value as Corner } }),
+                }),
+                t('cornerHint'),
+              ),
+              field(
+                t('marginX'),
+                numInput('marginX', pet.position.marginX, (v) => update({ position: { marginX: v } })),
+                t('marginXHint'),
+              ),
+              field(
+                t('marginY'),
+                numInput('marginY', pet.position.marginY, (v) => update({ position: { marginY: v } })),
+                t('marginYHint'),
+                true,
+              ),
             ],
           }),
           h('div', {
             className: 'dsh-pet-cfg__grid5',
             children: [
               toggleCell('balanceEnabled', !!pet.balanceEnabled, busy, (v) => update({ balanceEnabled: v })),
-              toggleCell('whisperEnabled', !!pet.whisperEnabled, busy || standaloneWhisperState !== 'enabled',
-                (v) => update({ whisperEnabled: v }), false, whisperToggleHint),
+              toggleCell(
+                'whisperEnabled',
+                !!pet.whisperEnabled,
+                busy || standaloneWhisperState !== 'enabled',
+                (v) => update({ whisperEnabled: v }),
+                false,
+                whisperToggleHint,
+              ),
               toggleCell('workStatusEnabled', !!pet.workStatusEnabled, busy, (v) => update({ workStatusEnabled: v })),
               toggleCell('fixedEnabled', !!pet.fixedEnabled, busy, (v) => update({ fixedEnabled: v }), true),
               toggleCell('horizontalOnly', !!pet.horizontalOnly, busy, (v) => update({ horizontalOnly: v }), true),
             ],
           }),
-          field(t('personaLabel'), h('textarea', {
-            className: inputClass, rows: 3, value: pet.whisperPrompt ?? '',
-            placeholder: entryPrompt, disabled: busy, style: { resize: 'vertical', minHeight: '88px' },
-            onChange: (e: ChangeEvent<HTMLTextAreaElement>) => update({ whisperPrompt: e.target.value }),
-          }), t('personaHint')),
+          field(
+            t('personaLabel'),
+            h('textarea', {
+              className: inputClass,
+              rows: 3,
+              value: pet.whisperPrompt ?? '',
+              placeholder: entryPrompt,
+              disabled: busy,
+              style: { resize: 'vertical', minHeight: '88px' },
+              onChange: (e: ChangeEvent<HTMLTextAreaElement>) => update({ whisperPrompt: e.target.value }),
+            }),
+            t('personaHint'),
+          ),
           standaloneWhisperState !== 'enabled'
             ? h('p', { className: 'dsh-pet-cfg__note', children: whisperToggleHint })
             : null,
@@ -1246,20 +1380,25 @@ export function makePetConfigSection(rt: {
       children: [
         h(SettingsPageHeader, {
           title: t('nav'),
-          help: extraCount > 0
-            ? t('intro') + '\n' + t('extraPetsHint').replace('{n}', String(extraCount))
-            : t('intro'),
+          help: extraCount > 0 ? t('intro') + '\n' + t('extraPetsHint').replace('{n}', String(extraCount)) : t('intro'),
           actions: [
             h('button', {
-              key: 'sync', type: 'button', disabled: busy,
+              key: 'sync',
+              type: 'button',
+              disabled: busy,
               style: { display: activeTab === 'system' ? undefined : 'none' },
-              onClick: sync, className: 'dsh-pet-cfg__btn is-danger', children: t('sync'),
+              onClick: sync,
+              className: 'dsh-pet-cfg__btn is-danger',
+              children: t('sync'),
             }),
             activeTab === 'system' ? q(t('syncHint'), false, 'sync-help') : null,
             h('button', {
-              key: 'test-notification', type: 'button',
+              key: 'test-notification',
+              type: 'button',
               style: { display: activeTab === 'system' ? undefined : 'none' },
-              onClick: () => void testNotification(), className: 'dsh-pet-cfg__btn', children: t('notifyTest'),
+              onClick: () => void testNotification(),
+              className: 'dsh-pet-cfg__btn',
+              children: t('notifyTest'),
             }),
             permMsg.text
               ? h('span', {
@@ -1276,8 +1415,11 @@ export function makePetConfigSection(rt: {
                 })
               : null,
             h('button', {
-              key: 'save', type: 'button', disabled: busy,
-              onClick: () => void save(), className: 'dsh-pet-cfg__btn is-primary',
+              key: 'save',
+              type: 'button',
+              disabled: busy,
+              onClick: () => void save(),
+              className: 'dsh-pet-cfg__btn is-primary',
               children: busy ? t('busy') : t('save'),
             }),
             q(t(activeTab === 'system' ? 'saveHintGlobal' : 'saveHintPets'), true, 'save-help'),
@@ -1287,11 +1429,15 @@ export function makePetConfigSection(rt: {
         h(SettingsPageTabs, {
           children: [
             h(SettingsPageTab, {
-              key: 'pets', label: t('petSettingsList'), active: activeTab === 'pets',
+              key: 'pets',
+              label: t('petSettingsList'),
+              active: activeTab === 'pets',
               onClick: () => setActiveTab('pets'),
             }),
             h(SettingsPageTab, {
-              key: 'system', label: t('globalSettingsList'), active: activeTab === 'system',
+              key: 'system',
+              label: t('globalSettingsList'),
+              active: activeTab === 'system',
               onClick: () => setActiveTab('system'),
             }),
             h(SettingsPageTab, { key: 'ai', label: '独立 AI 设置', href: standaloneAiUrl }),
@@ -1323,34 +1469,41 @@ export function makePetConfigSection(rt: {
           className: 'dsh-pet-cfg__settingsSection',
           style: { display: activeTab === 'pets' ? 'flex' : 'none' },
           children: [
-        h('div', {
-          className: 'dsh-pet-cfg__petList',
-          children: [
-            ...pets.slice(0, visiblePetCount).map((p) => renderPetCard(p)),
-            pets.length > visiblePetCount
-              ? h('button', {
-                  key: 'more', type: 'button', disabled: busy,
-                  className: 'dsh-pet-cfg__morePets',
-                  onClick: () => setVisiblePetCount((count) => count + 5),
-                  children: t('showMorePets').replace('{n}', String(pets.length - visiblePetCount)),
-                })
-              : visiblePetCount > 5
-                ? h('button', {
-                    key: 'collapse', type: 'button', disabled: busy,
-                    className: 'dsh-pet-cfg__morePets',
-                    onClick: () => setVisiblePetCount(5),
-                    children: t('collapsePets'),
-                  })
-                : null,
-            h('button', {
-              key: 'add-card', type: 'button', disabled: busy || draftPet !== null,
-              className: 'dsh-pet-cfg__addPetCard', onClick: addPet,
-              children: t('addPetCard'),
+            h('div', {
+              className: 'dsh-pet-cfg__petList',
+              children: [
+                ...pets.slice(0, visiblePetCount).map((p) => renderPetCard(p)),
+                pets.length > visiblePetCount
+                  ? h('button', {
+                      key: 'more',
+                      type: 'button',
+                      disabled: busy,
+                      className: 'dsh-pet-cfg__morePets',
+                      onClick: () => setVisiblePetCount((count) => count + 5),
+                      children: t('showMorePets').replace('{n}', String(pets.length - visiblePetCount)),
+                    })
+                  : visiblePetCount > 5
+                    ? h('button', {
+                        key: 'collapse',
+                        type: 'button',
+                        disabled: busy,
+                        className: 'dsh-pet-cfg__morePets',
+                        onClick: () => setVisiblePetCount(5),
+                        children: t('collapsePets'),
+                      })
+                    : null,
+                h('button', {
+                  key: 'add-card',
+                  type: 'button',
+                  disabled: busy || draftPet !== null,
+                  className: 'dsh-pet-cfg__addPetCard',
+                  onClick: addPet,
+                  children: t('addPetCard'),
+                }),
+              ],
             }),
-          ],
-        }),
 
-        draftPet ? renderPetCard(draftPet, true) : null,
+            draftPet ? renderPetCard(draftPet, true) : null,
           ],
         }),
 
@@ -1358,217 +1511,252 @@ export function makePetConfigSection(rt: {
           className: 'dsh-pet-cfg__settingsSection',
           style: { display: activeTab === 'system' ? 'flex' : 'none' },
           children: [
-        // 全局开关分三列：通知与配图占首行，桌面/应用行为设置排在次行，避免托盘开关单独落行。
-        // 四个开关行为**一致**：切换只改本地状态，随「保存」整包写入用户级配置——不做即时写入
-        // （即时写盘会触发宿主重启桌面 Helper，把全部桌面宠物窗口重建一遍）。系统通知额外在保存后
-        // 系统通知由桌面宿主处理。
-        // 「测试弹窗」按钮不在这里——它是个动作，跟「保存 / 同步」同一行（见下面的操作区）。
-        h('div', {
-          className: 'dsh-pet-cfg__card',
-          children: [
-            cardHead(t('globalControlsTitle'), t('globalHint'), false, t('allPetsScope')),
+            // 全局开关分三列：通知与配图占首行，桌面/应用行为设置排在次行，避免托盘开关单独落行。
+            // 四个开关行为**一致**：切换只改本地状态，随「保存」整包写入用户级配置——不做即时写入
+            // （即时写盘会触发宿主重启桌面 Helper，把全部桌面宠物窗口重建一遍）。系统通知额外在保存后
+            // 系统通知由桌面宿主处理。
+            // 「测试弹窗」按钮不在这里——它是个动作，跟「保存 / 同步」同一行（见下面的操作区）。
             h('div', {
-              className: 'dsh-pet-cfg__globalToggles',
+              className: 'dsh-pet-cfg__card',
               children: [
-                toggleCell('notifyToggle', notifyEnabled, busy, (v) => void toggleNotify(v)),
-                toggleCell('whisperImageToggle', whisperImage, busy, setWhisperImage),
-                toggleCell('chatImageToggle', chatImage, busy, setChatImage),
-                toggleCell('confineToggle', confineScreen, busy, setConfineScreen, true),
-                toggleCell('trayToggle', trayEnabled, busy, setTrayEnabled),
-              ],
-            }),
-            h('div', {
-              className: 'dsh-pet-cfg__grid2',
-              children: [
-                field(
-                  t('displayPriorityLabel'),
-                  h(ConfigSelect, {
-                    label: t('displayPriorityLabel'),
-                    value: displayPriority,
-                    fontFamily: appliedFontFamily,
-                    disabled: busy,
-                    options: (
-                      [
-                        'always-on-top',
-                        'hide-on-fullscreen',
-                        'hide-on-fullscreen-or-maximized',
-                        'normal',
-                      ] as PetDisplayPriority[]
-                    ).map(
-                      (value) => ({
-                        value,
-                        label: t('displayPriority.' + value),
-                      }),
-                    ),
-                    onChange: (value: string) => setDisplayPriority(value as PetDisplayPriority),
-                  }),
-                  t('displayPriorityHint'),
-                ),
-              ],
-            }),
-            rt.standaloneAddon
-              ? h('div', {
-                  className: 'dsh-pet-cfg__subsection',
+                cardHead(t('globalControlsTitle'), t('globalHint'), false, t('allPetsScope')),
+                h('div', {
+                  className: 'dsh-pet-cfg__globalToggles',
                   children: [
-                    cardHead(t('applicationTitle'), undefined, false, t('appWideScope')),
-                    rt.standaloneAddon,
+                    toggleCell('notifyToggle', notifyEnabled, busy, (v) => void toggleNotify(v)),
+                    toggleCell('whisperImageToggle', whisperImage, busy, setWhisperImage),
+                    toggleCell('chatImageToggle', chatImage, busy, setChatImage),
+                    toggleCell('confineToggle', confineScreen, busy, setConfineScreen, true),
+                    toggleCell('trayToggle', trayEnabled, busy, setTrayEnabled),
+                  ],
+                }),
+                h('div', {
+                  className: 'dsh-pet-cfg__grid2',
+                  children: [
+                    field(
+                      t('displayPriorityLabel'),
+                      h(ConfigSelect, {
+                        label: t('displayPriorityLabel'),
+                        value: displayPriority,
+                        fontFamily: appliedFontFamily,
+                        disabled: busy,
+                        options: (
+                          [
+                            'always-on-top',
+                            'hide-on-fullscreen',
+                            'hide-on-fullscreen-or-maximized',
+                            'normal',
+                          ] as PetDisplayPriority[]
+                        ).map((value) => ({
+                          value,
+                          label: t('displayPriority.' + value),
+                        })),
+                        onChange: (value: string) => setDisplayPriority(value as PetDisplayPriority),
+                      }),
+                      t('displayPriorityHint'),
+                    ),
+                  ],
+                }),
+                rt.standaloneAddon
+                  ? h('div', {
+                      className: 'dsh-pet-cfg__subsection',
+                      children: [
+                        cardHead(t('applicationTitle'), undefined, false, t('appWideScope')),
+                        rt.standaloneAddon,
+                      ],
+                    })
+                  : null,
+              ],
+            }),
+
+            // 外观与字体卡：字体种类 + 字号 + 是否随宠物缩放（全局默认，与全局开关 / physics 同语义——
+            // 只改本地状态，随「保存」整包写入用户配置；不做即时写入）。
+            // 字体种类的作用范围 = 现在用软糖体的全部地方（气泡 / 悬浮提示 / 对话窗 / 得分弹窗）；
+            // 字号**只**作用于气泡与悬浮提示（对话窗与得分弹窗的字号不随本项变，故不在此列）。
+            h('div', {
+              className: 'dsh-pet-cfg__card',
+              children: [
+                cardHead(t('fontTitle'), t('fontHint'), false, t('globalDefaultScope')),
+                h('div', {
+                  className: 'dsh-pet-cfg__grid2',
+                  children: [
+                    field(
+                      t('uiThemeLabel'),
+                      h(ConfigSelect, {
+                        label: t('uiThemeLabel'),
+                        value: uiTheme,
+                        fontFamily: appliedFontFamily,
+                        options: (['system', 'light', 'dark'] as UiTheme[]).map((value) => ({
+                          value,
+                          label: t('uiTheme.' + value),
+                        })),
+                        disabled: busy,
+                        onChange: (value: string) => {
+                          const next = value as UiTheme;
+                          setUiTheme(next);
+                          applySettingsTheme(next);
+                        },
+                      }),
+                      t('uiThemeHint'),
+                    ),
+                    field(
+                      t('fontFamilyLabel'),
+                      h(ConfigSelect, {
+                        label: t('fontFamilyLabel'),
+                        value: font.family,
+                        fontFamily: appliedFontFamily,
+                        options: FONT_PRESETS.map((p) => ({ value: p.id, label: t('font.' + p.id) })),
+                        disabled: busy,
+                        onChange: (value: string) => setFont((f) => ({ ...f, family: value as FontFamilyId })),
+                      }),
+                      t('fontFamilyHint'),
+                    ),
+                    field(
+                      t('fontSizeLabel'),
+                      h('input', {
+                        type: 'number',
+                        className: inputClass,
+                        step: '1',
+                        min: String(FONT_SIZE_MIN),
+                        max: String(FONT_SIZE_MAX),
+                        value: String(font.size),
+                        disabled: busy,
+                        onChange: (e: ChangeEvent<HTMLInputElement>) =>
+                          setFont((f) => ({ ...f, size: Number(e.target.value) })),
+                      }),
+                      t('fontSizeHint'),
+                      true,
+                    ),
+                  ],
+                }),
+                h('div', {
+                  className: 'dsh-pet-cfg__grid2',
+                  children: [
+                    toggleCell('fontFollowToggle', font.followPet, busy, (v) =>
+                      setFont((f) => ({ ...f, followPet: v })),
+                    ),
+                  ],
+                }),
+              ],
+            }),
+
+            // 物理卡（需求 6）：四个数字输入一行 + 两个开关一行。
+            // 与上面四个开关同一套语义（只改本地状态，随「保存」整包写入；不做即时写入）。
+            // 保存触发的 Helper 重启后重新读取——physics 在 sprite 构造时只读一次。
+            h('div', {
+              className: 'dsh-pet-cfg__card',
+              children: [
+                cardHead(t('physicsTitle'), t('physicsHint'), false, t('globalDefaultScope')),
+                h('div', {
+                  className: 'dsh-pet-cfg__grid4',
+                  children: [
+                    physField('gravity', '50', '0'),
+                    physField('restitution', '0.01', '0'),
+                    physField('groundFriction', '0.1', '0'),
+                    physField('throwPower', '0.05', '0.05', true),
+                  ],
+                }),
+                h('div', {
+                  className: 'dsh-pet-cfg__grid2',
+                  children: [
+                    toggleCell('physicsCeilingBounce', physics.ceilingBounce, busy, (v) =>
+                      setPhysics((p) => ({ ...p, ceilingBounce: v })),
+                    ),
+                    toggleCell(
+                      'physicsPetCollision',
+                      physics.petCollision,
+                      busy,
+                      (v) => setPhysics((p) => ({ ...p, petCollision: v })),
+                      true,
+                    ),
+                  ],
+                }),
+              ],
+            }),
+
+            // 高级配置（文件地址）：供高级用户直接编辑配置文件自定义；说明收进问号
+            paths
+              ? h('div', {
+                  className: 'dsh-pet-cfg__card',
+                  children: [
+                    cardHead(t('configMeta'), t('configMetaHint')),
+                    h('div', { className: 'dsh-pet-cfg__path', children: t('defaultConfig') + '：' + paths.default }),
+                    h('div', { className: 'dsh-pet-cfg__path', children: t('userConfig') + '：' + paths.user }),
+                    h('div', { className: 'dsh-pet-cfg__path', children: t('animationDir') + '：' + paths.animations }),
+                    paths.memes
+                      ? h('div', { className: 'dsh-pet-cfg__path', children: t('memesDir') + '：' + paths.memes })
+                      : null,
+                  ],
+                })
+              : null,
+
+            migrationRecovery
+              ? h('div', {
+                  className: 'dsh-pet-cfg__card',
+                  children: [
+                    cardHead(t('migrationRecoveryTitle'), t('migrationRecoveryHint')),
+                    h('div', {
+                      className: 'dsh-pet-cfg__path',
+                      children: `备份包含 ${migrationRecovery.fileCount} 个文件，共 ${migrationRecovery.totalBytes.toLocaleString()} 字节：${migrationRecovery.backupDirectory}`,
+                    }),
+                    h('div', {
+                      className: 'dsh-pet-cfg__actions',
+                      children: [
+                        h('button', {
+                          key: 'open-migration-backup',
+                          type: 'button',
+                          disabled: migrationRecoveryBusy,
+                          className: 'dsh-pet-cfg__btn',
+                          onClick: () => void openMigrationBackup(),
+                          children: t('migrationRecoveryOpen'),
+                        }),
+                        h('button', {
+                          key: 'restore-migration-backup',
+                          type: 'button',
+                          disabled: migrationRecoveryBusy,
+                          className: 'dsh-pet-cfg__btn is-danger',
+                          onClick: () => setDialog({ kind: 'restoreMigration' }),
+                          children: t('migrationRecoveryRestore'),
+                        }),
+                      ],
+                    }),
+                  ],
+                })
+              : null,
+
+            // 卸载与存储：先列出插件落盘的全部位置（路径在前、作用在后），再给出卸载方法；说明收进问号
+            paths && paths.storage && paths.storage.length > 0
+              ? h('div', {
+                  className: 'dsh-pet-cfg__card',
+                  children: [
+                    cardHead(t('standaloneStorageTitle'), t('standaloneStorageHint')),
+                    // 存储位置清单：每条都是「路径（可选中复制）→ 作用」；路径也沿用应用字体
+                    ...paths.storage
+                      .filter((s) => s.key === 'userData' || s.key === 'desktopCache')
+                      .map((s) =>
+                        h('div', {
+                          key: s.key,
+                          className: 'dsh-pet-cfg__path',
+                          children: [
+                            h('b', { key: 'p', children: s.path }),
+                            // 尚未产生的目录（如从未启用桌面模式的 Electron）标一下，避免用户去找不存在的文件夹
+                            h('span', {
+                              key: 'd',
+                              children: ' — ' + t('storage.' + s.key) + (s.exists === false ? t('storageMissing') : ''),
+                            }),
+                          ],
+                        }),
+                      ),
+                    h('div', {
+                      key: 'standalone-note',
+                      className: 'dsh-pet-cfg__note',
+                      children: t('standaloneStorageNote'),
+                    }),
                   ],
                 })
               : null,
           ],
         }),
-
-        // 外观与字体卡：字体种类 + 字号 + 是否随宠物缩放（全局默认，与全局开关 / physics 同语义——
-        // 只改本地状态，随「保存」整包写入用户配置；不做即时写入）。
-        // 字体种类的作用范围 = 现在用软糖体的全部地方（气泡 / 悬浮提示 / 对话窗 / 得分弹窗）；
-        // 字号**只**作用于气泡与悬浮提示（对话窗与得分弹窗的字号不随本项变，故不在此列）。
-        h('div', {
-          className: 'dsh-pet-cfg__card',
-          children: [
-            cardHead(t('fontTitle'), t('fontHint'), false, t('globalDefaultScope')),
-            h('div', {
-              className: 'dsh-pet-cfg__grid2',
-              children: [
-                field(
-                  t('uiThemeLabel'),
-                  h(ConfigSelect, {
-                    label: t('uiThemeLabel'),
-                    value: uiTheme,
-                    fontFamily: appliedFontFamily,
-                    options: (['system', 'light', 'dark'] as UiTheme[]).map((value) => ({
-                      value,
-                      label: t('uiTheme.' + value),
-                    })),
-                    disabled: busy,
-                    onChange: (value: string) => {
-                      const next = value as UiTheme;
-                      setUiTheme(next);
-                      applySettingsTheme(next);
-                    },
-                  }),
-                  t('uiThemeHint'),
-                ),
-                field(
-                  t('fontFamilyLabel'),
-                  h(ConfigSelect, {
-                    label: t('fontFamilyLabel'),
-                    value: font.family,
-                    fontFamily: appliedFontFamily,
-                    options: FONT_PRESETS.map((p) => ({ value: p.id, label: t('font.' + p.id) })),
-                    disabled: busy,
-                    onChange: (value: string) => setFont((f) => ({ ...f, family: value as FontFamilyId })),
-                  }),
-                  t('fontFamilyHint'),
-                ),
-                field(
-                  t('fontSizeLabel'),
-                  h('input', {
-                    type: 'number',
-                    className: inputClass,
-                    step: '1',
-                    min: String(FONT_SIZE_MIN),
-                    max: String(FONT_SIZE_MAX),
-                    value: String(font.size),
-                    disabled: busy,
-                    onChange: (e: ChangeEvent<HTMLInputElement>) =>
-                      setFont((f) => ({ ...f, size: Number(e.target.value) })),
-                  }),
-                  t('fontSizeHint'),
-                  true,
-                ),
-              ],
-            }),
-            h('div', {
-              className: 'dsh-pet-cfg__grid2',
-              children: [
-                toggleCell('fontFollowToggle', font.followPet, busy, (v) => setFont((f) => ({ ...f, followPet: v }))),
-              ],
-            }),
-          ],
-        }),
-
-        // 物理卡（需求 6）：四个数字输入一行 + 两个开关一行。
-        // 与上面四个开关同一套语义（只改本地状态，随「保存」整包写入；不做即时写入）。
-        // 保存触发的 Helper 重启后重新读取——physics 在 sprite 构造时只读一次。
-        h('div', {
-          className: 'dsh-pet-cfg__card',
-          children: [
-            cardHead(t('physicsTitle'), t('physicsHint'), false, t('globalDefaultScope')),
-            h('div', {
-              className: 'dsh-pet-cfg__grid4',
-              children: [
-                physField('gravity', '50', '0'),
-                physField('restitution', '0.01', '0'),
-                physField('groundFriction', '0.1', '0'),
-                physField('throwPower', '0.05', '0.05', true),
-              ],
-            }),
-            h('div', {
-              className: 'dsh-pet-cfg__grid2',
-              children: [
-                toggleCell('physicsCeilingBounce', physics.ceilingBounce, busy, (v) =>
-                  setPhysics((p) => ({ ...p, ceilingBounce: v })),
-                ),
-                toggleCell(
-                  'physicsPetCollision',
-                  physics.petCollision,
-                  busy,
-                  (v) => setPhysics((p) => ({ ...p, petCollision: v })),
-                  true,
-                ),
-              ],
-            }),
-          ],
-        }),
-
-        // 高级配置（文件地址）：供高级用户直接编辑配置文件自定义；说明收进问号
-        paths
-          ? h('div', {
-              className: 'dsh-pet-cfg__card',
-              children: [
-                cardHead(t('configMeta'), t('configMetaHint')),
-                h('div', { className: 'dsh-pet-cfg__path', children: t('defaultConfig') + '：' + paths.default }),
-                h('div', { className: 'dsh-pet-cfg__path', children: t('userConfig') + '：' + paths.user }),
-                h('div', { className: 'dsh-pet-cfg__path', children: t('animationDir') + '：' + paths.animations }),
-                paths.memes
-                  ? h('div', { className: 'dsh-pet-cfg__path', children: t('memesDir') + '：' + paths.memes })
-                  : null,
-              ],
-            })
-          : null,
-
-        // 卸载与存储：先列出插件落盘的全部位置（路径在前、作用在后），再给出卸载方法；说明收进问号
-        paths && paths.storage && paths.storage.length > 0
-          ? h('div', {
-              className: 'dsh-pet-cfg__card',
-              children: [
-                cardHead(t('standaloneStorageTitle'), t('standaloneStorageHint')),
-                // 存储位置清单：每条都是「路径（可选中复制）→ 作用」；路径也沿用应用字体
-                ...paths.storage
-                  .filter((s) => s.key === 'userData' || s.key === 'desktopCache')
-                  .map((s) =>
-                    h('div', {
-                      key: s.key,
-                      className: 'dsh-pet-cfg__path',
-                      children: [
-                        h('b', { key: 'p', children: s.path }),
-                        // 尚未产生的目录（如从未启用桌面模式的 Electron）标一下，避免用户去找不存在的文件夹
-                        h('span', {
-                          key: 'd',
-                          children: ' — ' + t('storage.' + s.key) + (s.exists === false ? t('storageMissing') : ''),
-                        }),
-                      ],
-                    }),
-                  ),
-                h('div', {
-                      key: 'standalone-note',
-                      className: 'dsh-pet-cfg__note',
-                      children: t('standaloneStorageNote'),
-                    }),
-              ],
-            })
-          : null,
-                ] }),
 
         // 确认/提示弹窗（仿官方弹窗视觉：遮罩 + 居中卡片 + 按钮）
         dialog
@@ -1600,7 +1788,12 @@ export function makePetConfigSection(rt: {
                 children: [
                   h('div', {
                     style: { fontSize: '14px', fontWeight: 500, color: 'var(--dsw-alias-label-primary)' },
-                    children: dialog.kind === 'corrupt' ? t('corruptTitle') : t('confirmTitle'),
+                    children:
+                      dialog.kind === 'restoreMigration'
+                        ? t('migrationRecoveryRestoreTitle')
+                        : dialog.kind === 'corrupt'
+                          ? t('corruptTitle')
+                          : t('confirmTitle'),
                   }),
                   h('div', {
                     style: { fontSize: '13px', lineHeight: '20px', color: 'var(--dsw-alias-label-secondary)' },
@@ -1611,7 +1804,12 @@ export function makePetConfigSection(rt: {
                           ? t('atLeastOne')
                           : dialog.kind === 'corrupt'
                             ? t('corruptBody').replace('{path}', dialog.path)
-                            : t('confirmSync'),
+                            : dialog.kind === 'restoreMigration'
+                              ? t('migrationRecoveryRestoreBody').replace(
+                                  '{path}',
+                                  migrationRecovery?.backupDirectory ?? '',
+                                )
+                              : t('confirmSync'),
                   }),
                   h('div', {
                     style: { display: 'flex', gap: '8px', justifyContent: 'flex-end' },
@@ -1646,6 +1844,7 @@ export function makePetConfigSection(rt: {
                                   void save(true, pendingCorruptPets ?? pets).then((ok) => {
                                     if (ok && draftPet) setDraftPet(null);
                                   }); // 确认：带 ?force=1 强行重建
+                                else if (d.kind === 'restoreMigration') void restoreOriginalMigrationBackup();
                                 else void doSync();
                               },
                               className: 'dsh-pet-cfg__btn ' + (dialog.kind === 'sync' ? 'is-primary' : 'is-danger'),
@@ -1654,7 +1853,9 @@ export function makePetConfigSection(rt: {
                                   ? t('remove')
                                   : dialog.kind === 'corrupt'
                                     ? t('corruptConfirm')
-                                    : t('sync'),
+                                    : dialog.kind === 'restoreMigration'
+                                      ? t('migrationRecoveryRestoreConfirm')
+                                      : t('sync'),
                             }),
                           ],
                   }),

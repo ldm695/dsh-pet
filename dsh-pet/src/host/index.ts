@@ -72,7 +72,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { constants, createReadStream, existsSync, fstatSync, readFileSync } from 'node:fs';
-import { lstat, open, mkdir, writeFile } from 'node:fs/promises';
+import { lstat, open, mkdir } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { join, normalize, resolve, sep } from 'node:path';
@@ -557,10 +557,7 @@ export function apply(ctx: any): void {
       throw new Error('对话历史路径必须是未链接的普通文件。');
     }
   };
-  const sameMemoryFile = (
-    left: Awaited<ReturnType<typeof lstat>>,
-    right: Awaited<ReturnType<typeof lstat>>,
-  ): boolean =>
+  const sameMemoryFile = (left: Awaited<ReturnType<typeof lstat>>, right: Awaited<ReturnType<typeof lstat>>): boolean =>
     left.dev === right.dev && left.ino !== 0 && right.ino !== 0 && left.ino === right.ino;
 
   /** 读记忆文件：仅不存在视为空；读取失败或损坏时拒绝继续，避免后续写入覆盖原数据。 */
@@ -690,7 +687,9 @@ export function apply(ctx: any): void {
    *  配图（whisperImageEnabled 开启时）：从表情包池**随机抽 1 张**，把描述注入指令并随文本一起写。 */
   const publishWhisper = async (
     petId: string,
-  ): Promise<{ ok: true; text: string; image?: string } | { ok: false; reason: 'generate-error'; message?: string }> => {
+  ): Promise<
+    { ok: true; text: string; image?: string } | { ok: false; reason: 'generate-error'; message?: string }
+  > => {
     const cfg = readAllConfig(configPaths);
     const found = findPetInstance(cfg, petId);
     const conf = found ? found.conf : (cfg.main ?? {});
@@ -719,7 +718,9 @@ export function apply(ctx: any): void {
         ? { text: result.text, image: result.image, kind: 'whisper' }
         : { text: result.text, kind: 'whisper' },
     );
-    log.info(`[dsh-pet] 碎碎念生成成功 pet=${petId}，${result.text.length} 字${result.image ? `，配图=${result.image}` : ''}`);
+    log.info(
+      `[dsh-pet] 碎碎念生成成功 pet=${petId}，${result.text.length} 字${result.image ? `，配图=${result.image}` : ''}`,
+    );
     return { ok: true, text: result.text, ...(result.image ? { image: result.image } : {}) };
   };
 
@@ -1001,8 +1002,6 @@ export function apply(ctx: any): void {
           DSH_PET_PETS: JSON.stringify(desktopPetList()),
           // 桌面 Helper 按宠物 id 持久化最后位置；放在插件用户目录，避免不同 DSH profile 串位置。
           DSH_PET_POSITION_FILE: join(userRoot, 'pet-positions.json'),
-          // TEMPORARY MOVE DIAGNOSTICS: remove this path before a formal release.
-          DSH_PET_MOVE_DIAGNOSTICS_FILE: join(userRoot, 'logs', 'move-diagnostics.jsonl'),
           DSH_PET_DISPLAY_PRIORITY: desktopDisplayPriority(),
         },
         // bridge 协议处理器 = HTTP 路由同一份 handlePetRoute（业务逻辑唯一，两端天然一致）；
@@ -1202,7 +1201,10 @@ export function apply(ctx: any): void {
       profile: profileNameFrom(PACKAGE_ROOT) ?? '',
     }),
     resolveAppIcon: () =>
-      resolveExisting(PACKAGE_ROOT_ASSETS, process.env.DSH_PET_EDITION === 'public' ? 'logo-rounded.png' : 'dsh-pet-icon-16.png'),
+      resolveExisting(
+        PACKAGE_ROOT_ASSETS,
+        process.env.DSH_PET_EDITION === 'public' ? 'logo-rounded.png' : 'dsh-pet-icon-16.png',
+      ),
   });
   const configRoute = createConfigRoute({
     ...createHostConfigRouteDependencies(
@@ -1352,9 +1354,7 @@ export function apply(ctx: any): void {
         // 会话没有活动条目（已空闲/已清理）→ 不动：它不会被展示，写进去只会成为一条"幽灵文案"。
         // 清单里再无 in_progress/pending 时 currentTaskFromTodo 返回 null，等于把旧文案清掉、
         // 气泡回落到档位文案（issue #59 缺陷 3：档位文案不该被一条历史记录永久屏蔽）。
-        const task = currentTaskFromTodo(
-          event as { data?: { todos?: Array<{ status?: string; content?: string }> } },
-        );
+        const task = currentTaskFromTodo(event as { data?: { todos?: Array<{ status?: string; content?: string }> } });
         lastTodoText.set(sessionId, task);
         // 有工具详情时保留它；否则 todo 文案仍按原逻辑即时更新。
         if ((toolsInFlight.get(sessionId) ?? 0) === 0 && workStatus.has(sessionId)) {
@@ -1415,9 +1415,7 @@ export function apply(ctx: any): void {
       }
       const seq = Number((event as { seq?: unknown }).seq ?? 0);
       const detail =
-        type === 'tool/call'
-          ? toolDetailFromEvent(event as { data?: { name?: unknown; arguments?: unknown } })
-          : null;
+        type === 'tool/call' ? toolDetailFromEvent(event as { data?: { name?: unknown; arguments?: unknown } }) : null;
       // 必须先写状态：setTask 只更新已存在的会话条目。
       const changed = workStatus.setState(sessionId, next, seq);
       if (changed && detail !== null) {
@@ -1580,7 +1578,9 @@ export function apply(ctx: any): void {
             whisperPeriodSec(cfg, petId),
           );
           if (!schedule.enabled) {
-            skipped.push(petId + ': ' + (pet.whisperEnabled === true ? '独立模式未授权自动碎碎念' : 'whisperEnabled=false'));
+            skipped.push(
+              petId + ': ' + (pet.whisperEnabled === true ? '独立模式未授权自动碎碎念' : 'whisperEnabled=false'),
+            );
             continue;
           }
           enabledIds.add(petId);
@@ -1604,7 +1604,9 @@ export function apply(ctx: any): void {
               due += 1;
               log.info(`[dsh-pet] 碎碎念到点 pet=${petId}（周期 ${sec}s），开始生成`);
               void publishWhisper(petId).catch((error: unknown) =>
-                log.warn(`[dsh-pet] 自动碎碎念失败 pet=${petId}: ${error instanceof Error ? error.message : String(error)}`),
+                log.warn(
+                  `[dsh-pet] 自动碎碎念失败 pet=${petId}: ${error instanceof Error ? error.message : String(error)}`,
+                ),
               );
             }
           } else {

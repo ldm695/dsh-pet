@@ -11,8 +11,6 @@
 const OPEN_SHORTCUT_HINT = /Mac/i.test(navigator.platform || navigator.userAgent) ? 'Cmd+左键' : 'Ctrl+左键';
 const isOpenShortcut = (e) => !!(e && (e.ctrlKey || e.metaKey));
 
-const MOVE_DIAGNOSTICS_ENABLED = window.petBridge?.moveDiagnosticsEnabled === true;
-
 function clampPetCenterToRegion(areas, cx, cy, halfW, halfH, sideAllow, topInset) {
   if (!Array.isArray(areas) || areas.length === 0) return { x: cx, y: cy };
   const bodyHalfW = Math.max(0, halfW - sideAllow);
@@ -607,12 +605,7 @@ class PetSprite {
     const timer = window.setTimeout(() => {
       this.videoReleaseTimers.delete(video);
       const front = this.front === 0 ? this.videoA : this.videoB;
-      if (
-        this.disposed ||
-        video === front ||
-        video.classList.contains('is-front') ||
-        this.pending?.target === video
-      )
+      if (this.disposed || video === front || video.classList.contains('is-front') || this.pending?.target === video)
         return;
       video.onended = null;
       video.onerror = null;
@@ -792,11 +785,6 @@ class PetSprite {
     // 宠物固定（pets[].fixedEnabled）：掷骰时把「转向 / 移动」两档权重按 0 算（与浏览器同一份
     // 决策）——随机链不再让宠物自己翻朝向或走开。右键菜单点播与 /anim 接口不走这里，不受影响。
     const forceMove = this.canRelocate();
-    if (forceMove && MOVE_DIAGNOSTICS_ENABLED)
-      console.info(
-        '[dsh-pet-move] ' +
-          JSON.stringify({ event: 'forced-move', petId: this.pet.id, reason: 'overlap-yield' }),
-      );
     const k = forceMove ? 'move' : S.rollKind(roll, animationWeights, { fixed: this.pet.fixedEnabled });
     let next;
     if (k === 'idle') {
@@ -1056,8 +1044,6 @@ class PetSprite {
     // direction would hit a screen boundary. Automatic moves may still choose either axis.
     const mode = horizontalOnly ? 'horizontal' : preferredDrag ? 'vertical' : manualMove ? 'horizontal' : 'any';
     let candidate = null;
-    // Candidate scoring details are collected only when movement diagnostics are explicitly enabled.
-    let candidateDiagnostics = MOVE_DIAGNOSTICS_ENABLED ? [] : null;
     if (options.relocate) {
       // Sample a bounded, varied set of legal routes. Cover each route family, facing,
       // vertical direction, angle and the configured distance range, then score only distinct
@@ -1075,7 +1061,8 @@ class PetSprite {
             for (const verticalDir of [-1, 1]) {
               const directionIndex = dir === facingDir ? 0 : 1;
               const verticalIndex = verticalDir === -1 ? 0 : 1;
-              const distanceRatio = distanceRatios[(angleIndex + directionIndex + verticalIndex) % distanceRatios.length];
+              const distanceRatio =
+                distanceRatios[(angleIndex + directionIndex + verticalIndex) % distanceRatios.length];
               headings.push({ mode: selectedMode, angleDegrees, dir, verticalDir, distanceRatio });
             }
           }
@@ -1083,7 +1070,6 @@ class PetSprite {
       }
 
       const seen = new Set();
-      candidateDiagnostics = MOVE_DIAGNOSTICS_ENABLED ? [] : null;
       let bestClearance = -Infinity;
       let bestIsFree = false;
       for (const heading of headings.slice(0, 32)) {
@@ -1094,75 +1080,16 @@ class PetSprite {
         seen.add(key);
         const clearance = this.endpointClearance(next);
         const isFree = clearance >= 0;
-        if (MOVE_DIAGNOSTICS_ENABLED) {
-          candidateDiagnostics.push({
-            x: Math.round(toScreen(next.targetRatio * VIEW.w)),
-            y: Math.round(toScreen(next.targetYRatio * VIEW.h)),
-            mode: heading.mode,
-            angleDegrees: heading.angleDegrees,
-            direction: heading.dir,
-            verticalDirection: heading.verticalDir,
-            distanceRatio: heading.distanceRatio,
-            clearancePx: Number.isFinite(clearance) ? Number(clearance.toFixed(3)) : null,
-            free: isFree,
-          });
-        }
         if ((isFree && !bestIsFree) || (isFree === bestIsFree && clearance > bestClearance)) {
           candidate = next;
           bestClearance = clearance;
           bestIsFree = isFree;
         }
       }
-      if (MOVE_DIAGNOSTICS_ENABLED) {
-        console.info(
-          '[dsh-pet-move] ' +
-            JSON.stringify({
-              event: 'relocation-plan',
-              petId: this.pet.id,
-              reason: 'overlap-yield',
-              candidates: seen.size,
-              foundFreeEndpoint: bestIsFree,
-              fallbackReason: bestIsFree ? null : candidate ? 'all-candidates-overlap' : 'no-legal-endpoint',
-              clearancePx: Number.isFinite(bestClearance) ? Number(bestClearance.toFixed(3)) : null,
-              origin: {
-                x: Math.round(toScreen(this.currentCenterX())),
-                y: Math.round(toScreen(this.currentCenterY())),
-              },
-              chosen: candidate
-                ? {
-                    x: Math.round(toScreen(candidate.targetRatio * VIEW.w)),
-                    y: Math.round(toScreen(candidate.targetYRatio * VIEW.h)),
-                    mode: candidate.isVertical ? 'vertical' : 'horizontal',
-                    direction: candidate.dir,
-                    clearancePx: Number.isFinite(bestClearance) ? Number(bestClearance.toFixed(3)) : null,
-                  }
-                : null,
-              evaluated: candidateDiagnostics,
-            }),
-        );
-      }
     } else {
       candidate = this.planMoveCandidate(mp, facingDir, mode);
     }
     if (!candidate) {
-      if (MOVE_DIAGNOSTICS_ENABLED) {
-        console.info(
-          '[dsh-pet-move] ' +
-            JSON.stringify({
-              event: 'move-plan-failed',
-              petId: this.pet.id,
-              reason: options.relocate ? 'no-legal-relocation-endpoint' : 'no-screen-safe-route',
-              moveKind: options.relocate ? 'yield' : 'claim',
-              manualMove,
-              mode,
-              facing: this.facing,
-              x: Math.round(toScreen(this.currentCenterX())),
-              y: Math.round(toScreen(this.currentCenterY())),
-              size: toScreen(this.size),
-              evaluated: candidateDiagnostics,
-            }),
-        );
-      }
       return false;
     }
     const moveAnimation = preferredDrag
@@ -1204,7 +1131,9 @@ class PetSprite {
     const directions = [preferredDir, -preferredDir];
     if (sample) {
       const selectedMode = sample.mode || mode;
-      const distanceRatio = Number.isFinite(sample.distanceRatio) ? Math.max(0, Math.min(1, sample.distanceRatio)) : 0.5;
+      const distanceRatio = Number.isFinite(sample.distanceRatio)
+        ? Math.max(0, Math.min(1, sample.distanceRatio))
+        : 0.5;
       const minDist = mp.minDist * distScale;
       const maxDist = mp.maxDist * distScale;
       const distance = minDist + (maxDist - minDist) * distanceRatio;
@@ -1237,7 +1166,8 @@ class PetSprite {
     for (const selectedMode of modes) {
       for (let attempt = 0; attempt < 12 && !plan; attempt++) {
         for (const candidateDir of directions) {
-          const angleDegrees = selectedMode === 'vertical' ? 75 + Math.random() * 15 : horizontalOnly ? 0 : Math.random() * 45;
+          const angleDegrees =
+            selectedMode === 'vertical' ? 75 + Math.random() * 15 : horizontalOnly ? 0 : Math.random() * 45;
           const candidate = S.planMove({
             cx,
             cy,
@@ -1291,24 +1221,6 @@ class PetSprite {
     const moveKind = pm.relocate ? 'yield' : 'claim';
     const moveReason = pm.relocate ? 'overlap-yield' : pm.manualMove ? 'manual-movement' : 'automatic-movement';
     this.beginMoveTarget(targetRatio * VIEW.w, targetYRatio * VIEW.h, moveKind, moveReason);
-    if (MOVE_DIAGNOSTICS_ENABLED) {
-      console.info(
-        '[dsh-pet-move] ' +
-          JSON.stringify({
-            event: 'move-drive-start',
-            petId: this.pet.id,
-            moveId: this.moveTargetId,
-            reason: moveReason,
-            kind: moveKind,
-            animation: pm.animationName || this.anim,
-            mode: pm.isVertical ? 'vertical' : 'horizontal',
-            direction: pm.dir,
-            from: { x: Math.round(toScreen(startRatio * VIEW.w)), y: Math.round(toScreen(startYRatio * VIEW.h)) },
-            to: { x: Math.round(toScreen(targetRatio * VIEW.w)), y: Math.round(toScreen(targetYRatio * VIEW.h)) },
-            duration,
-          }),
-      );
-    }
     this.anim = pm.animationName || this.anim;
     this.once = true;
     el.loop = false;
@@ -2016,7 +1928,9 @@ class PetSprite {
   syncInputRegions() {
     if (!window.petBridge?.setInputRegions || !this.inputRegionResize) return;
     const rects = [];
-    const controls = [...document.querySelectorAll('.dsh-pet-menu-column, .dsh-pet-chat, .pet-error.visible, .pet-bubble.is-clickable')];
+    const controls = [
+      ...document.querySelectorAll('.dsh-pet-menu-column, .dsh-pet-chat, .pet-error.visible, .pet-bubble.is-clickable'),
+    ];
     for (const el of this.inputRegionElements) {
       if (!controls.includes(el)) {
         this.inputRegionResize.unobserve(el);
@@ -2129,19 +2043,14 @@ class PetSprite {
     // forwarded 事件坐标以窗口为原点（与页坐标一致）；转换到 sprite 坐标需扣减窗口余量；
     // 异常时退回屏幕坐标 − 窗口屏幕位置推导（hitRect/pos 均为 CSS 系）：屏幕坐标 ÷scale 后
     // 减去窗口屏幕原点（CSS 系）即窗口内坐标
-    const wx = Number.isFinite(e.clientX)
-      ? e.clientX
-      : toLocal(e.screenX) - (this.pos.x + VIEW.x - this.margin.l);
-    const wy = Number.isFinite(e.clientY)
-      ? e.clientY
-      : toLocal(e.screenY) - (this.pos.y + VIEW.y - this.margin.t);
+    const wx = Number.isFinite(e.clientX) ? e.clientX : toLocal(e.screenX) - (this.pos.x + VIEW.x - this.margin.l);
+    const wy = Number.isFinite(e.clientY) ? e.clientY : toLocal(e.screenY) - (this.pos.y + VIEW.y - this.margin.t);
     const px = wx - this.margin.l;
     const py = wy - this.margin.t;
     const inBody = px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
     // 光标位置存**视口坐标**（窗口原点 + 窗口内坐标）：窗口随宠物移动时贴光标不会漂，见 renderTip。
     // 必须在 setTip 之前更新：setTip 变显隐时会立刻渲染一次，晚一步就会用上一次的光标摆位。
-    if (inBody)
-      this.tipCursor = { x: this.pos.x - this.margin.l + wx, y: this.pos.y - this.margin.t + wy };
+    if (inBody) this.tipCursor = { x: this.pos.x - this.margin.l + wx, y: this.pos.y - this.margin.t + wy };
     this.setInteractive(inBody);
     // 悬浮提示与可交互判定同源（同一个 inBody）：光标进身体 → 提示出现，离开 → 收起
     this.setTip(inBody);
@@ -2224,11 +2133,13 @@ class PetSprite {
     // 首项文案随宿主形态变（OPEN_TARGET）：宿主是 DSH 桌面应用时点是"唤起桌面应用窗口"，仍叫「打开网站」会误导
     const tools = STANDALONE
       ? []
-      : [{
-          label: OPEN_TARGET === 'desktop' ? '打开软件' : '打开网站',
-          action: 'open-site',
-          hint: OPEN_SHORTCUT_HINT,
-        }];
+      : [
+          {
+            label: OPEN_TARGET === 'desktop' ? '打开软件' : '打开网站',
+            action: 'open-site',
+            hint: OPEN_SHORTCUT_HINT,
+          },
+        ];
     if (!STANDALONE || config.balanceQuerySupported !== false) {
       tools.push({ label: '查看余额', action: 'show-balance' });
     }
@@ -2240,7 +2151,8 @@ class PetSprite {
       // 一次性建的——就地增删窗口既改不了磁盘配置（下次启动又回来）也改不了窗口数量。
       S.displayMenuBranch(),
     );
-    if (!STANDALONE || config.aiChatEnabled !== false) tools.splice(tools.length - 1, 0, { label: '对话', action: 'chat' });
+    if (!STANDALONE || config.aiChatEnabled !== false)
+      tools.splice(tools.length - 1, 0, { label: '对话', action: 'chat' });
     const more = S.buildMoreBranch(this.menuItems);
     const tree = tools.concat(S.buildMenuTree(this.animations), more ? [more] : []);
     // 客户端启动器和维护操作固定放在「动作」分支之后，启动器悬停展开子菜单。

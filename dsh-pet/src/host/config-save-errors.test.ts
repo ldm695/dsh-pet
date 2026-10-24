@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { apply } from './index.ts';
 import { createStandaloneContext, type StandaloneLogger } from '../standalone/context.ts';
+import { createRequestSecurity } from '../standalone/request-security.ts';
 import { listenStandaloneServer, type StandaloneServer } from '../standalone/server.ts';
 
 // Exercise the real route over HTTP with isolated storage. No assets or model calls are needed.
@@ -13,7 +14,7 @@ const pet = {
   name: 'Blue',
   size: 240,
   balanceEnabled: false,
-  display: 'web',
+  display: 'desktop',
   position: { corner: 'top-right', marginX: 20, marginY: 20 },
 };
 const warnings: string[] = [];
@@ -21,6 +22,7 @@ const logger: StandaloneLogger = { info: () => {}, debug: () => {}, error: () =>
 let home = '';
 let file = '';
 let server: StandaloneServer;
+const requestSecurity = createRequestSecurity();
 let context: ReturnType<typeof createStandaloneContext>;
 let previousHome: string | undefined;
 
@@ -33,7 +35,7 @@ before(async () => {
   const routes: ReturnType<typeof createStandaloneContext>['routes'] = [];
   context = createStandaloneContext({ port: 0, routes, logger });
   apply(context.ctx);
-  server = await listenStandaloneServer({ port: 0, routes, logger });
+  server = await listenStandaloneServer({ port: 0, routes, logger, requestSecurity });
 });
 
 after(async () => {
@@ -47,7 +49,7 @@ after(async () => {
 async function put(body: string, query = '') {
   const response = await fetch(`http://127.0.0.1:${server.port}/dsh-pet-7340/config${query}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'x-dsh-pet-token': requestSecurity.token },
     body,
   });
   return { status: response.status, body: (await response.json()) as Record<string, unknown> };

@@ -1,7 +1,7 @@
 const { app, BrowserWindow, Menu, nativeImage, shell, Tray } = require('electron');
 const { spawn } = require('node:child_process');
-const { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync } = require('node:fs');
-const { join, resolve } = require('node:path');
+const { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync } = require('node:fs');
+const { basename, dirname, join, relative, resolve } = require('node:path');
 
 const PORT = 6952;
 const packageMetadata = JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8'));
@@ -157,6 +157,59 @@ if (helperEntry) {
 
   function handleHostMessage(message) {
     if (!message || typeof message !== 'object') return;
+    if (
+      message.channel === 'dsh-pet:open-migration-backup' &&
+      typeof message.requestId === 'string' &&
+      typeof message.path === 'string'
+    ) {
+      const reply = (result) => {
+        if (!host?.connected) return;
+        host.send(
+          { channel: 'dsh-pet:open-migration-backup-result', requestId: message.requestId, ...result },
+          (error) => {
+            if (error) log(`[warning] Unable to return backup-folder result: ${error.message}`);
+          },
+        );
+      };
+      try {
+        const dshHome = process.env.DSH_HOME
+          ? resolve(app.getPath('userData'), process.env.DSH_HOME)
+          : resolve(process.env.USERPROFILE || app.getPath('home'), '.dsh');
+        const backupRoot = resolve(dshHome, 'dsh-pet-migration-backups');
+        const requested = resolve(message.path);
+        const backupDirectory = dirname(requested);
+        const rootInfo = lstatSync(backupRoot);
+        const requestedInfo = lstatSync(requested);
+        const backupInfo = lstatSync(backupDirectory);
+        const manifestInfo = lstatSync(join(backupDirectory, 'manifest.json'));
+        if (
+          !rootInfo.isDirectory() ||
+          rootInfo.isSymbolicLink() ||
+          dirname(backupDirectory).toLowerCase() !== backupRoot.toLowerCase() ||
+          !/^migration-failure-[\w.-]+$/i.test(basename(backupDirectory)) ||
+          basename(requested) !== 'dsh-pet' ||
+          relative(backupRoot, backupDirectory).startsWith('..') ||
+          !backupInfo.isDirectory() ||
+          backupInfo.isSymbolicLink() ||
+          !manifestInfo.isFile() ||
+          manifestInfo.isSymbolicLink() ||
+          !requestedInfo.isDirectory() ||
+          requestedInfo.isSymbolicLink()
+        ) {
+          throw new Error('备份文件夹路径无效或不安全。');
+        }
+        shell
+          .openPath(requested)
+          .then((error) => {
+            if (error) reply({ ok: false, error });
+            else reply({ ok: true });
+          })
+          .catch((error) => reply({ ok: false, error: error.message }));
+      } catch (error) {
+        reply({ ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
     if (
       message.channel === 'dsh-pet:request-token' &&
       typeof message.token === 'string' &&
@@ -373,8 +426,6 @@ if (helperEntry) {
       DSH_PET_ELECTRON_PATH: process.execPath,
       DSH_PET_PACKAGE_ROOT: packageRoot,
       DSH_PET_WORK_STATUS_DIAGNOSTICS_FILE: join(app.getPath('userData'), 'logs', 'work-status-diagnostics.jsonl'),
-      // TEMPORARY MOVE DIAGNOSTICS: remove this env var before a formal release.
-      DSH_PET_MOVE_DIAGNOSTICS_FILE: join(app.getPath('userData'), 'logs', 'move-diagnostics.jsonl'),
       DSH_PET_EDITION: APP_EDITION,
       DSH_PET_DISPLAY_NAME: APP_DISPLAY_NAME,
       DSH_PET_AUTOSTART_SUPPORTED: autoStartSupported() ? '1' : '0',
