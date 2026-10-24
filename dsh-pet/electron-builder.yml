@@ -13,6 +13,7 @@ files:
   - package.json
   - lib/standalone.js
   - lib/standalone-settings.js
+  - lib/*.js
   - runtime/electron-helper/**
   - assets/config.jsonc
   - assets/dsh-pet-icon-16.png

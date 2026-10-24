@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /** Verify that the Windows application build contains only standalone runtime assets. */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -36,6 +36,16 @@ for (const file of required) {
   existsSync(join(ROOT, file)) ? ok(`exists ${file}`) : fail(`missing ${file}`);
 }
 
+const emittedLibFiles = readdirSync(join(ROOT, 'lib')).filter((file) => file.endsWith('.js'));
+for (const entry of ['standalone.js', 'standalone-settings.js']) {
+  const source = readFileSync(join(ROOT, 'lib', entry), 'utf8');
+  const chunkImports = [...source.matchAll(/from\s+["']\.\/([^"']+\.js)["']/g)].map((match) => match[1]);
+  for (const chunk of chunkImports) {
+    if (emittedLibFiles.includes(chunk)) ok(`${entry} runtime chunk exists: ${chunk}`);
+    else fail(`${entry} references missing runtime chunk: lib/${chunk}`);
+  }
+}
+
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 if (pkg.private === true) ok('package is private and cannot be published as a DSH Web plugin');
 else fail('package.json must set private=true');
@@ -50,7 +60,7 @@ if (runtimeDshDependencies.length === 0) ok('no DSH runtime dependencies are bun
 else fail(`DSH-only build dependencies must stay out of the EXE: ${runtimeDshDependencies.join(', ')}`);
 
 const packagedFiles = Array.isArray(pkg.files) ? pkg.files : [];
-for (const file of ['lib/standalone.js', 'lib/standalone-settings.js', 'runtime/electron-helper']) {
+for (const file of ['lib/standalone.js', 'lib/standalone-settings.js', 'lib/*.js', 'runtime/electron-helper']) {
   if (packagedFiles.includes(file)) ok(`package file list includes ${file}`);
   else fail(`package file list is missing ${file}`);
 }
@@ -66,8 +76,12 @@ for (const config of ['electron-builder.yml', 'electron-builder.public.yml']) {
   const content = readFileSync(join(ROOT, config), 'utf8');
   if (content.includes('lib/**')) fail(`${config} includes all lib outputs`);
   else ok(`${config} excludes unneeded bundles`);
-  if (content.includes('lib/standalone.js') && content.includes('lib/standalone-settings.js')) {
-    ok(`${config} includes the EXE host and embedded settings page`);
+  if (
+    content.includes('lib/standalone.js') &&
+    content.includes('lib/standalone-settings.js') &&
+    content.includes('lib/*.js')
+  ) {
+    ok(`${config} includes the EXE host, settings page, and generated runtime chunks`);
   } else fail(`${config} is missing EXE bundles`);
   if (content.includes('cordis.patch.yml') || content.includes('lib/client.js')) {
     fail(`${config} includes a DSH Web plugin entry`);
