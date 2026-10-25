@@ -181,7 +181,7 @@ PetSprite.prototype.showBalanceNotice = function showBalanceNotice(state, manual
   this.balanceWrap = true; // 文字说明可能多行：renderBubble 据此套用紧凑变体（字号缩到 0.75、宽度下限更窄）
   this.balanceView = S.balanceBubbleView(state);
   this.balanceState = state; // 留着：不可用状态不可展开，但要防止上一次的余额读数残留在字段里
-  this.balanceExpanded = false; // 文字说明没有展开态
+  this.balanceViewIndex = 0;
   this.renderBubble();
   if (this.bubbleTimer !== null) window.clearTimeout(this.bubbleTimer);
   this.bubbleTimer = window.setTimeout(() => {
@@ -265,12 +265,12 @@ PetSprite.prototype.showWhisper = function showWhisper(text, image, url, duratio
 PetSprite.prototype.showBalanceNow = function showBalanceNow(state, manual) {
   if (!state || !state.ok) return;
   const p = S.balancePercent(state);
-  if (!manual && p === undefined) return; // 自动轮询没有百分比语义：没有档位依据，不弹（手动仍要给答复）
+  if (!manual && p === undefined && state.shape !== 'custom') return; // custom 可不提供档位百分比
   this.bubbleOn = true;
   this.balanceWrap = false; // 正常余额气泡用常规尺寸，别继承上一次文字说明的紧凑变体
   this.balanceView = S.balanceBubbleView(state);
   this.balanceState = state; // 展开态要拿完整读数现算三窗口行（balanceView 只是收起态那两行）
-  this.balanceExpanded = false; // 新一轮查询一律从收起态开始（与浏览器一致）
+  this.balanceViewIndex = 0;
   this.renderBubble();
   // 气泡 10s 定时消失（与动画解耦：即使动画被点击/拖拽打断，气泡也按时收起；重复触发先清旧定时器）
   if (this.bubbleTimer !== null) window.clearTimeout(this.bubbleTimer);
@@ -305,7 +305,10 @@ PetSprite.prototype.showBalanceNow = function showBalanceNow(state, manual) {
 // 余额气泡的内容与展开状态由 renderBubble 直接更新。
 PetSprite.prototype.toggleBalanceDetail = function toggleBalanceDetail() {
   if (!this.balanceClickable()) return;
-  this.balanceExpanded = !this.balanceExpanded;
+  const pageCount = this.balanceState?.shape === 'custom'
+    ? (S.customViews(this.balanceState)?.length ?? 1)
+    : 2;
+  this.balanceViewIndex = (this.balanceViewIndex + 1) % pageCount;
   this.bubble.classList.add('is-fading');
   if (this.balanceFadeTimer !== null) window.clearTimeout(this.balanceFadeTimer);
   this.balanceFadeTimer = window.setTimeout(() => {

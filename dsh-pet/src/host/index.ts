@@ -753,8 +753,25 @@ export function apply(ctx: any): void {
           : [];
       const mem = await readMemory();
       const bucketKey = found?.entry ?? petId;
-      const bucket = (mem[bucketKey] ??= {});
-      const entry = (bucket[petId] ??= { messages: [] });
+      const currentBucket = mem[bucketKey];
+      const bucket =
+        currentBucket && typeof currentBucket === 'object' && !Array.isArray(currentBucket)
+          ? currentBucket
+          : (mem[bucketKey] = {});
+      const currentEntry = bucket[petId];
+      const entry =
+        currentEntry && typeof currentEntry === 'object' && Array.isArray(currentEntry.messages)
+          ? currentEntry
+          : (bucket[petId] = { messages: [] });
+      if (currentEntry !== undefined && entry !== currentEntry) {
+        log.error(`[dsh-pet] 记忆结构异常（messages 不是数组）pet=${petId}，按新会话处理：${memoryPath}`);
+      }
+      entry.messages = entry.messages.filter(
+        (message) =>
+          message &&
+          (message.role === 'user' || message.role === 'assistant') &&
+          typeof message.content === 'string',
+      );
       // rounds = 0（用户关掉历史）→ 空历史；否则截尾部 rounds 轮（1 轮 = 1 问 1 答）。
       // 不能写 slice(-rounds * 2)：-0 在 JS 里 === 0，slice(-0) 返回整个数组而不是空。
       const list = sliceMemoryRounds(entry.messages, rounds);
@@ -1191,6 +1208,7 @@ export function apply(ctx: any): void {
       default: join(PACKAGE_ROOT, 'assets', 'config.jsonc'),
       animations: thumbUserRoot,
       memes: memesUserRoot,
+      logs: log.file,
       // Keep exists flags fresh while the route module receives only prepared path data.
       storage: storageEntries({
         userDataRoot: userRoot,
@@ -1251,8 +1269,22 @@ export function apply(ctx: any): void {
     readHistory: async (petId, roundsOverride) => {
       const cfg = readAllConfig(configPaths);
       const mem = await readMemory();
-      const bucket = mem[findPetInstance(cfg, petId)?.entry ?? petId] ?? {};
-      const messages = (bucket[petId]?.messages ?? []).slice();
+      const rawBucket = mem[findPetInstance(cfg, petId)?.entry ?? petId];
+      const bucket = rawBucket && typeof rawBucket === 'object' && !Array.isArray(rawBucket) ? rawBucket : {};
+      const rawMessages = bucket[petId]?.messages;
+      const messages = Array.isArray(rawMessages)
+        ? rawMessages
+            .filter(
+              (message) =>
+                message &&
+                (message.role === 'user' || message.role === 'assistant') &&
+                typeof message.content === 'string',
+            )
+            .slice()
+        : [];
+      if (rawMessages !== undefined && !Array.isArray(rawMessages)) {
+        log.error(`[dsh-pet] 记忆结构异常（messages 不是数组）pet=${petId}，按空历史处理：${memoryPath}`);
+      }
       const rounds = roundsOverride ?? memoryRounds(petId, cfg);
       return { messages: sliceMemoryRounds(messages, rounds), rounds };
     },

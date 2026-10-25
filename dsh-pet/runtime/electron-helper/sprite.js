@@ -11,6 +11,23 @@
 const OPEN_SHORTCUT_HINT = /Mac/i.test(navigator.platform || navigator.userAgent) ? 'Cmd+左键' : 'Ctrl+左键';
 const isOpenShortcut = (e) => !!(e && (e.ctrlKey || e.metaKey));
 
+const CLICK_SOUND_URL = BASE + '/sound/click-duck.wav';
+let clickAudio = null;
+let lastClickSoundAt = 0;
+function playClickSound() {
+  if (!config || config.clickSoundEnabled !== true) return;
+  const now = Date.now();
+  if (now - lastClickSoundAt < 100) return;
+  lastClickSoundAt = now;
+  try {
+    clickAudio = clickAudio || new Audio(CLICK_SOUND_URL);
+    clickAudio.volume = 0.5;
+    clickAudio.currentTime = 0;
+    const playback = clickAudio.play();
+    if (playback && typeof playback.catch === 'function') playback.catch(() => {});
+  } catch {}
+}
+
 function clampPetCenterToRegion(areas, cx, cy, halfW, halfH, sideAllow, topInset) {
   if (!Array.isArray(areas) || areas.length === 0) return { x: cx, y: cy };
   const bodyHalfW = Math.max(0, halfW - sideAllow);
@@ -192,7 +209,7 @@ class PetSprite {
     this.balanceView = null;
     this.balanceWrap = false; // true = 当前余额气泡是不可用的「文字说明」（多行，需换行变体）
     this.balanceState = null; // 最近一次余额读数（展开态要用它算三窗口行；balanceView 只是收起态的行）
-    this.balanceExpanded = false; // 展开态：点一下气泡看三窗口完整读数（每次重新弹出都归位）
+    this.balanceViewIndex = 0;
     this.balanceFadeTimer = null; // 展开/收起的淡出等待（250ms 后才换内容，避免硬切）
     this.prevTick = 0;
     // 说话（碎碎念 / 命令气泡 / 对话回复三合一）：文本/配图由容器统一轮询 /state 后经
@@ -547,24 +564,16 @@ class PetSprite {
    * 抛掷空间作废，并把宠物从可能变成空洞的位置拉回可见区。
    * 拖拽中不动它（用户正握着，位置由指针决定）；飞行中也不动（下一帧物理自会按新边界夹取）。
    */
-  relayout() {
+  relayout(prevView) {
     this.space = null;
     if (this.dragState.active || this.throwRef !== null) return;
     this.stopMove();
-    const cx = this.pos.x + this.halfW;
-    const cy = this.pos.y + this.halfH;
-    const p = clampPetCenterToRegion(
-      AREAS,
-      cx,
-      cy,
-      this.halfW,
-      this.halfH,
-      this.sideAllow,
-      this.size * CONFIG.topInsetRatio,
-    );
-    if (p.x !== cx || p.y !== cy) {
-      this.customPos = { rx: p.x / VIEW.w, ry: p.y / VIEW.h };
-    }
+    const from = prevView || VIEW;
+    const oldCenter = { x: this.pos.x + this.halfW, y: this.pos.y + this.halfH };
+    const moved = { x: oldCenter.x + from.x - VIEW.x, y: oldCenter.y + from.y - VIEW.y };
+    const p = S.rebaseCenter(oldCenter, from, VIEW, AREAS);
+    const clamped = p.x !== moved.x || p.y !== moved.y;
+    if (this.customPos || clamped) this.customPos = { rx: p.x / VIEW.w, ry: p.y / VIEW.h };
     this.position();
   }
 
@@ -1913,7 +1922,21 @@ class PetSprite {
    */
   balanceClickable() {
     const s = this.balanceState;
-    return !!(this.bubbleOn && s && s.ok && s.shape === 'windows' && !this.balanceWrap);
+    if (!this.bubbleOn || !s || !s.ok || this.balanceWrap) return false;
+    return s.shape === 'custom' ? (S.customViews(s)?.length ?? 0) > 1 : s.shape === 'windows';
+  }
+
+  renderBalanceTree(node) {
+    const element = document.createElement(node.tag);
+    if (node.style) for (const [key, value] of Object.entries(node.style)) element.style[key] = value;
+    if (node.tag === 'img') {
+      element.src = node.src || '';
+      element.alt = '';
+      return element;
+    }
+    if (node.text) element.appendChild(document.createTextNode(node.text));
+    for (const child of node.children || []) element.appendChild(this.renderBalanceTree(child));
+    return element;
   }
 
   syncInputBusy() {
@@ -2077,6 +2100,7 @@ class PetSprite {
     }
     this.stopThrow(); // 点击飞行中的宠物 = 收手停住（再播点击回应）
     this.stopMove();
+    playClickSound();
     if (!this.animations.clicks.length) return;
     this.pendingSquash = true; // 等新点击动画切到前台后 Q 弹（压新首帧，与浏览器一致）
     this.playOnce(S.pick(this.animations.clicks));
@@ -2429,7 +2453,7 @@ class PetSprite {
     // 可点/展开两个状态类：可点 → 气泡参与命中区（见 syncInputRegions）；展开 → 三窗口排版与更宽的盒
     const clickable = slot === 'balance' && this.balanceClickable();
     this.bubble.classList.toggle('is-clickable', clickable);
-    this.bubble.classList.toggle('is-expanded', clickable && this.balanceExpanded);
+    this.bubble.classList.toggle('is-expanded', clickable && this.balanceViewIndex > 0);
     this.bubble.innerHTML = '';
     if (slot === 'work') {
       const line = document.createElement('div');
@@ -2443,10 +2467,14 @@ class PetSprite {
       line.className = 'pet-bub-row';
       line.textContent = this.whisperView[0]?.text ?? '';
       this.bubble.appendChild(line);
+    } else if (this.balanceState && S.customViews(this.balanceState)) {
+      const views = S.customViews(this.balanceState);
+      const page = views[Math.min(this.balanceViewIndex, views.length - 1)];
+      if (page) this.bubble.appendChild(this.renderBalanceTree(page));
     } else {
       // 展开态的行在这里现算：renderBubble 是只读渲染路径，不缓存（余额每轮都在变，缓存反而要同步失效）
       const rows =
-        clickable && this.balanceExpanded && this.balanceState
+        clickable && this.balanceViewIndex > 0 && this.balanceState
           ? S.balanceDetailView(this.balanceState)
           : this.balanceView;
       const hasTier = rows.some((r) => r.role === 'tier');

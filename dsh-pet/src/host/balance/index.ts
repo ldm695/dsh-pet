@@ -23,6 +23,8 @@ export const BALANCE_PROVIDERS: BalanceProvider[] = [opencodeGo, commandCode, de
 
 /** 第三方余额 provider 只在当前宿主进程内存中登记。 */
 const externalProviders = new Map<string, PluginProvider>();
+/** Third-party providers may ignore AbortSignal, so bound the host's wait independently. */
+const PLUGIN_FETCH_TIMEOUT_MS = 20_000;
 
 /** provider id → 唯一匹配定义；未匹配返回 undefined（= 不支持查询） */
 export function matchBalanceProvider(provider: string): BalanceProvider | PluginProvider | undefined {
@@ -84,10 +86,18 @@ export async function queryBalance(
 
   // 第三方 provider 只收到 provider id。密钥、DSH 账号服务与宿主 credentialRef 都不传给它。
   if (!('credential' in def)) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      return await def.fetch({ provider });
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('余额查询超时（20 秒），请稍后重试')), PLUGIN_FETCH_TIMEOUT_MS);
+        timer.unref?.();
+      });
+      // The timeout only releases the caller; a late provider result is discarded by Promise.race.
+      return await Promise.race([def.fetch({ provider }), timeout]);
     } catch (e) {
       return failed(provider, 'fetch-error', e instanceof Error ? e.message : String(e));
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 
@@ -120,6 +130,9 @@ export type {
   BalanceShape,
   BalanceSuccess,
   CredentialSpec,
+  CustomBalance,
+  CustomNode,
+  CustomTag,
   MoneyBalance,
   PluginFetchContext,
   PluginProvider,

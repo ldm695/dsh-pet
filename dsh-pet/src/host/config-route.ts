@@ -41,8 +41,9 @@ export function createConfigRoute(
   deps: ConfigRouteDependencies,
 ): (request: RouteRequest) => Promise<RouteResult | undefined> {
   const writeConfig = deps.writeConfig;
+  let configQueue: Promise<void> = Promise.resolve();
 
-  return async ({ rest, method, body, query }) => {
+  const dispatch = async ({ rest, method, body, query }: RouteRequest): Promise<RouteResult | undefined> => {
     if (rest === 'config') {
       if (method === 'GET') {
         try {
@@ -253,6 +254,21 @@ export function createConfigRoute(
       return { kind: 'json', status: 200, obj: { reloading: true } };
     }
     return undefined;
+  };
+
+  return (request) => {
+    // Config reads and writes share one queue: display updates read-modify-write the same files as
+    // settings saves and default restoration, so serialize those operations to avoid lost updates.
+    const serialized =
+      request.rest === 'config' ||
+      ((request.rest === 'pet-display' || request.rest === 'pet-display/bulk') && request.method === 'POST');
+    if (!serialized) return dispatch(request);
+    const pending = configQueue.then(() => dispatch(request), () => dispatch(request));
+    configQueue = pending.then(
+      () => undefined,
+      () => undefined,
+    );
+    return pending;
   };
 }
 

@@ -22,6 +22,7 @@ const MIME: Record<string, string> = {
   '.ttf': 'font/ttf',
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
+  '.wav': 'audio/wav',
 };
 
 function animSubdirFor(ext: string): string {
@@ -49,6 +50,12 @@ function handleAssetRoute(rest: string, deps: AssetRouteDependencies): RouteResu
     const fontFile = deps.resolveExisting(fontRoot, restParts.join('/'));
     if (fontFile === undefined) return { kind: 'text', status: 404, body: 'dsh-pet: font not found' };
     return { kind: 'file', file: fontFile, contentType: contentTypeOf(fontFile) };
+  }
+
+  if (scope === 'sound') {
+    const soundFile = deps.resolveExisting(join(deps.packageRoot, 'assets', 'sound'), restParts.join('/'));
+    if (soundFile === undefined) return { kind: 'text', status: 404, body: 'dsh-pet: sound not found' };
+    return { kind: 'file', file: soundFile, contentType: contentTypeOf(soundFile) };
   }
 
   if (scope === 'pic') {

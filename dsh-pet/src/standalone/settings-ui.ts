@@ -137,12 +137,13 @@ const PetSettings = makePetConfigSection({
   },
   notificationIcon: new URL('/dsh-pet-7340/pic/notify-test.png', window.location.href).href,
   notificationAppName: APP_DISPLAY_NAME,
-  standaloneAddon: jsx('div', {
-    style: { display: 'flex', flexDirection: 'column', gap: '16px' },
-    children: [
-      jsx(AutoStartSettings, {}),
-    ],
-  }),
+  standaloneAddon:
+    APP_DISPLAY_NAME === 'DSH Pet'
+      ? jsx('div', {
+          style: { display: 'flex', flexDirection: 'column', gap: '16px' },
+          children: [jsx(AutoStartSettings, {})],
+        })
+      : null,
 });
 
 async function start(): Promise<void> {

@@ -69,7 +69,22 @@ export interface BalanceProvider {
  *
  * 加一个服务商只要落到这三种形态之一，src/shared 与两端展示层就完全不用动。
  */
-export type BalanceShape = 'windows' | 'money' | 'points';
+export type BalanceShape = 'windows' | 'money' | 'points' | 'custom';
+
+export type CustomTag = 'div' | 'span' | 'i' | 'b' | 'strong' | 'em' | 'img';
+export interface CustomNode {
+  tag: CustomTag;
+  text?: string;
+  src?: string;
+  style?: Record<string, string>;
+  children?: CustomNode[];
+}
+export interface CustomBalance {
+  views?: CustomNode[];
+  rows?: CustomNode;
+  detailRows?: CustomNode;
+  percent?: number;
+}
 
 /** 计价档位装饰（气泡上的「峰/谷」）：由服务商按自己的计价规则算好后随数据带出 */
 export type PricingTier = 'peak' | 'idle';
@@ -153,7 +168,8 @@ export interface AccountBalanceSnapshot {
 export type BalanceSuccess =
   | { ok: true; provider: string; shape: 'windows'; data: WindowsUsage }
   | { ok: true; provider: string; shape: 'money'; data: MoneyBalance }
-  | { ok: true; provider: string; shape: 'points'; data: PointsBalance };
+  | { ok: true; provider: string; shape: 'points'; data: PointsBalance }
+  | { ok: true; provider: string; shape: 'custom'; data: CustomBalance };
 
 /**
  * 按当前服务商查询余额的结果。

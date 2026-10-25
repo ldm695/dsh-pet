@@ -99,6 +99,7 @@ async function loadConfig() {
     physics: (merged && merged.main && merged.main.physics) || S.DEFAULT_PHYSICS,
     // 抛掷锁定在当前屏幕（根字段；合并器已填内置默认 false）
     confineToScreen: (merged && merged.main && merged.main.confineToScreen) === true,
+    clickSoundEnabled: (merged && merged.main && merged.main.clickSoundEnabled) === true,
     // 字体（全局一份，合并器已填内置默认）：字体族在此取一次、注入全局变量；字号由每只宠物
     // 按自己的尺寸算（见 PetSprite 注入的 --dsh-pet-font-bubble / --dsh-pet-font-tip）
     font: (merged && merged.main && merged.main.font) || S.DEFAULT_FONT,
@@ -186,8 +187,9 @@ function injectAssets() {
 // 这条通道是必需的——桌面几何原先只在窗口创建时经 URL query 注入一次，运行期永不更新。
 if (window.petBridge && window.petBridge.onDisplays) {
   window.petBridge.onDisplays((geo) => {
+    const prevView = { x: VIEW.x, y: VIEW.y, w: VIEW.w, h: VIEW.h };
     if (!applyDeskGeometry(geo)) return;
-    for (const s of sprites) s.relayout();
+    for (const s of sprites) s.relayout(prevView);
   });
 }
 

@@ -10,7 +10,7 @@ DSH Pet 是面向 Windows 的便携桌面宠物应用。它使用 Electron 透�
 
 每次公开 GitHub Release 固定包含五个文件：大众版 Portable EXE、同版本大众版 ZIP，以及 DSH Desktop、Codex、Claude Code 三个公开桥接插件 ZIP。个人版及其专属图标只保留在维护者本机，不得上传到公开 Release。
 
-从上游 `dsh-pet@0.3.8` 插件/独立版切换到 `0.3.8-ldm.1` 时，继续使用原来的 `$DSH_HOME\dsh-pet\` 即可；桌宠配置、记忆、文件宠物和自定义动画会直接沿用。首次启动会兼容旧名 `main-config.json`（复制为 `main-config.jsonc`，保留旧文件）；若独立版的 `standalone-ai.json` 含有上游明文 API 密钥，会先导入当前用户 DPAPI，再从 JSON 中移除。上游 DSH 插件使用的 DSH 托管凭证不在桌宠配置内，迁移到不依赖 DSH 的独立程序后，需要在「独立 AI 设置」重新填写该密钥。此流程不替代旧 Fork 用户先运行 `0.3.7-ldm.11` 的要求。
+从上游 `dsh-pet@0.3.8` 插件/独立版切换到 `0.3.8-ldm.2` 时，继续使用原来的 `$DSH_HOME\dsh-pet\` 即可；桌宠配置、记忆、文件宠物和自定义动画会直接沿用。首次启动会兼容旧名 `main-config.json`（复制为 `main-config.jsonc`，保留旧文件）；若独立版的 `standalone-ai.json` 含有上游明文 API 密钥，会先导入当前用户 DPAPI，再从 JSON 中移除。上游 DSH 插件使用的 DSH 托管凭证不在桌宠配置内，迁移到不依赖 DSH 的独立程序后，需要在「独立 AI 设置」重新填写该密钥。此流程不替代旧 Fork 用户先运行 `0.3.7-ldm.11` 的要求。
 
 迁移步骤抛出异常时，程序会先把整个 `$DSH_HOME\dsh-pet\` 复制到 `$DSH_HOME\dsh-pet-migration-backups\migration-failure-<时间>-<随机标识>\dsh-pet\`，逐文件校验后，才将主配置恢复为安装包默认值并关闭独立 AI，以便继续启动。备份目录仅允许当前 Windows 用户访问。启动后可在「全局设置」查看备份位置、打开原配置文件夹，或确认后还原原配置；还原前会另存当前目录，并在还原完成后立即退出桌宠进程。若全量备份无法完成或校验失败，程序不会执行默认配置回写，也不会继续启动。
 

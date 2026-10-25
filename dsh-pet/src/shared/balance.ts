@@ -13,7 +13,7 @@ export interface RawBalanceResult {
   ok: boolean;
   provider?: string;
   /** 展示形态（host 写叶子时带上）：windows = 三窗口用量，money = 账户金额，points = 积分 */
-  shape?: 'windows' | 'money' | 'points';
+  shape?: 'windows' | 'money' | 'points' | 'custom';
   reason?: string;
   message?: string;
   data?: {
@@ -34,6 +34,10 @@ export interface RawBalanceResult {
     unit?: unknown;
     total?: unknown;
     full?: unknown;
+    views?: unknown;
+    rows?: unknown;
+    detailRows?: unknown;
+    percent?: unknown;
   };
 }
 
@@ -41,9 +45,17 @@ export interface RawBalanceResult {
 export type PricingTier = 'peak' | 'idle';
 
 /** 已解析的余额视图（展示 + 档位计算用） */
+export interface CustomNode {
+  tag: 'div' | 'span' | 'i' | 'b' | 'strong' | 'em' | 'img';
+  text?: string;
+  src?: string;
+  style?: Record<string, string>;
+  children?: CustomNode[];
+}
+
 export interface BalanceView {
   provider: string;
-  shape: 'windows' | 'money' | 'points';
+  shape: 'windows' | 'money' | 'points' | 'custom';
   ok: true;
   /**
    * 三窗口已用百分比（0-100 数字）+ 各自的重置时间。
@@ -70,6 +82,7 @@ export interface BalanceView {
   tier?: PricingTier;
   /** points：积分/点数余额；没有 full 时不参与百分比与档位动画。 */
   points?: PointsView;
+  custom?: { views: CustomNode[]; percent?: number };
 }
 
 export interface MoneyWalletView {
@@ -104,6 +117,72 @@ function optNum(value: unknown): number | undefined | null {
   if (value === undefined || value === null) return undefined;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+const CUSTOM_TAGS = new Set(['div', 'span', 'i', 'b', 'strong', 'em', 'img']);
+export const CUSTOM_LIMITS = {
+  maxDepth: 6,
+  maxNodes: 200,
+  maxChildren: 24,
+  maxText: 120,
+  maxStyleValue: 64,
+  maxSrc: 512,
+  maxViews: 4,
+} as const;
+const CUSTOM_STYLE_KEYS = new Set([
+  'display', 'flex', 'flexDirection', 'flexWrap', 'alignItems', 'justifyContent', 'gap', 'margin', 'marginTop',
+  'marginRight', 'marginBottom', 'marginLeft', 'padding', 'paddingTop', 'paddingRight', 'paddingBottom',
+  'paddingLeft', 'width', 'height', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'color', 'fontSize',
+  'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'textAlign', 'textDecoration', 'whiteSpace',
+  'verticalAlign', 'fontVariantNumeric', 'background', 'backgroundColor', 'border', 'borderTop', 'borderBottom',
+  'borderLeft', 'borderRight', 'borderRadius', 'overflow', 'opacity',
+]);
+const BANNED_CUSTOM_STYLE = /url\(|expression|javascript:|vbscript:|@import|\\|\/\*/i;
+
+function parseCustomNode(raw: unknown, depth = 0, budget = { nodes: 0 }): CustomNode | null {
+  if (
+    !raw ||
+    typeof raw !== 'object' ||
+    Array.isArray(raw) ||
+    depth >= CUSTOM_LIMITS.maxDepth ||
+    ++budget.nodes > CUSTOM_LIMITS.maxNodes
+  ) return null;
+  const value = raw as Record<string, unknown>;
+  if (typeof value.tag !== 'string' || !CUSTOM_TAGS.has(value.tag)) return null;
+  const node: CustomNode = { tag: value.tag as CustomNode['tag'] };
+  if (typeof value.text === 'string' && value.text.length) node.text = value.text.slice(0, CUSTOM_LIMITS.maxText);
+  if (node.tag === 'img') {
+    if (
+      typeof value.src !== 'string' ||
+      !/^https?:\/\//i.test(value.src) ||
+      value.src.length > CUSTOM_LIMITS.maxSrc
+    ) return null;
+    node.src = value.src;
+  }
+  if (value.style && typeof value.style === 'object' && !Array.isArray(value.style)) {
+    const style: Record<string, string> = {};
+    for (const [key, entry] of Object.entries(value.style as Record<string, unknown>)) {
+      if (
+        !CUSTOM_STYLE_KEYS.has(key) ||
+        typeof entry !== 'string' ||
+        entry.length > CUSTOM_LIMITS.maxStyleValue ||
+        BANNED_CUSTOM_STYLE.test(entry)
+      ) continue;
+      if (entry.trim()) style[key] = entry.trim();
+    }
+    if (Object.keys(style).length) node.style = style;
+  }
+  if (value.children !== undefined) {
+    if (!Array.isArray(value.children) || value.children.length > CUSTOM_LIMITS.maxChildren) return null;
+    const children: CustomNode[] = [];
+    for (const child of value.children) {
+      const parsed = parseCustomNode(child, depth + 1, budget);
+      if (!parsed) return null;
+      children.push(parsed);
+    }
+    if (children.length) node.children = children;
+  }
+  return node;
 }
 
 /**
@@ -201,7 +280,39 @@ export function toBalanceState(raw: unknown): BalanceState | null {
       },
     };
   }
+  if (r.shape === 'custom') {
+    const views: CustomNode[] = [];
+    if (Array.isArray(d.views) && d.views.length > 0) {
+      if (d.views.length > CUSTOM_LIMITS.maxViews) return null;
+      for (const rawView of d.views) {
+        const view = parseCustomNode(rawView);
+        if (!view) return null;
+        views.push(view);
+      }
+    } else {
+      const rows = parseCustomNode(d.rows);
+      if (!rows) return null;
+      views.push(rows);
+      if (d.detailRows !== undefined) {
+        const detail = parseCustomNode(d.detailRows);
+        if (!detail) return null;
+        views.push(detail);
+      }
+    }
+    const percent = typeof d.percent === 'number' && Number.isFinite(d.percent)
+      ? Math.max(0, Math.min(100, d.percent))
+      : undefined;
+    return { provider, shape: 'custom', ok: true, custom: { views, percent } };
+  }
   return null;
+}
+
+export function customViews(state: BalanceState): CustomNode[] | undefined {
+  return state.ok && state.shape === 'custom' ? state.custom?.views : undefined;
+}
+
+export function customClickable(state: BalanceState): boolean {
+  return (customViews(state)?.length ?? 0) > 1;
 }
 
 /**
@@ -211,6 +322,7 @@ export function toBalanceState(raw: unknown): BalanceState | null {
  *   0 元 → 100%）。多币种各自按基准折算后相加；没有基准 → undefined（不播档位动画，不替服务商猜一个）
  */
 export function balancePercent(v: BalanceView): number | undefined {
+  if (v.shape === 'custom') return v.custom?.percent;
   if (v.shape === 'points') {
     const total = Number(v.points?.total);
     const full = Number(v.points?.full);
@@ -438,6 +550,7 @@ export function balanceBubbleView(state: BalanceState): BalanceBubbleRow[] {
         ? [{ role: 'label', text: '余额 ' + points.total + ' ' + points.unit }]
         : [{ role: 'label', text: '积分数据不可用' }];
     }
+    if (state.shape === 'custom') return [];
     // money：多个币种按各自金额展示，CNY 优先；0 余额不占位，全部为 0 时仍显示 ¥0.00。
     const wallets = state.wallets ?? [];
     if (wallets.length === 0) return [{ role: 'label', text: '余额数据不可用' }];

@@ -12,7 +12,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
@@ -67,6 +67,15 @@ type Logger = {
   debug?: (...args: unknown[]) => void;
 };
 
+function isNonEmptyFile(path: string): boolean {
+  try {
+    const stat = statSync(path);
+    return stat.isFile() && stat.size > 0;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 解析 Electron 可执行文件。
  * 优先级：
@@ -95,7 +104,7 @@ export function resolveElectronPath(candidates: Array<string | undefined> = []):
   // 只认自己的落地路径（ensureElectronDownload 下载解压到 $DSH_HOME/electron）；
   // 不再去 npm 全局目录 / Program Files / /usr/bin 等别处探测别人装的 Electron。
   push(defaultElectronExe());
-  return list.find((value) => existsSync(value));
+  return list.find(isNonEmptyFile);
 }
 
 /** $DSH_HOME（默认 ~/.dsh），与 ensure-electron.mjs 的 HOME 计算一致。 */
@@ -188,7 +197,7 @@ export async function ensureElectronDownload(options: EnsureElectronOptions = {}
   const timeoutMs = options.timeoutMs ?? 10 * 60 * 1000;
   const targetDir = electronLandingDir();
   const exe = defaultElectronExe();
-  if (existsSync(exe)) return exe;
+  if (isNonEmptyFile(exe)) return exe;
 
   // 静态导入会把下载器及其依赖带入所有启动路径；只有缺少 Electron、确实需要下载时才加载。
   const sink = options.logger ?? console;
@@ -204,6 +213,7 @@ export async function ensureElectronDownload(options: EnsureElectronOptions = {}
   };
   const startedAt = Date.now();
 
+  if (existsSync(exe)) info(`Electron cache is invalid: ${exe}`, `Electron 缓存无效，准备重新下载：${exe}`);
   info(`Electron not found, downloading v${version} (${PLAT}-${process.arch}) ...`, `正在下载 Electron ${version}`);
 
   try {
@@ -253,8 +263,8 @@ export async function ensureElectronDownload(options: EnsureElectronOptions = {}
       // 失败会落进本函数的 catch 并返回启动错误。
       const { default: extract } = await import('@electron-internal/extract-zip');
       await extract(zipPath, { dir: targetDir });
-      if (!existsSync(exe)) {
-        throw new Error(`Electron zip extracted, but ${ELECTRON_REL} not found`);
+      if (!isNonEmptyFile(exe)) {
+        throw new Error(`Electron zip extracted, but ${ELECTRON_REL} is missing, empty or not a regular file`);
       }
       const readySeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
       info(`ready in ${readySeconds}s: ${exe}`, `Electron 已就绪（${readySeconds}s），正在启动桌宠`, true);

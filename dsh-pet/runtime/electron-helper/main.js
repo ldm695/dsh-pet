@@ -35,7 +35,7 @@ try {
   );
   process.exit(3);
 }
-const { app, BrowserWindow, ipcMain, screen, shell, protocol, Notification } = electronApi;
+const { app, BrowserWindow, ipcMain, screen, shell, protocol, Notification, powerMonitor } = electronApi;
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { execFileSync, spawn } = require('node:child_process');
@@ -43,6 +43,7 @@ const { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } = requi
 const fsPromises = require('node:fs/promises');
 // 点击穿透兜底通道的纯判定（不依赖 Electron 的 forward 鼠标钩子；见文件头注释）
 const { decideWindowIgnore, pointerZone, POINTER_POLL_MS } = require('./pointer-target.js');
+const { createLinuxPointer } = require('./x11-pointer.js');
 // 置顶看门狗：WS_EX_TOPMOST 只是样式位，不等于窗口真的在置顶带（见 topmost-watchdog.js 头部）
 const {
   TOPMOST_WATCHDOG_TICK_MS,
@@ -55,6 +56,13 @@ const { HOST_POLL_MS, hostIsGone, isBrokenPipeError, parseHostPid } = require('.
 // 全局 DPI 线性化的纯判定与换算（含平台例外：macOS 的 DIP 已是「点」，无需补偿；见该文件头）
 const { shouldLinearize, resolveForcedScale, resolvePetScale } = require('./dpi-linearization.js');
 const { buildDeskGeometry } = require('./desktop-geometry.js');
+const linuxPointer = process.platform === 'linux' ? createLinuxPointer() : null;
+function currentPointer() {
+  const raw = linuxPointer && linuxPointer.get();
+  if (!raw) return screen.getCursorScreenPoint();
+  const scale = screen.getPrimaryDisplay().scaleFactor || 1;
+  return scale === 1 ? raw : { x: Math.round(raw.x / scale), y: Math.round(raw.y / scale) };
+}
 const { MoveTargets } = require('./move-targets.js');
 const { MOVE_TARGETS_CHANNELS, registerMoveTargetHandlers } = require('./move-ipc.js');
 const { WorkStatusAssignmentManager } = require('./shared-core.js');
@@ -65,7 +73,12 @@ const { FullscreenDisplayStabilizer } = require('./fullscreen-state.js');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 // Match upstream rendering policy: Windows transparent pet windows use software composition.
-if (process.platform === 'win32') app.disableHardwareAcceleration();
+if (process.platform === 'win32') {
+  app.disableHardwareAcceleration();
+  // Disabling hardware acceleration still leaves Chromium's GPU process enabled. On Windows systems
+  // with virtual displays its sandbox can crash during startup; allow opting back into the sandbox.
+  if (process.env.DSH_PET_GPU_SANDBOX !== '1') app.commandLine.appendSwitch('disable-gpu-sandbox');
+}
 
 // 显式定名：Helper 是被 `electron.exe <main.js>` 直接拉起的，Electron 取不到 app 名会回落成
 // "Electron"，userData 便落到 %APPDATA%\Electron —— 那是所有这么跑的 Electron 脚本的公共目录，
@@ -298,6 +311,7 @@ const fullscreenVisibilitySequences = new Map();
 const reducedMotionByRenderer = new Map();
 const fullscreenTransitionWaiters = new Map();
 let fullscreenTransitionSequence = 0;
+let foregroundWindowIsTopmost = false;
 const FULLSCREEN_FADE_MS = 220;
 const NATIVE_SHOW_SETTLE_MS = 260;
 const pendingPetPositions = new Map();
@@ -526,6 +540,14 @@ function showPetWindow(win) {
   }
 }
 
+function keepOffTaskbar(win) {
+  if (!win || win.isDestroyed()) return;
+  win.setSkipTaskbar(true);
+  setTimeout(() => {
+    if (!win.isDestroyed()) win.setSkipTaskbar(true);
+  }, 0);
+}
+
 function applyFullscreenVisibility() {
   for (const win of new Set(windows.values())) {
     if (win.isDestroyed()) continue;
@@ -555,6 +577,7 @@ function updateFullscreenDisplays(sample, losslessScalingWindows = []) {
     className = '',
     isMaximized = false,
   } = sample || {};
+  foregroundWindowIsTopmost = sample?.isTopmost === true;
   const values = [sampleLeft, sampleTop, sampleRight, sampleBottom].map(Number);
   if (values.some((value) => !Number.isFinite(value))) return;
   const [left, top, right, bottom] = values;
@@ -1052,7 +1075,11 @@ function createPetWindows() {
     win.webContents.on('context-menu', (event) => event.preventDefault());
     win.webContents.on('did-finish-load', () => win.webContents.setZoomFactor(scale));
     setWindowIgnore(win, true);
-    win.once('ready-to-show', () => showPetWindow(win));
+    win.on('show', () => keepOffTaskbar(win));
+    win.once('ready-to-show', () => {
+      keepOffTaskbar(win);
+      showPetWindow(win);
+    });
     win.webContents.once('did-finish-load', () => {
       setTimeout(() => {
         if (!win.isDestroyed() && !win.isVisible() && !shouldHideOnFullscreen(win)) {
@@ -1066,7 +1093,7 @@ function createPetWindows() {
       if (bounds.width < 8 || bounds.height < 8) return;
       const ignoring = windowIgnore.get(win.id) !== false;
       const busy = inputBusy.get(win.id) === true;
-      const point = screen.getCursorScreenPoint();
+      const point = currentPointer();
       const margins = winMargins.get(win.id);
       const zone = pointerZone(bounds, point, margins);
       const offBodyDuration = !busy && zone === 'margin' ? (offBodyMs.get(win.id) ?? 0) + POINTER_POLL_MS : 0;
@@ -1090,10 +1117,11 @@ function createPetWindows() {
           nowMs,
           lastAssertMs: lastTopmostAssertMs,
           destroyed: win.isDestroyed(),
-          visible: win.isVisible(),
+          visible: win.isVisible() && fullscreenWindowTargets.get(win.id) !== true,
           paused: pointerFallbackPaused,
+          foregroundTopmost: foregroundWindowIsTopmost,
         },
-        TOPMOST_WATCHDOG_ENABLED,
+        TOPMOST_WATCHDOG_ENABLED && process.platform === 'win32' && HIDE_ON_FULLSCREEN,
       );
       if (!due) return;
       lastTopmostAssertMs = nowMs;
@@ -1333,7 +1361,14 @@ app.whenReady().then(async () => {
 
   registerNotificationAndFullscreenIpc();
   startFullscreenWatcher();
+  linuxPointer?.start();
   createPetWindows();
+
+  const reassertTaskbar = () => {
+    for (const win of windows.values()) keepOffTaskbar(win);
+  };
+  powerMonitor.on('resume', reassertTaskbar);
+  powerMonitor.on('unlock-screen', reassertTaskbar);
 
   // 工作状态 Agent→桌宠归属由主进程统一仲裁；独立 renderer 不能各自把同一 Agent 分给本窗口的宠物。
   ipcMain.on('pet:work-status-snapshot', acceptWorkStatusSnapshot);
@@ -1436,7 +1471,7 @@ app.whenReady().then(async () => {
       interactive && input && inputBusy.get(win.id)
         ? decideWindowIgnore(
             win.getContentBounds(),
-            screen.getCursorScreenPoint(),
+            currentPointer(),
             false,
             true,
             0,
@@ -1650,7 +1685,9 @@ app.whenReady().then(async () => {
   const pushDisplays = () => {
     const geo = deskGeometry();
     for (const win of new Set(windows.values())) {
-      if (!win.isDestroyed()) win.webContents.send('pet:displays', geo);
+      if (win.isDestroyed()) continue;
+      keepOffTaskbar(win);
+      win.webContents.send('pet:displays', geo);
     }
     console.error('[dsh-pet-desktop-helper] displays changed: ' + JSON.stringify(geo));
     // 主屏缩放可能一起变了（它决定宠物的尺寸补偿）。线性化生效期间 screen API 只报被强制的值，

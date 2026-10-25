@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const publicIconRelativePath = join('assets', 'logo-rounded.png');
-const personalIcon = join(projectRoot, 'assets', 'dsh-pet-icon-16.png');
+const personalIcon = join(projectRoot, 'assets', 'dsh-pet-icon-256.png');
 const variantFlagIndex = process.argv.indexOf('--variant');
 const variantArg = process.argv.find((arg) => arg.startsWith('--variant='))?.slice('--variant='.length)
   ?? (variantFlagIndex >= 0 ? process.argv[variantFlagIndex + 1] : undefined)

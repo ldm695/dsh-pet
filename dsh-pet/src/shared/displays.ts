@@ -90,6 +90,15 @@ export const clampPointToRegion = (rects: Rect[], x: number, y: number): { x: nu
 };
 
 /** 并集面积（各屏不重叠时 = 面积和；重叠会重复计，仅作诊断用） */
+/** Preserve a pet's world position when display topology moves the virtual viewport. */
+export const rebaseCenter = (
+  center: { x: number; y: number },
+  fromView: { x: number; y: number },
+  toView: { x: number; y: number },
+  areas: Rect[],
+): { x: number; y: number } =>
+  clampPointToRegion(areas, center.x + fromView.x - toView.x, center.y + fromView.y - toView.y);
+
 export const regionArea = (rects: Rect[]): number => rects.reduce((s, r) => s + r.width * r.height, 0);
 
 /** 外接矩形中不属于任何显示器的面积占比 0~1（诊断/日志用；矩形不重叠时精确） */

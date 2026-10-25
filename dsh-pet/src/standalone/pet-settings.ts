@@ -186,6 +186,8 @@ export const zh = {
   userConfig: '用户配置（自定义覆盖）',
   animationDir: '动画素材目录（可自定义/扩充动画）',
   memesDir: '表情包目录（可自定义/扩充配图）',
+  clickSound: '点击桌宠时播放音效',
+  clickSoundHint: '点击桌宠时播放内置短音效；默认关闭。',
   saved: '已保存，桌宠即时生效。',
   loadError: '加载配置失败',
   loading: '正在加载配置…',
@@ -363,6 +365,8 @@ export const en = {
   userConfig: 'User config (custom overrides)',
   animationDir: 'Animation assets dir (add/customize animations here)',
   memesDir: 'Meme images dir (add/customize images here)',
+  clickSound: 'Play a sound when clicking a pet',
+  clickSoundHint: 'Play the built-in short sound when clicking a pet. Off by default.',
   saved: 'Saved — the pets updated instantly.',
   loadError: 'Failed to load config',
   loading: 'Loading config…',
@@ -825,6 +829,7 @@ export function makePetConfigSection(rt: {
       animations: string;
       /** 用户表情包目录（$DSH_HOME/dsh-pet/memes：加图不必改包） */
       memes?: string;
+      logs?: string;
       /** 插件落盘的全部位置（路径 + 是否已存在），host 按平台推导 */
       storage?: Array<{ key: string; path: string; exists?: boolean }>;
     }>(null);
@@ -887,6 +892,7 @@ export function makePetConfigSection(rt: {
     // 拖拽落点清空、宠物跳回配置角落），于是"改个通知开关，桌面被重置"，与其它开关行为不一致。
     // 通知配置由桌面宿主处理。
     const [notifyEnabled, setNotifyEnabled] = useState(true);
+    const [clickSoundEnabled, setClickSoundEnabled] = useState(false);
     // 表情包配图开关（全局：写用户级配置；与「保存」一起提交，不做即时写入）
     const [whisperImage, setWhisperImage] = useState(false);
     const [chatImage, setChatImage] = useState(false);
@@ -923,6 +929,7 @@ export function makePetConfigSection(rt: {
         applySettingsTheme(m.uiTheme);
       }
       if (typeof m.notificationsEnabled === 'boolean') setNotifyEnabled(m.notificationsEnabled);
+      if (typeof m.clickSoundEnabled === 'boolean') setClickSoundEnabled(m.clickSoundEnabled);
       if (typeof m.whisperImageEnabled === 'boolean') setWhisperImage(m.whisperImageEnabled);
       if (typeof m.chatImageEnabled === 'boolean') setChatImage(m.chatImageEnabled);
       if (typeof m.confineToScreen === 'boolean') setConfineScreen(m.confineToScreen);
@@ -1080,6 +1087,7 @@ export function makePetConfigSection(rt: {
         const body: Record<string, unknown> = {
           pets: petsToSave,
           notificationsEnabled: notifyEnabled,
+          clickSoundEnabled,
           whisperImageEnabled: whisperImage,
           chatImageEnabled: chatImage,
           confineToScreen: confineScreen,
@@ -1524,6 +1532,7 @@ export function makePetConfigSection(rt: {
                   className: 'dsh-pet-cfg__globalToggles',
                   children: [
                     toggleCell('notifyToggle', notifyEnabled, busy, (v) => void toggleNotify(v)),
+                    toggleCell('clickSound', clickSoundEnabled, busy, setClickSoundEnabled),
                     toggleCell('whisperImageToggle', whisperImage, busy, setWhisperImage),
                     toggleCell('chatImageToggle', chatImage, busy, setChatImage),
                     toggleCell('confineToggle', confineScreen, busy, setConfineScreen, true),
@@ -1685,6 +1694,9 @@ export function makePetConfigSection(rt: {
                     h('div', { className: 'dsh-pet-cfg__path', children: t('animationDir') + '：' + paths.animations }),
                     paths.memes
                       ? h('div', { className: 'dsh-pet-cfg__path', children: t('memesDir') + '：' + paths.memes })
+                      : null,
+                    paths.logs
+                      ? h('div', { className: 'dsh-pet-cfg__path', children: '日志文件（排障用）：' + paths.logs })
                       : null,
                   ],
                 })

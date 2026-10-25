@@ -21,6 +21,7 @@ files:
   - assets/fonts/**
   - assets/pic/**
   - assets/memes/**
+  - assets/sound/**
   - node_modules/@electron/get/**
   - node_modules/@electron-internal/extract-zip/**
   - '!**/*.map'

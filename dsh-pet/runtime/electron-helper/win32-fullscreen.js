@@ -26,6 +26,9 @@ function createFullscreenWindowProbe() {
   );
 
   const getForegroundWindow = user32.func('DshPetFullscreenHwnd __stdcall GetForegroundWindow()');
+  const getWindowLong = user32.func(
+    'int32_t __stdcall GetWindowLongW(DshPetFullscreenHwnd hWnd, int32_t nIndex)',
+  );
   const getWindowRect = user32.func(
     'int32_t __stdcall GetWindowRect(DshPetFullscreenHwnd hWnd, _Out_ DshPetFullscreenRect *lpRect)',
   );
@@ -146,6 +149,7 @@ function createFullscreenWindowProbe() {
       bottom: rect.bottom,
       className: classNameLength > 0 ? classNameBuffer.toString('ascii', 0, classNameLength) : '',
       isMaximized: Boolean(isZoomed(hWnd)),
+      isTopmost: Boolean(getWindowLong(hWnd, -20) & 0x8),
     };
   }
 

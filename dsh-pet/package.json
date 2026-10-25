@@ -1,6 +1,6 @@
 {
   "name": "dsh-pet",
-  "version": "0.3.8-ldm.1",
+  "version": "0.3.8-ldm.2",
   "private": true,
   "description": "DSH Pet Windows 独立桌宠应用。",
   "keywords": [
@@ -39,7 +39,8 @@
     "assets/webm",
     "assets/fonts",
     "assets/pic",
-    "assets/memes"
+    "assets/memes",
+    "assets/sound"
   ],
   "scripts": {
     "bundle": "tsdown",
@@ -89,6 +90,7 @@
     "electron": "43.3.0",
     "electron-builder": "^26.15.3",
     "eslint": "^10.9.0",
+    "eslint-plugin-jsdoc": "^65.4.2",
     "eslint-plugin-react-hooks": "^7.1.1",
     "js-yaml": "^5.4.2",
     "playwright": "1.63.0",
