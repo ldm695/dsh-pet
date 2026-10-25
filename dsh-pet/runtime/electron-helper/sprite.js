@@ -2141,16 +2141,17 @@ class PetSprite {
     this.stopThrow(); // 菜单弹出前停住飞行中的宠物
     this.stopMove(); // 菜单悬停期间宠物不漫游
     // 独立模式的 AI 开关保存在专用设置中，不属于桌宠 config 文件；打开菜单时刷新一次，
-    // 让保存开关后立即隐藏/显示对话项，而无需重启 Helper。DSH 宿主模式不增加此请求。
+    // 让保存开关后更新后续菜单的对话项，而无需重启 Helper。DSH 宿主模式不增加此请求。
+    // 刷新必须后台进行：菜单是即时交互，不能让本地 HTTP 请求卡住 contextmenu 事件。
     if (STANDALONE) {
-      try {
-        const response = await fetch(BASE + '/config', { cache: 'no-store' });
-        if (response.ok) {
-          const latest = await response.json();
-          config.aiChatEnabled = !(latest && latest.main && latest.main.dshPetAiChatEnabled === false);
-          config.balanceQuerySupported = !(latest && latest.main && latest.main.dshPetBalanceQuerySupported === false);
-        }
-      } catch {}
+      fetch(BASE + '/config', { cache: 'no-store' })
+        .then((response) => (response.ok ? response.json() : null))
+        .then((latest) => {
+          if (!latest) return;
+          config.aiChatEnabled = !(latest.main && latest.main.dshPetAiChatEnabled === false);
+          config.balanceQuerySupported = !(latest.main && latest.main.dshPetBalanceQuerySupported === false);
+        })
+        .catch(() => {});
     }
     // 桌面专属工具根项（打开网站 / 查看余额 / 碎碎念 / 对话 / 回到初始位置）+ 共享菜单树（动作→分类→具体动画）
     // 碎碎念/对话项无条件显示：手动触发不受 whisperEnabled 限制（该字段只影响自动周期轮询）
