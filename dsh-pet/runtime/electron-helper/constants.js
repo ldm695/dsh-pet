@@ -37,6 +37,8 @@ function toLocal(v) {
 // bridge 模式（DSH_PET_BRIDGE=1）：请求走自定义 scheme 经主进程转宿主管道，绕开 DSH 桌面应用的
 // 浏览器访问闸门（它只放行带令牌的请求，插件自拉进程的裸 HTTP 一律 403）。
 const BRIDGE = params.get('bridge') === '1';
+// 独立版通过主进程注入此标记；独立菜单项仍依赖它区分宿主版功能。
+const STANDALONE = params.get('standalone') === '1';
 // 工具项「打开网站」的去向（主进程按宿主形态注入）：desktop = 唤起 DSH 桌面应用主窗口，site = 打开站点。
 const OPEN_TARGET = params.get('openTarget') === 'desktop' ? 'desktop' : 'site';
 // 视口 = 全部显示器工作区的外接矩形，只是坐标系原点与比例换算基准；边界判定一律走 AREAS 的并集

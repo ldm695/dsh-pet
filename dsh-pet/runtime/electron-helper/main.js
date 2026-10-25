@@ -1834,7 +1834,27 @@ app.whenReady().then(async () => {
               var errsBefore = (d.errors || []).length;
               try {
                 hit.dispatchEvent(
-                  new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 400, clientY: 260, screenX: 400, screenY: 260 }),
+                  new PointerEvent('pointerdown', {
+                    bubbles: true,
+                    cancelable: true,
+                    button: 2,
+                    clientX: 400,
+                    clientY: 260,
+                    screenX: 400,
+                    screenY: 260,
+                    pointerId: 95,
+                  }),
+                );
+                hit.dispatchEvent(
+                  new MouseEvent('contextmenu', {
+                    bubbles: true,
+                    cancelable: true,
+                    button: 2,
+                    clientX: 400,
+                    clientY: 260,
+                    screenX: 400,
+                    screenY: 260,
+                  }),
                 );
               } catch (err) {
                 return { threw: String(err), menuMounted: false };
@@ -1912,6 +1932,7 @@ app.whenReady().then(async () => {
               ' => ' +
               JSON.stringify(dump),
           );
+          writeFileSync(smokeOut + '.json', JSON.stringify(dump, null, 2), 'utf8');
           console.log('[dsh-pet-desktop-helper] smoke bounds:', JSON.stringify(first.getContentBounds()));
           // 点击穿透 round-trip：setInteractive(true)→窗口捕获输入（忽略鼠标=false）；
           // setInteractive(false)→恢复整窗穿透（忽略鼠标=true）。状态取自主进程镜像 windowIgnore。

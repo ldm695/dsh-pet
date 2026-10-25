@@ -2134,7 +2134,7 @@ class PetSprite {
     return { x: vx0 - winX, y: vy0 - winY, w, h };
   }
 
-  async onContextMenu(e) {
+  onContextMenu(e) {
     const d = this.dragState;
     if (d.active || d.dragging || this.justDragged || this.menuOpen) return;
     e.preventDefault();
