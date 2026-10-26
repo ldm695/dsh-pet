@@ -13,6 +13,7 @@ interface AiForm {
   clearApiKey: boolean;
   enabled: boolean;
   automaticWhispers: boolean;
+  whispersOnlyOffPeak: boolean;
   whisperIntervalSec: number;
   maxTokens: number;
   chatMemoryRounds: number;
@@ -23,7 +24,7 @@ interface TestResult { ok: boolean; message: string; reply?: string; error?: str
 
 const INITIAL: AiForm = {
   protocol: 'openai-compatible', baseUrl: '', model: '', apiKey: '', clearApiKey: false,
-  enabled: false, automaticWhispers: false, whisperIntervalSec: 300, maxTokens: 1024,
+  enabled: false, automaticWhispers: false, whispersOnlyOffPeak: false, whisperIntervalSec: 300, maxTokens: 1024,
   chatMemoryRounds: 5, chatImageLimit: 10, hasKey: false,
 };
 const PROTOCOLS: Array<{ value: Protocol; label: string }> = [
@@ -139,6 +140,7 @@ export function AiSettingsPage(): ReturnType<typeof jsx> {
         model: typeof data.model === 'string' ? data.model : '',
         enabled: data.enabled === true,
         automaticWhispers: data.automaticWhispers === true,
+        whispersOnlyOffPeak: data.whispersOnlyOffPeak === true,
         whisperIntervalSec: Number(data.whisperIntervalSec) || 300,
         maxTokens: Number(data.maxTokens) || 1024,
         chatMemoryRounds: Number.isFinite(Number(data.chatMemoryRounds)) ? Math.max(0, Number(data.chatMemoryRounds)) : 5,
@@ -180,6 +182,7 @@ export function AiSettingsPage(): ReturnType<typeof jsx> {
     setForm((current) => ({
       ...current,
       protocol,
+      ...(protocol !== 'deepseek-official' ? { whispersOnlyOffPeak: false } : {}),
       ...(protocol === 'deepseek-official' ? { baseUrl: 'https://api.deepseek.com' } : {}),
     }));
     setTest(null);
@@ -196,6 +199,7 @@ export function AiSettingsPage(): ReturnType<typeof jsx> {
       const result = await request('POST', {
         protocol: form.protocol, baseUrl: form.baseUrl.trim(), model: form.model.trim(), apiKey: form.apiKey,
         clearApiKey: form.clearApiKey, enabled: form.enabled, automaticWhispers: form.automaticWhispers,
+        whispersOnlyOffPeak: form.whispersOnlyOffPeak,
         whisperIntervalSec: Number(form.whisperIntervalSec), maxTokens: Number(form.maxTokens),
         chatMemoryRounds: Number(form.chatMemoryRounds), chatImageLimit: Number(form.chatImageLimit),
       });
@@ -330,6 +334,17 @@ export function AiSettingsPage(): ReturnType<typeof jsx> {
               jsx(SettingsCardHeader, { id: 'whisper-title', title: '定时自动碎碎念' }),
               check('开启自动碎碎念', 'automaticWhispers'),
               jsx('p', { className: 'ai-settings__notice', children: '开启后，桌宠会按设定间隔定时调用模型并在桌面上说话冒泡（产生 API 费用）。默认关闭；右键菜单中的手动对话与手动碎碎念不受此开关限制。' }),
+              jsx('label', {
+                className: 'ai-settings__check',
+                children: [
+                  jsx('input', {
+                    type: 'checkbox', checked: form.whispersOnlyOffPeak,
+                    disabled: busy || form.protocol !== 'deepseek-official',
+                    onChange: (event: ChangeEvent<HTMLInputElement>) => update('whispersOnlyOffPeak', event.target.checked),
+                  }),
+                  jsx('span', { children: '仅在谷价时执行碎碎念' }),
+                ],
+              }),
               jsx('div', {
                 className: 'ai-settings__fields',
                 children: [

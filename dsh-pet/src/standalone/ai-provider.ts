@@ -4,6 +4,7 @@ import { createAiConfig, validateSettings } from './ai-config';
 import type { StandaloneAiPublicSettings, StandaloneAiSettings } from './ai-config';
 import { isAuthenticationFailure, isRateLimitFailure, sdkTextStream } from './ai-transport';
 import type { AiFetch, AiRequest, AiTransportEvent } from './ai-transport';
+import { deepseekPricingTier } from '../host/balance/deepseek-common';
 
 const PROVIDER = 'standalone';
 const MAX_INPUT_CHARS = 32_768;
@@ -302,6 +303,7 @@ export function createStandaloneAi(
             apiKey: draft.apiKey?.trim() || current.apiKey,
             enabled: true,
             automaticWhispers: false,
+            whispersOnlyOffPeak: false,
             maxTokens: 128,
             timeoutMs: 15_000,
           },
@@ -400,7 +402,12 @@ export function createStandaloneAi(
         testing = false;
       }
     },
-    canWhisper: () => ready() && store.current().automaticWhispers,
+    canWhisper: () => {
+      const settings = store.current();
+      if (!ready() || !settings.automaticWhispers) return false;
+      return !settings.whispersOnlyOffPeak ||
+        (settings.protocol === 'deepseek-official' && deepseekPricingTier() === 'idle');
+    },
     deepSeekApiKey: () =>
       store.current().protocol === 'deepseek-official'
         ? store.current().apiKey

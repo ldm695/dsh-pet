@@ -9,6 +9,7 @@ export interface StandaloneAiPublicSettings {
   model: string;
   enabled: boolean;
   automaticWhispers: boolean;
+  whispersOnlyOffPeak: boolean;
   whisperIntervalSec: number;
   maxTokens: number;
   chatMemoryRounds: number;
@@ -24,6 +25,7 @@ export const DEFAULT_AI_SETTINGS: Readonly<StandaloneAiSettings> = Object.freeze
   model: '',
   enabled: false,
   automaticWhispers: false,
+  whispersOnlyOffPeak: false,
   whisperIntervalSec: 300,
   maxTokens: 1024,
   chatMemoryRounds: 5,
@@ -64,6 +66,7 @@ const fields = {
     .refine((s) => !containsControlChar(s)),
   enabled: z.boolean(),
   automaticWhispers: z.boolean(),
+  whispersOnlyOffPeak: z.boolean(),
   whisperIntervalSec: z.number().int().min(60).max(86400),
   maxTokens: z.number().int().min(128).max(4096),
   chatMemoryRounds: z.number().min(0),
@@ -86,6 +89,9 @@ export function validateSettings(input: unknown, previous: Readonly<StandaloneAi
     const next = persistedSchema.parse({ ...previous, ...values, apiKey });
     if (next.protocol === 'deepseek-official' && next.baseUrl !== 'https://api.deepseek.com') {
       throw new Error('DeepSeek official API must use its official endpoint.');
+    }
+    if (next.whispersOnlyOffPeak && next.protocol !== 'deepseek-official') {
+      throw new Error('Off-peak whisper scheduling requires DeepSeek official API.');
     }
     if (next.enabled && (!next.model || !next.baseUrl || !next.apiKey)) throw new Error('Incomplete settings');
     return next;
