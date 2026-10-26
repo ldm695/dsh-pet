@@ -205,8 +205,18 @@ export function AiSettingsPage(): ReturnType<typeof jsx> {
       });
       const next = { ...form, apiKey: '', clearApiKey: false, hasKey: result.hasKey === true };
       setForm(next);
-      setMessage('已保存到本机。');
-      setMessageError(false);
+      try {
+        const reloadResponse = await fetch('/dsh-pet-7340/reload', {
+          method: 'POST', credentials: 'omit', cache: 'no-store', redirect: 'error',
+          headers: { 'X-DSH-Pet-Token': tokenRef.current },
+        });
+        if (!reloadResponse.ok) throw new Error(`HTTP ${reloadResponse.status}`);
+        setMessage('已保存到本机，正在重载桌宠窗口…');
+        setMessageError(false);
+      } catch (error) {
+        setMessage(`设置已保存，但桌宠窗口重载失败：${errorMessage(error)}。可从桌宠菜单手动重载配置。`);
+        setMessageError(true);
+      }
     } catch (error) {
       setMessage(errorMessage(error));
       setMessageError(true);
