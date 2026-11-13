@@ -4,7 +4,7 @@
  * The DSH host imports these declarations with `import type` only. They disappear from
  * the emitted plugin bundle, preserving the host's single-file runtime requirement.
  */
-export type StateSectionName = 'balance' | 'workStatus' | 'notify' | 'config' | 'menu' | 'env';
+export type StateSectionName = 'balance' | 'workStatus' | 'notify' | 'config' | 'menu' | 'focusSession' | 'env';
 
 export type PetLeafName = 'say' | 'anim' | 'position' | 'throw' | 'lock' | 'sleep';
 

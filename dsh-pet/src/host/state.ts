@@ -35,25 +35,25 @@
  */
 
 import type {
-  PetLeafName as SharedPetLeafName,
   StateLeaf,
-  StateSectionName,
   StateStoreSnapshot,
 } from '../shared/state-contract';
 
 export type { StateLeaf } from '../shared/state-contract';
 
 /** 全局段（所有端共享一份）。
- *  `config` 是**纯信号叶子**：`data` 恒为 `{}`，只看 `counter`——它变了就说明配置被写过，
- *  消费端据此重拉 `GET /config`（配置本体太大，不能塞进每秒一次的 /state）。
- *  当前只有 `POST /pet-display` 写它：那是唯一一个**不是发起页面自己**的配置改动
- *  （桌面端右键改显示位置），渲染端通过版本号获知变化。
- *  保存 / 同步配置（PUT / POST /config）**不写**——它们的调用方自己就拿到了成品聚合。 */
-export type SectionName = StateSectionName;
+ *  `config` 是纯信号叶子：data 恒为 {}，消费端只看 counter 变了就去重拉 GET /config——配置本体太大，
+ *  不能塞进每秒一次的 /state。当前只有 POST /pet-display 写它：桌面端右键改显示位置时，浏览器
+ *  页面不是发起方，只能靠这个信号知道配置被别处改过；保存 / 同步配置的调用方自己拿到了成品聚合，
+ *  所以不写。 */
+export type SectionName = 'balance' | 'workStatus' | 'notify' | 'config' | 'menu' | 'focusSession' | 'env';
 
-/** 每宠物段（say = 要说的话；anim = 要播的动画名；position = 要挪到的位置；throw = 要给的初速度）。
- *  后两个是**指令**（host → 前端），与 say/anim 同族：前端读到即执行，不往它们写任何东西。 */
-export type PetLeafName = SharedPetLeafName;
+/** 每宠物段（say = 要说的话；anim = 要播的动画名；position = 要挪到的位置；throw = 要给的初速度；
+ *  lock = 占用锁状态；sleep = 睡觉状态）。
+ *  say / anim / position / throw 是 host → 前端的指令：前端读到即执行，不往它们写任何东西。
+ *  `lock` / `sleep` 是状态不是指令：前端读它决定要不要冻结或播睡姿，并按叶子里的值自己收尾——
+ *  宿主侧没有定时器（见 ./lock、./sleep）。 */
+export type PetLeafName = 'say' | 'anim' | 'position' | 'throw' | 'lock' | 'sleep';
 
 /** S 的完整形态（GET /state 的响应体）。
  *  `counter` = 整份 S 的版本号，就是"最后一次写入的编号"（见类里的 `last`）。
@@ -136,7 +136,11 @@ export class PollStateStore {
       // 第三方右键菜单项（src/host/menu 的注册表快照）：第三方菜单注册/覆盖时写它，
       // 浏览器与桌面两端据此在右键菜单里拼出「更多」。data 形状见 shared/menu 的 readMenuItems。
       menu: emptyLeaf(),
-      // 天气/位置查询结果：独立气泡状态，不覆盖 say、余额或工作状态气泡。
+      // 桌面宠物点会话气泡后的跳转意图（`POST /focus-session`）：页面据此切会话。
+      // 一次性信号：带 ts，消费端据它判重，页面晚于写入加载时仍可重放一次。
+      focusSession: emptyLeaf(),
+      // 环境快照（`POST /environment`）：地点与天气一份，`petId` 决定哪只宠物点亮环境气泡。
+      // 与余额同一层：机器级事实，所有宠物读同一份。
       env: emptyLeaf(),
     };
     this.pets = new Map();

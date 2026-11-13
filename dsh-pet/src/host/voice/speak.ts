@@ -7,10 +7,10 @@
  * @module dsh-pet/src/host/voice/speak
  */
 import { stat, writeFile } from 'node:fs/promises';
-import { cacheKey, cachePath, ensureCacheDir, pruneCache } from './cache';
-import { VoiceSynthError, synthesize, type SynthInput } from './edge';
-import { BUILTIN_VOICE_ID, activeVoiceProvider, type VoiceProvider } from './registry';
-import { DEFAULT_VOICE, VOICES, isKnownVoice, type VoiceInfo } from './voices';
+import { cacheKey, cachePath, ensureCacheDir, pruneCache } from './cache.ts';
+import { VoiceSynthError, synthesize, type SynthInput } from './edge.ts';
+import { BUILTIN_VOICE_ID, activeVoiceProvider, type VoiceProvider } from './registry.ts';
+import { DEFAULT_VOICE, VOICES, isKnownVoice, type VoiceInfo } from './voices.ts';
 
 /** 单次请求允许的最大文本长度（字符，按 UTF-16 计）。 */
 export const MAX_TEXT_CHARS = 500;

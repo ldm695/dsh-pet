@@ -20,15 +20,20 @@ import {
   HELPER_STABLE_MS,
   HELPER_STOP_GRACE_MS,
   HelperProcess,
+  crashLoopAdvice,
+  describeExit,
   dshHomeDir,
   defaultElectronExe,
   ensureElectronDownload,
   hasGraphicalDisplay,
+  helperLaunchArgs,
   helperRunIsStable,
   helperSpawnEnv,
+  readElectronVersion,
   restartBackoffDelayMs,
   resolveElectronPath,
   shouldCircuitBreak,
+  shouldFallbackToNoSandbox,
 } from './helper-process.ts';
 
 test('Electron 安装目录无法创建时返回 undefined，不产生未处理拒绝', async (t) => {
@@ -293,6 +298,69 @@ describe('shouldCircuitBreak —— 连续崩溃 12 次（约 3 分钟）后熔�
   });
 });
 
+describe('shouldFallbackToNoSandbox —— 沙箱起不来时自动改用 --no-sandbox 重试一次', () => {
+  const base = {
+    code: 0x80000003,
+    sawOutput: false,
+    ranMs: 300,
+    alreadyApplied: false,
+    customCommand: false,
+    sandboxOptOut: false,
+  };
+
+  test('秒退、无输出、0x80000003 → 应该退一次', () => {
+    assert.equal(shouldFallbackToNoSandbox(base), true);
+  });
+
+  test('Node 的两种报法都认：2147483651 与 -2147483645 指向同一个 0x80000003', () => {
+    assert.equal(shouldFallbackToNoSandbox({ ...base, code: 2147483651 }), true);
+    assert.equal(shouldFallbackToNoSandbox({ ...base, code: -2147483645 }), true);
+  });
+
+  test('有 stdout/stderr 说明 JS 已经跑过，病因不是沙箱 → 不退', () => {
+    assert.equal(shouldFallbackToNoSandbox({ ...base, sawOutput: true }), false);
+  });
+
+  test('跑了一阵才崩（≥5s）是别的问题 → 不退', () => {
+    assert.equal(shouldFallbackToNoSandbox({ ...base, ranMs: 6000 }), false);
+  });
+
+  test('只退一次：已经退过就回到正常退避/熔断', () => {
+    assert.equal(shouldFallbackToNoSandbox({ ...base, alreadyApplied: true }), false);
+  });
+
+  test('用户显式要求保留沙箱（DSH_PET_GPU_SANDBOX=1）→ 不退', () => {
+    assert.equal(shouldFallbackToNoSandbox({ ...base, sandboxOptOut: true }), false);
+  });
+
+  test('自定义 command（测试/用户脚本）不猜 → 不退', () => {
+    assert.equal(shouldFallbackToNoSandbox({ ...base, customCommand: true }), false);
+  });
+
+  test('别的退出码（含 0xC0000005 访问违例、普通 exit 1）→ 不退', () => {
+    assert.equal(shouldFallbackToNoSandbox({ ...base, code: 3221225477 }), false);
+    assert.equal(shouldFallbackToNoSandbox({ ...base, code: 1 }), false);
+    assert.equal(shouldFallbackToNoSandbox({ ...base, code: null }), false);
+  });
+});
+
+describe('helperLaunchArgs —— 回退开关必须排在 app 路径之前', () => {
+  test('已回退：--no-sandbox 落在首项', () => {
+    assert.deepEqual(helperLaunchArgs(['main.js'], { sandboxFallback: true, customCommand: false }), [
+      '--no-sandbox',
+      'main.js',
+    ]);
+  });
+
+  test('未回退：参数原样，不注入', () => {
+    assert.deepEqual(helperLaunchArgs(['main.js'], { sandboxFallback: false, customCommand: false }), ['main.js']);
+  });
+
+  test('自定义 command：即使已回退也不注入（那不是真正的 Electron）', () => {
+    assert.deepEqual(helperLaunchArgs(['main.js'], { sandboxFallback: true, customCommand: true }), ['main.js']);
+  });
+});
+
 describe('helperRunIsStable —— 稳定运行 ≥3 分钟后计数清零', () => {
   test('不足 3 分钟：不稳定，不清零', () => {
     assert.equal(helperRunIsStable(2 * 60 * 1000), false);
@@ -301,6 +369,75 @@ describe('helperRunIsStable —— 稳定运行 ≥3 分钟后计数清零', () 
   test('达到 3 分钟：稳定，应清零', () => {
     assert.equal(helperRunIsStable(HELPER_STABLE_MS), true);
     assert.equal(helperRunIsStable(10 * 60 * 1000), true);
+  });
+});
+
+describe('describeExit —— 崩溃退出码翻成可读片段', () => {
+  test('访问违例：无符号与有符号两种报法指向同一个 0xC0000005', () => {
+    assert.equal(describeExit(3221225477, null), 'code=3221225477 (0xC0000005 访问违例), signal=null');
+    assert.equal(describeExit(-1073741819, null), 'code=-1073741819 (0xC0000005 访问违例), signal=null');
+  });
+
+  test('断点：0x80000003 标注为沙箱初始化失败', () => {
+    assert.equal(describeExit(2147483651, null), 'code=2147483651 (0x80000003 断点（沙箱初始化失败）), signal=null');
+  });
+
+  test('普通退出码不补十六进制：避免把 exit 1 写成 0x1', () => {
+    assert.equal(describeExit(1, null), 'code=1, signal=null');
+    assert.equal(describeExit(0, null), 'code=0, signal=null');
+  });
+
+  test('未收录的 NTSTATUS：只给十六进制，不编造含义', () => {
+    assert.equal(describeExit(3221225725, null), 'code=3221225725 (0xC00000FD), signal=null');
+  });
+
+  test('被信号终止：code=null，信号原样带上', () => {
+    assert.equal(describeExit(null, 'SIGKILL'), 'code=null, signal=SIGKILL');
+  });
+});
+
+describe('crashLoopAdvice —— 熔断建议按平台分支', () => {
+  test('Windows：给换版本与指向现成可执行文件，不提 DISPLAY', () => {
+    const advice = crashLoopAdvice('win32');
+    assert.match(advice, /DSH_PET_ELECTRON_VERSION/);
+    assert.match(advice, /DSH_PET_ELECTRON_PATH/);
+    assert.match(advice, /DSH_PET_RESTART_MAX_FAILURES/);
+    assert.ok(!advice.includes('DISPLAY'), 'Windows 上建议配 DISPLAY 是误导');
+  });
+
+  test('Linux：给显示环境与 Xvfb 逃生口', () => {
+    const advice = crashLoopAdvice('linux');
+    assert.match(advice, /DISPLAY/);
+    assert.match(advice, /DSH_PET_DESKTOP_FORCE=1/);
+  });
+
+  test('macOS：指向现成可执行文件，不提显示环境', () => {
+    const advice = crashLoopAdvice('darwin');
+    assert.match(advice, /DSH_PET_ELECTRON_PATH/);
+    assert.ok(!advice.includes('DISPLAY'));
+  });
+});
+
+describe('readElectronVersion —— 读落地目录里的 version 文件', () => {
+  test('正常读取：内容去掉换行后返回', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-pet-version-'));
+    try {
+      writeFileSync(join(dir, 'version'), '43.3.0\n');
+      assert.equal(readElectronVersion(join(dir, 'electron.exe')), '43.3.0');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('文件缺失或内容不是版本号：返回 undefined，不编造', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-pet-version-'));
+    try {
+      assert.equal(readElectronVersion(join(dir, 'electron.exe')), undefined);
+      writeFileSync(join(dir, 'version'), 'not-a-version');
+      assert.equal(readElectronVersion(join(dir, 'electron.exe')), undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -139,6 +139,7 @@ export function currentTaskFromTodo(event: {
 export interface WorkStatusStoreSnapshot {
   state: HostWorkStatusState | null; // null = 尚无会话活动（空闲）
   task: string | null; // 当前任务详情（todo/write 提供，可 null）
+  sessionId: string | null;
   ts: number; // 最近一次变化的时间戳（轮询侧检测变化用）
   agents: WorkStatusAgentSnapshot[];
 }
@@ -148,6 +149,7 @@ export interface SessionWorkEntry {
   state: HostWorkStatusState;
   seq: number;
   task: string | null;
+  sessionId: string;
   revision: number;
   startedAt: number;
 }
@@ -201,7 +203,7 @@ export class WorkStatusStore {
 
   constructor() {
     this.sessions = new Map();
-    this.snap = { state: null, task: null, ts: 0, agents: [] };
+    this.snap = { state: null, task: null, sessionId: null, ts: 0, agents: [] };
   }
 
   /** 该会话当前是否有活动条目（决定 todo/write 是否还值得更新它的文案） */
@@ -227,6 +229,7 @@ export class WorkStatusStore {
       state,
       seq,
       task: prev?.task ?? null,
+      sessionId,
       revision: prev ? prev.revision + (prev.state === state ? 0 : 1) : 1,
       startedAt: prev?.startedAt ?? Date.now(),
     });
@@ -260,6 +263,7 @@ export class WorkStatusStore {
     const best = pickDisplayed(this.sessions.values());
     const nextState = best?.state ?? null;
     const nextTask = best?.task ?? null;
+    const nextSession = best?.sessionId ?? null;
     const nextAgents = [...this.sessions.entries()]
       .map(([sessionId, entry]): WorkStatusAgentSnapshot => ({
         key: `dsh:${sessionId}`,
@@ -282,9 +286,15 @@ export class WorkStatusStore {
           agent.startedAt !== previous.startedAt
         );
       });
-    if (nextState === this.snap.state && nextTask === this.snap.task && !agentsChanged) return;
+    if (
+      nextState === this.snap.state &&
+      nextTask === this.snap.task &&
+      nextSession === this.snap.sessionId &&
+      !agentsChanged
+    ) return;
     this.snap.state = nextState;
     this.snap.task = nextTask;
+    this.snap.sessionId = nextSession;
     this.snap.ts = Date.now();
     this.snap.agents = nextAgents;
   }

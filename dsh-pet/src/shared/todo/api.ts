@@ -5,10 +5,11 @@
  * 数据只有 `/todos` 一个出口：修改成功后由调用方重新拉一次清单，不靠本地拼装猜结果。
  * @module dsh-pet/src/shared/todo/api
  */
-import { parseTodoItem, parseTodoList, type TodoItem } from './types';
+import { ROUTE_PATH } from '../constants.ts';
+import { parseTodoItem, parseTodoList, type TodoItem } from './types.ts';
 
 /** 待办接口的基址（与宿主路由同一前缀）。 */
-export const TODOS_PATH = '/dsh-pet-7340/todos';
+export const TODOS_PATH = ROUTE_PATH + '/todos';
 
 /** 一次调用的结论：成功带解析后的值，失败带一句能直接展示的中文原因。 */
 export type TodoResult<T> = { ok: true; value: T } | { ok: false; message: string };

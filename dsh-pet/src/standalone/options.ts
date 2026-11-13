@@ -8,8 +8,8 @@
  */
 import { join } from 'node:path';
 
-import type { ConfigPaths } from '../host/config';
-import { DEFAULT_STANDALONE_PORT } from './server';
+import type { ConfigPaths } from '../host/config.ts';
+import { DEFAULT_STANDALONE_PORT } from './server.ts';
 
 /** 命令行解析结果 */
 export interface CliOptions {

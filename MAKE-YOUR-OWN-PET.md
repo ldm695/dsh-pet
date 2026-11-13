@@ -19,6 +19,14 @@
 >
 > 解压：`Expand-Archive assets-videos.zip`（Windows）或 `unzip assets-videos.zip`，把 mp4 放回 `video/` 即可运行素材链。
 
+## ①.5 🌙 多段接力的动作（睡觉）
+
+睡觉不是一个动作，而是**三段接力**：入睡 → 循环（无限）→ 醒来，由右键「睡觉」与点击唤醒驱动。提示词单独放在 [`prompts/睡觉动作提示词.md`](prompts/睡觉动作提示词.md)，与 10 秒动作提示词的区别必须照做：
+
+- 入睡与循环段**结尾不许回到站立**，只有醒来段才回站立；循环段首尾两帧必须完全相同，否则循环处会跳。
+- 三段共用同一条地面线、同一角色大小；生成后先比对「入睡尾帧 = 循环首帧 = 醒来首帧」「醒来尾帧 = 入睡首帧」再进素材链。
+- 素材链其余步骤不变（同样落 `dsh-pet/assets/webm/`），最后把三个名字写进配置的 `animations.sleep`：一套 = `start` / `loop` / `end` 各一个候选数组，可以配多套（蹲着睡、趴着睡…）；结构见 `dsh-pet/assets/config.jsonc` 里的 `sleep` 注释。
+
 ## ② 源视频 → 透明动画（素材链）
 
 step02（透明视频）有**两条路线，按需二选一**（默认自动、人人可复现；效果不佳可用 PR 手工抠像覆盖）：
@@ -56,8 +64,8 @@ python encode_thumbs.py      # 转码 640×360 播放变体 → step04/
 # 把 step04 的播放变体同步进插件包（webm 直接 cp）
 cp step04/*.webm dsh-pet/assets/webm/   # 播放格式（VP9-alpha）
 
-# 本地安装插件（--profile 填实际在用的那个：dsh web → web；
-# 桌面应用（Electron 版）改用应用内「插件管理」，见「快速开始（安装插件）」；
+# 本地安装插件（--profile 填实际在用的那个：dsh web → web，桌面应用 → desktop；
+# 详见 INSTALL.md 的「从源码安装」；
 # file: 指向插件目录 dsh-pet/dsh-pet）
 dsh plugin --profile web add file:D:/path/to/dsh-pet/dsh-pet
 ```

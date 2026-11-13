@@ -1,3 +1,4 @@
+import { ROUTE_PATH } from './constants.ts';
 /**
  * 碎碎念的展示视图：文本 → 气泡行数据，以及配图节点与样式。
  * 不负责取数、生成与失败判定——宿主半侧生成后写进 /state 的 pets.<id>.say，两端只从轮询状态读。
@@ -29,7 +30,7 @@ export function whisperBubbleView(state: WhisperState): WhisperBubbleRow[] {
  *  否则走用户目录与包内 assets/memes；assetRoot 为空则退回两段形式，未打标的宠物与老宿主仍能取到图。
  *  base 已含 /dsh-pet-7340 前缀（与视频的 assetBase 一致），函数内不得再拼一次，否则桌面端图裂。
  *  桌面页面是 file:// 加载的，相对路径会解析成 file:/// 而必然失败，所以桌面传绝对基址。 */
-export function memeImageUrl(name: string, base = '/dsh-pet-7340', assetRoot = ''): string {
+export function memeImageUrl(name: string, base = ROUTE_PATH, assetRoot = ''): string {
   const root = String(assetRoot ?? '').trim();
   const prefix = root ? '/pic/memes/' + encodeURIComponent(root) : '/pic/memes';
   return base + prefix + '/' + encodeURIComponent(name) + '.png';
@@ -50,6 +51,17 @@ export const MEME_BUBBLE_CSS = [
     'width:calc(var(--m)*7.4725);max-width:100%;height:auto;border-radius:calc(var(--m)*0.5714);' +
     'margin:0 auto calc(var(--m)*0.3736);object-fit:cover;pointer-events:none;user-select:none}',
   '.pet-bubble.has-img,.dsh-pet-bubble.has-img{min-width:0}',
+  // 语音状态角标：两端共用；绝对定位在气泡右下角，不参与文字排版、不撑高气泡。
+  '.dsh-pet-voice-badge{position:absolute;right:calc(var(--f,21px)*0.25);bottom:calc(var(--f,21px)*0.15);' +
+    'width:calc(var(--f,21px)*0.66);height:calc(var(--f,21px)*0.66);display:flex;align-items:center;' +
+    'justify-content:center;font-size:calc(var(--f,21px)*0.5);line-height:1;opacity:.65;pointer-events:none}',
+  // 加载态：只有上半圈有颜色的细环，靠旋转表达「在转」。
+  '.dsh-pet-voice-badge.is-loading::before{content:"";width:calc(var(--f,21px)*0.5);height:calc(var(--f,21px)*0.5);' +
+    'border:1.5px solid rgba(43,43,43,.22);border-top-color:rgba(43,43,43,.7);border-radius:50%;' +
+    'animation:dsh-pet-voice-spin .8s linear infinite}',
+  '@keyframes dsh-pet-voice-spin{to{transform:rotate(360deg)}}',
+  // 失败态：静音喇叭，压一点透明度——读得出「这句没念出来」，但不抢文字。
+  '.dsh-pet-voice-badge.is-failed{opacity:.5}',
 ].join('');
 
 /** 只注入一次（页面已有同一标记则跳过）。 */
@@ -69,7 +81,7 @@ export function injectMemeBubbleCss(): void {
  *  @param name - 配图名称（配置 memes 的键），缺省或空白 → null。
  *  @param base - 已含 /dsh-pet-7340 的宿主基址（与视频同规则）：浏览器缺省，桌面传 BASE。
  *  @param assetRoot - 素材根（= 该宠物的条目 key），决定图片去哪个表情包目录链取。 */
-export function createMemeImage(name?: string, base = '/dsh-pet-7340', assetRoot = ''): HTMLImageElement | null {
+export function createMemeImage(name?: string, base = ROUTE_PATH, assetRoot = ''): HTMLImageElement | null {
   const key = String(name ?? '').trim();
   if (!key) return null;
   injectMemeBubbleCss();

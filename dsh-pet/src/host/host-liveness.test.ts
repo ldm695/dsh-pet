@@ -146,11 +146,12 @@ describe('守卫：main.js 的两条路必须都在位（helper 随包发行，�
     assert.ok(/HOST_POLL_MS/.test(main), '间隔必须是命名常量（来自 host-liveness.js）');
   });
 
-  test('守卫必须早于**任何一次写**（probePrimaryScale 失败就会往 stderr 写）', () => {
+  test('守卫必须早于**任何一次写**（DPI 探测失败就会往 stderr 写）', () => {
     const guardAt = main.indexOf("stream.on('error'");
-    const firstWriteAt = main.indexOf('PRIMARY_SCALE = readCachedPrimaryScale() || probePrimaryScale();');
+    // DPI 探测已拆到 main-dpi.js：main.js 这边第一个可能写 stderr 的动作就是建它
+    const firstWriteAt = main.indexOf('createDpi({');
     assert.ok(guardAt > 0, '找不到管道守卫');
-    assert.ok(firstWriteAt > 0, '找不到 DPI 探测调用点（文件结构变了，请同步本断言）');
+    assert.ok(firstWriteAt > 0, '找不到 DPI 工厂调用点（文件结构变了，请同步本断言）');
     assert.ok(guardAt < firstWriteAt, '管道守卫必须装在任何一次可能写之前');
   });
 
@@ -163,8 +164,8 @@ describe('守卫：main.js 的两条路必须都在位（helper 随包发行，�
 });
 
 describe('守卫：宿主侧必须把 pid 注入（否则 B 永远不生效）', () => {
-  test('helper-process.ts：唯一的 spawn 点经 helperSpawnEnv 注入 DSH_PET_HOST_PID', () => {
-    const src = readSource('./helper-process.ts');
+  test('helper/child.ts：唯一的 spawn 点经 helperSpawnEnv 注入 DSH_PET_HOST_PID', () => {
+    const src = readSource('./helper/child.ts');
     assert.ok(
       /env: helperSpawnEnv\(process\.pid, this\.options\.env\)/.test(src),
       'spawn 的 env 必须经 helperSpawnEnv 注入宿主 pid（放在唯一 spawn 点，所有调用方自动获得）',
@@ -172,7 +173,7 @@ describe('守卫：宿主侧必须把 pid 注入（否则 B 永远不生效）',
   });
 
   test('helperSpawnEnv：删掉会劫持 Electron 启动模式的 ELECTRON_RUN_AS_NODE（issue #63）', () => {
-    const src = readSource('./helper-process.ts');
+    const src = readSource('./helper/child.ts');
     assert.ok(
       /delete env\.ELECTRON_RUN_AS_NODE;/.test(src),
       '必须**删键**：宿主（如 DSH Desktop）透传这个变量会让 helper 退化成纯 Node 模式、require("electron") 直接崩',

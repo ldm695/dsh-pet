@@ -6,8 +6,8 @@
  * 依赖全局 fetch；调用方负责把结果变成一句人话，本模块不拼文案。
  * @module dsh-pet/src/host/weather
  */
-import { fetchJson } from './fetch-json';
-import { wmoText } from './wmo-code';
+import { fetchJson } from './fetch-json.ts';
+import { wmoText } from './wmo-code.ts';
 
 /** 一次查询可注入的依赖（测试用）。 */
 export interface QueryWeatherDeps {

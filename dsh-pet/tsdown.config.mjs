@@ -44,10 +44,43 @@ export default defineConfig([
     platform: 'browser',
     target: 'es2020',
     entry: {
-      'standalone-settings': 'src/standalone/settings-ui.ts',
+      app: 'src/app/main.ts',
+    },
+    // zod 打进包：应用产物要做到「不依赖 node_modules」，而配置校验每次启动都要用。
+    // openai / @anthropic-ai/sdk 同样必须打进包：它们由 src/standalone/ai-transport.ts 顶层静态
+    // import，而 electron-builder 的 files 白名单不带 node_modules；留成外部裸 import 时，产物
+    // 一旦离开项目目录（例如解压到 Downloads）就会 ERR_MODULE_NOT_FOUND。
+    // @electron/get 与 @electron-internal/extract-zip 保持外部——它们只在「下载 Electron」时被
+    // 动态解析，应用模式永远不走那条路（见 src/host/helper-process.ts 的 import 注释）。
+    alias: {
+      '@deepseek-ai/dsh-home-paths': shim('dsh-home-paths'),
+      '@deepseek-ai/dsh-credentials': shim('dsh-credentials'),
+      '@deepseek-ai/dsh-llm': shim('dsh-llm'),
     },
     // This is the EXE's embedded settings page, not a DSH Web client.
-    noExternal: [/^react(?:-dom)?(?:\/.*)?$/],
-    external: [],
+    noExternal: [
+      /^@deepseek-ai\/(?:dsh-home-paths|dsh-credentials|dsh-llm)$/,
+      /^zod$/,
+      /^openai$/,
+      /^@anthropic-ai\/sdk$/,
+      /^@andresaya\/edge-tts$/,
+      /^react(?:-dom)?(?:\/.*)?$/,
+    ],
+    external: ['electron', /^@electron\//, /^node:/, /^@deepseek-ai\/(?!dsh-home-paths$|dsh-credentials$|dsh-llm$)/],
+  },
+  {
+    ...shared,
+    // 独立模式设置页里的对话面板（lib/chat-panel.js）：跑在浏览器里，既没有 DSH 注入也没有
+    // node_modules，所以 react / react-dom 必须打进产物——这与 client 那份正好相反（那边由宿主提供）。
+    // platform 覆盖成 browser，否则 tsdown 会按 node 口径解析并留下 node: 内置依赖。
+    platform: 'browser',
+    target: 'es2020',
+    entry: {
+      'chat-panel': 'src/standalone/settings-page/chat-mount.ts',
+    },
+    noExternal: [/^react(\/|$)/, /^react-dom(\/|$)/],
+    external: [/^node:/],
+    // 与 client 同理：设置页刷新会重跑脚本，包一层 IIFE 免得顶层声明重复触发 SyntaxError。
+    outputOptions: { banner: ';(()=>{', footer: '})();' },
   },
 ]);

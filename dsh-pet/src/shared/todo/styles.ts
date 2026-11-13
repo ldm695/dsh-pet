@@ -6,8 +6,8 @@
  * 高度预算 TODO_PANEL_METRICS 与这里的系数同源：改任何一条都必须同步，否则桌面窗口上边距会算少。
  * @module dsh-pet/src/shared/todo/styles
  */
-import { BUBBLE_OVERLAP_RATIO, resolveFontPx } from '../fonts';
-import type { FontConfig } from '../types';
+import { BUBBLE_OVERLAP_RATIO, resolveFontPx } from '../fonts.ts';
+import type { FontConfig } from '../types.ts';
 
 /** 面板根字号相对气泡字号的比例：默认配置（气泡 21.02px）下取整为 13px。 */
 export const TODO_FONT_SCALE = 0.618;

@@ -1,13 +1,13 @@
 /**
  * Command Code 用量的契约测试（provider id `commandcode`，控制面 `/alpha/*`）。
  *
- * 背景：Command Code 的用量在官方 CLI 使用的**未文档化控制面**路由上。插件把它的 5h / 周 / 月
+ * 背景：Command Code 的用量在官方 CLI 使用的未文档化控制面路由上。插件把它的 5h / 周 / 月
  * 三个窗口映射成与 opencode 同构的三窗口用量，展示层因此共用同一套「取最紧迫窗口」逻辑。
  *
  * 本文件把三件事钉住：
  *   ① 真实 GOAT 报文的解析（含 `resetAt: 0` 这类占位值不得被当成 1970 年重置时间）；
  *   ② 失败口径：必填字段缺失/非法一律抛错（→ fetch-error），可选信息一律省略，绝不伪造 0；
- *   ③ 网络链路：四个接口的**顺序与 query**、Bearer 注入、凭证 ref、订阅接口失败不致命。
+ *   ③ 网络链路：四个接口的顺序与 query、Bearer 注入、凭证 ref、订阅接口失败不致命。
  *
  * 用 Node 内置 test runner（node:test），不引入任何 npm 依赖；fetch 用手写 stub 顶替（只跑假数据，不联网）。
  */
@@ -101,86 +101,15 @@ function goatRoute(url: string): Response {
 describe('BALANCE_PROVIDERS —— commandcode 已登记（凭证 COMMANDCODE_API_KEY）', () => {
   test('provider id 命中 commandcode，凭证 ref 是 COMMANDCODE_API_KEY，且定义自带取数', () => {
     const def = matchBalanceProvider('commandcode');
-    assert.ok(def && 'credential' in def);
-    if (!def || !('credential' in def)) return;
-    assert.deepEqual(def.ids, ['commandcode']);
+    assert.ok(def && 'credential' in def, '内置服务商必须带凭证声明');
+    assert.equal(def.id, 'commandcode');
     assert.deepEqual(def.credential, { mode: 'ref', ref: 'COMMANDCODE_API_KEY' });
-    assert.equal(typeof def?.fetch, 'function', '服务商定义必须自带取数（加服务商只写一个文件）');
+    assert.equal(typeof def.fetch, 'function', '服务商定义必须自带取数（加服务商只写一个文件）');
   });
 
   test('未登记的服务商仍然不命中（→ unsupported，不静默伪造 0）', () => {
     assert.equal(matchBalanceProvider('unregistered-provider'), undefined);
     assert.equal(matchBalanceProvider('opencode'), undefined, 'Zen 按量版（opencode）与 Go 是两个 id，前者无用量接口');
-  });
-});
-
-describe('第三方余额 provider 注册', () => {
-  test('只传 provider id，不解析宿主密钥或账号服务；注销后不再命中', async () => {
-    let received = '';
-    const provider = {
-      id: 'test-points-provider',
-      async fetch(ctx: { provider: string }) {
-        received = ctx.provider;
-        return { ok: true as const, provider: ctx.provider, shape: 'points' as const, data: { unit: '积分', total: '8' } };
-      },
-    };
-    const unregister = registerBalanceProvider(provider);
-    try {
-      assert.deepEqual(listBalanceProviders().external, ['test-points-provider']);
-      assert.deepEqual(await queryBalance('test-points-provider', async () => {
-        assert.fail('第三方 provider 不应解析宿主密钥');
-      }, async () => {
-        assert.fail('第三方 provider 不应获得 DSH 账号服务');
-      }), {
-        ok: true,
-        provider: 'test-points-provider',
-        shape: 'points',
-        data: { unit: '积分', total: '8' },
-      });
-      assert.equal(received, 'test-points-provider');
-    } finally {
-      unregister();
-    }
-    assert.equal(matchBalanceProvider('test-points-provider'), undefined);
-  });
-
-  test('拒绝空 id、重复 id 与内置 id；失败统一转成 fetch-error', async () => {
-    assert.throws(() => registerBalanceProvider({ id: '', fetch: async () => { throw new Error('unused'); } }), /id/);
-    const first = registerBalanceProvider({ id: 'test-duplicate-provider', fetch: async ({ provider }) => ({
-      ok: true,
-      provider,
-      shape: 'points',
-      data: { unit: '积分', total: '1' },
-    }) });
-    try {
-      assert.throws(
-        () => registerBalanceProvider({ id: 'test-duplicate-provider', fetch: async () => { throw new Error('unused'); } }),
-        /已被注册/,
-      );
-      assert.throws(
-        () => registerBalanceProvider({ id: 'commandcode', fetch: async () => { throw new Error('unused'); } }),
-        /内置/,
-      );
-    } finally {
-      first();
-    }
-
-    const unregister = registerBalanceProvider({
-      id: 'test-failing-provider',
-      async fetch() {
-        throw new Error('provider failure');
-      },
-    });
-    try {
-      assert.deepEqual(await queryBalance('test-failing-provider', async () => undefined), {
-        ok: false,
-        provider: 'test-failing-provider',
-        reason: 'fetch-error',
-        message: 'provider failure',
-      });
-    } finally {
-      unregister();
-    }
   });
 });
 
@@ -299,10 +228,45 @@ describe('parseCommandCode —— 必填缺失/非法一律抛错（绝不伪造
       assert.equal(data.monthlyResetsAt, undefined);
     }
   });
+
+  test('区间用量：totalTokens / 输入 / 输出 / 请求数 / 花费 → usage（气泡第三页）', () => {
+    const data = dataOf(
+      parseCommandCode(
+        { credits: { monthlyCredits: 70 } },
+        undefined,
+        {
+          totalCost: 1.5968,
+          totalTokens: 95967948,
+          totalTokensIn: 95489675,
+          totalTokensOut: 478273,
+          totalCount: 745,
+        },
+        'commandcode',
+      ),
+    );
+    assert.deepEqual(data.usage, {
+      totalTokens: 95967948,
+      inputTokens: 95489675,
+      outputTokens: 478273,
+      requests: 745,
+      spentUsd: 1.5968,
+    });
+  });
+
+  test('区间用量字段不全 → 不出这一页（不拿 0 顶替）', () => {
+    for (const summary of [
+      { totalCost: 1 },
+      { totalCost: 1, totalTokens: 10, totalTokensIn: 8, totalTokensOut: 2 },
+      { totalCost: 1, totalTokens: 10, totalTokensIn: 8, totalTokensOut: 2, totalCount: 'x' },
+    ]) {
+      const data = dataOf(parseCommandCode({ credits: { monthlyCredits: 70 } }, undefined, summary, 'commandcode'));
+      assert.equal(data.usage, undefined, '缺字段时必须整页缺省：' + JSON.stringify(summary));
+    }
+  });
 });
 
 describe('queryBalance —— 网络链路（fetch stub）', () => {
-  test('四个接口按序请求，Bearer 注入，orgId / since 正确回填', async () => {
+  test('四个接口按序请求，Bearer 注入，orgId 回填（summary 不带 since）', async () => {
     const stub = stubFetch(goatRoute);
     const refs: string[] = [];
     try {
@@ -315,7 +279,7 @@ describe('queryBalance —— 网络链路（fetch stub）', () => {
         'https://api.commandcode.ai/alpha/whoami?limits=1',
         'https://api.commandcode.ai/alpha/billing/credits?orgId=org-1',
         'https://api.commandcode.ai/alpha/billing/subscriptions?orgId=org-1',
-        'https://api.commandcode.ai/alpha/usage/summary?since=2026-09-13T01%3A01%3A27.000Z&orgId=org-1',
+        'https://api.commandcode.ai/alpha/usage/summary?orgId=org-1',
       ]);
       assert.deepEqual([...new Set(stub.auths)], ['Bearer k-123']);
       assert.deepEqual(refs, ['COMMANDCODE_API_KEY']);
@@ -336,8 +300,8 @@ describe('queryBalance —— 网络链路（fetch stub）', () => {
       assert.equal(stub.calls[2], 'https://api.commandcode.ai/alpha/billing/subscriptions');
       assert.equal(
         stub.calls[3],
-        'https://api.commandcode.ai/alpha/usage/summary?since=2026-09-13T01%3A01%3A27.000Z',
-        'orgId 没有就不带，但订阅拿到的当期起始时间照常带（since）',
+        'https://api.commandcode.ai/alpha/usage/summary',
+        'orgId 没有就不带；summary 也不带 since——服务端默认区间就是计费周期',
       );
     } finally {
       stub.restore();
@@ -354,7 +318,7 @@ describe('queryBalance —— 网络链路（fetch stub）', () => {
       assert.equal(
         stub.calls[3],
         'https://api.commandcode.ai/alpha/usage/summary?orgId=org-1',
-        '没拿到当期起始时间就不带 since（默认区间由服务端决定，插件不猜）',
+        '订阅失败只缺重置时间；summary 一律不带 since（区间由服务端按计费周期决定）',
       );
     } finally {
       stub.restore();
@@ -419,11 +383,10 @@ describe('deepseek-account —— DSH 账号路由（走账号服务，不是 HT
 
   test('provider id 命中 deepseek-account，shape 与 deepseek-official 相同，凭证模式为 none（无 API Key）', () => {
     const def = matchBalanceProvider('deepseek-account');
-    assert.ok(def && 'credential' in def);
-    if (!def || !('credential' in def)) return;
-    assert.deepEqual(def.ids, ['deepseek-account']);
+    assert.ok(def && 'credential' in def, '内置服务商必须带凭证声明');
+    assert.equal(def.id, 'deepseek-account');
     assert.deepEqual(def.credential, { mode: 'none' }, '账号路由没有 API Key，凭证由账号服务持有');
-    assert.equal(typeof def?.fetch, 'function');
+    assert.equal(typeof def.fetch, 'function');
   });
 
   test('ready：每个币种一条钱包，total = 充值 + 赠送（与官方 total_balance 同构）', () => {
@@ -590,6 +553,141 @@ describe('deepseek-account —— DSH 账号路由（走账号服务，不是 HT
       provider: 'deepseek-account',
       reason: 'fetch-error',
       message: 'dsh-pet: 账号余额查询失败',
+    });
+  });
+});
+
+describe('注册表 —— 第三方 provider（register / list / match）', () => {
+  /** 一个最小可用的第三方 provider（points 形态） */
+  const plugin = (id: string) => ({
+    id,
+    async fetch({ provider }: { provider: string }) {
+      return {
+        ok: true as const,
+        provider,
+        shape: 'points' as const,
+        data: { unit: '积分', total: '800', full: '1000' },
+      };
+    },
+  });
+
+  test('注册后命中，list 里可见；注销后回落 unsupported', () => {
+    const dispose = registerBalanceProvider(plugin('plugin-a'));
+    try {
+      assert.equal(matchBalanceProvider('plugin-a')?.id, 'plugin-a');
+      assert.ok(listBalanceProviders().external.includes('plugin-a'));
+      assert.ok(listBalanceProviders().builtin.includes('commandcode'), '内置仍在列表里');
+    } finally {
+      dispose();
+    }
+    assert.equal(matchBalanceProvider('plugin-a'), undefined, '注销后不再命中');
+  });
+
+  test('不能覆盖内置 id', () => {
+    assert.throws(() => registerBalanceProvider(plugin('deepseek-official')), /不能覆盖内置服务商/);
+  });
+
+  test('重复注册同一个 id → 抛错（不静默覆盖）', () => {
+    const dispose = registerBalanceProvider(plugin('plugin-b'));
+    try {
+      assert.throws(() => registerBalanceProvider(plugin('plugin-b')), /已被注册/);
+    } finally {
+      dispose();
+    }
+  });
+
+  test('旧注销函数不会误删后来注册的同一个 id', () => {
+    const first = registerBalanceProvider(plugin('plugin-c'));
+    first();
+    const second = registerBalanceProvider(plugin('plugin-c'));
+    first(); // 迟到的注销（旧插件实例的 cleanup）
+    try {
+      assert.equal(matchBalanceProvider('plugin-c')?.id, 'plugin-c');
+    } finally {
+      second();
+    }
+  });
+
+  test('queryBalance：第三方分支不解析 key、不传 resolveAccount', async () => {
+    let keyAsked = 0;
+    let seen: unknown;
+    const dispose = registerBalanceProvider({
+      id: 'plugin-d',
+      async fetch(ctx) {
+        seen = ctx;
+        return { ok: true, provider: ctx.provider, shape: 'points', data: { unit: '积分', total: '1' } };
+      },
+    });
+    try {
+      const r = await queryBalance(
+        'plugin-d',
+        async () => {
+          keyAsked++;
+          return 'k';
+        },
+        async () => ({ status: 'ready' }),
+      );
+      assert.ok(r.ok && r.shape === 'points');
+      assert.equal(keyAsked, 0, '第三方分支不得去解析凭证');
+      assert.deepEqual(seen, { provider: 'plugin-d' }, 'fetch 只能拿到 provider（没有 key / resolveAccount）');
+    } finally {
+      dispose();
+    }
+  });
+
+  test('queryBalance：第三方 fetch 抛错 → fetch-error（与内置同一口径）', async () => {
+    const dispose = registerBalanceProvider({
+      id: 'plugin-e',
+      async fetch() {
+        throw new Error('boom');
+      },
+    });
+    try {
+      assert.deepEqual(await queryBalance('plugin-e', async () => 'k'), {
+        ok: false,
+        provider: 'plugin-e',
+        reason: 'fetch-error',
+        message: 'boom',
+      });
+    } finally {
+      dispose();
+    }
+  });
+
+  test('queryBalance：第三方返回 custom 形态原样透传（host 不校验也不改形状）', async () => {
+    // host 侧的职责只是"把第三方交来的结果写进叶子"：tree 的白名单裁剪在客户端解析层
+    // （src/shared/balance/parse.ts）。这里钉住"不篡改"——否则第三方设计好的布局会在中途变形。
+    const custom = {
+      ok: true as const,
+      provider: 'plugin-f',
+      shape: 'custom' as const,
+      data: {
+        views: [
+          { tag: 'div' as const, children: [{ tag: 'span' as const, text: '剩余 12 次' }] },
+          { tag: 'div' as const, text: '本月已用 8 次' },
+          { tag: 'div' as const, text: '下月 1 日重置' },
+        ],
+        percent: 40,
+      },
+    };
+    const dispose = registerBalanceProvider({
+      id: 'plugin-f',
+      async fetch() {
+        return custom;
+      },
+    });
+    try {
+      assert.deepEqual(await queryBalance('plugin-f', async () => 'k'), custom);
+    } finally {
+      dispose();
+    }
+  });
+
+  test('未注册的 id 仍是 unsupported', async () => {
+    assert.deepEqual(await queryBalance('plugin-unknown', async () => 'k'), {
+      ok: false,
+      provider: 'plugin-unknown',
+      reason: 'unsupported',
     });
   });
 });

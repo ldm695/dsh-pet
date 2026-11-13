@@ -93,8 +93,11 @@ async function loadConfig() {
   const res = await fetch(BASE + '/config', { cache: 'no-store' });
   if (!res.ok) throw new Error(`config http ${res.status}`);
   const merged = await res.json();
+  // 接口统一 200 + 实体：失败时状态码仍是 200，得看体里的 ok。
+  if (merged && merged.ok === false) throw new Error('config ' + String(merged.reason ?? 'failed'));
   return {
     pets: S.flattenConfigPets(merged),
+    notificationsEnabled: !(merged && merged.main && merged.main.notificationsEnabled === false),
     // 拖拽抛掷物理参数（顶层全局，所有宠物共用；合并器已填内置默认）
     physics: (merged && merged.main && merged.main.physics) || S.DEFAULT_PHYSICS,
     // 抛掷锁定在当前屏幕（根字段；合并器已填内置默认 false）
@@ -108,13 +111,10 @@ async function loadConfig() {
     // 字体（全局一份，合并器已填内置默认）：字体族在此取一次、注入全局变量；字号由每只宠物
     // 按自己的尺寸算（见 PetSprite 注入的 --dsh-pet-font-bubble / --dsh-pet-font-tip）
     font: (merged && merged.main && merged.main.font) || S.DEFAULT_FONT,
-    uiTheme:
-      merged && merged.main && (merged.main.uiTheme === 'light' || merged.main.uiTheme === 'dark')
-        ? merged.main.uiTheme
-        : 'system',
-    notificationsEnabled: !(merged && merged.main && merged.main.notificationsEnabled === false),
-    aiChatEnabled: !(merged && merged.main && merged.main.dshPetAiChatEnabled === false),
-    balanceQuerySupported: !(merged && merged.main && merged.main.dshPetBalanceQuerySupported === false),
+    // 语音：音色与音量（缺省由共享层按默认音色 / 最大音量处理）
+    voiceName: (merged && merged.main && merged.main.voiceName) || '',
+    // 音量只在播放入口用，缺省由共享层按最大音量处理，这里不兜 1
+    voiceVolume: merged && merged.main ? merged.main.voiceVolume : undefined,
   };
 }
 
@@ -123,17 +123,18 @@ async function boot() {
   try {
     const cfg = await loadConfig();
     config = cfg;
+    // 语音：本窗口固定是桌面端；音色、总开关与音量直接取成品配置，不走懒加载——
+    // 懒加载要等第一次播放才去拉 /config，撞上 bridge 起步竞态就永远读不到开关（读失败只试一次）。
     S.setVoiceBase(BASE);
     S.setSurface('desktop');
     S.setVoiceConfig(cfg.voiceName, cfg.voiceVolume);
-    S.setVoiceNotifyEnabled(cfg.voiceNotifyEnabled);
     bootFailures = 0;
     hideError();
     // 字体族（全局配置 font.family）→ documentElement：对话窗/得分弹窗挂在 body 下、继承不到
     // 宠物根容器，只能走全局变量；气泡与提示也从这里继承样式变量。
     // 放在这里而不是 injectAssets()：字体族来自配置，必须等 /config 拉回来之后才有效。
     document.documentElement.style.setProperty('--dsh-pet-font-family', S.fontStackOf(cfg.font.family));
-    const pets = cfg.pets.filter((p) => S.isDesktopVisible(p.display));
+    const pets = CONFIG.notificationWorker ? [] : cfg.pets.filter((p) => S.isDesktopVisible(p.display));
     if (pets.length === 0) {
       // 托盘「全部隐藏」会把桌面宠物列表合法地变成空列表。Helper 仍需保留，
       // 以便托盘之后能重新显示宠物；这不是配置错误，也不应显示错误条或每 5 秒重试。
@@ -153,6 +154,9 @@ async function boot() {
     }
     for (const s of sprites) s.dispose();
     sprites = [new PetSprite(pet, CONFIG.petIndex)];
+    if (Array.isArray(window.__dshPetMoveTargets)) {
+      for (const sprite of sprites) sprite.updateMoveTargets(window.__dshPetMoveTargets);
+    }
     window.__dshPetDebug.configOk = true;
     window.__dshPetDebug.spriteCount = sprites.length;
     for (const s of sprites) s.playIdle();
@@ -223,5 +227,8 @@ window.addEventListener('resize', () => {
   }
 });
 
+// 1/255 alpha 修正滤镜：开关是共享常量 PET_ALPHA_FIX_ENABLED，静态样式表读不到它，
+// 所以在这里把开关落成 class（样式在 index.html 的 html.pet-alpha-fix）。
+if (S.PET_ALPHA_FIX_ENABLED) document.documentElement.classList.add('pet-alpha-fix');
 injectAssets();
 void boot();

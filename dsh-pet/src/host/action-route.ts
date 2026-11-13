@@ -69,7 +69,7 @@ export function createActionRoute(
     cfg: ConfigSnapshot = deps.readConfig(),
   ): void => {
     const conf = findPetInstance(cfg, petId)?.conf ?? cfg.main ?? {};
-    const text = pickSleepText(conf[key]);
+    const text = pickSleepText(conf[key] as string[] | undefined ?? []);
     if (text) deps.writePet(petId, 'say', { text, kind: 'sleep', anim: false });
   };
   const sleepBlocked = (petId: string, cfg?: ConfigSnapshot): RouteResult | undefined => {

@@ -14,7 +14,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { dayKindOf, timeContextOf, timeSlotOf, type TimeSlot } from './time-context.ts';
+import { dayKindOf, historyStampOf, timeContextOf, timeSlotOf, type TimeSlot } from './time-context.ts';
 
 /** 0–23 点逐时期望时段（改划分口径时必须同步这里，否则测试红） */
 const EXPECTED_BY_HOUR: TimeSlot[] = [
@@ -332,5 +332,86 @@ describe('节日 —— 优先级＝数组顺序（靠前的先说话）', () =>
 
   test('暑假压过纪念日：7/1 既是建党节又是暑假首日，说暑假', () => {
     assertClause(new Date(2026, 6, 1, 12, 0), '暑假开始了');
+  });
+});
+
+describe('historyStampOf —— 历史消息的时间前缀', () => {
+  test('同年：月日不补零、时分补零', () => {
+    const at = new Date(2026, 9, 31, 22, 53).getTime();
+    assert.equal(historyStampOf(at, new Date(2026, 10, 2, 0, 52)), '10月31日 22:53');
+  });
+
+  test('个位数时/分补零：09:05 不能写成 9:5', () => {
+    const at = new Date(2026, 10, 2, 9, 5).getTime();
+    assert.equal(historyStampOf(at, new Date(2026, 10, 2, 9, 5)), '11月2日 09:05');
+  });
+
+  test('跨年：带上年份，消掉“哪一年”的歧义', () => {
+    const at = new Date(2025, 11, 31, 23, 59).getTime();
+    assert.equal(historyStampOf(at, new Date(2026, 0, 1, 0, 30)), '2025年12月31日 23:59');
+  });
+
+  test('ts 非法（NaN / 越界）→ 空串，调用方据此不发前缀', () => {
+    assert.equal(historyStampOf(Number.NaN, new Date(2026, 10, 2)), '');
+    assert.equal(historyStampOf(Number.POSITIVE_INFINITY, new Date(2026, 10, 2)), '');
+  });
+
+  test('now 非法 → 空串（没有“现在”就无法判断是否跨年）', () => {
+    assert.equal(historyStampOf(new Date(2026, 9, 31).getTime(), new Date('nope')), '');
+  });
+});
+
+describe('timeContextOf —— 环境行（城市与天气）', () => {
+  /** 2026-11-11 星期三 20:50：工作日 + 晚上，落在断言的稳定区间里 */
+  const EVENING = new Date(2026, 10, 11, 20, 50);
+  const WEATHER = { summary: '阴', temperatureC: 13.1, apparentC: 12.9, humidityPercent: 84, windKph: 2 };
+
+  test('不传 env：不带地点、不带天气，句尾也不提天气', () => {
+    const text = timeContextOf(EVENING);
+    assert.ok(!text.includes('你在'), '不该出现地点');
+    assert.ok(!text.includes('外面'), '不该出现天气');
+    assert.ok(text.endsWith('也别句句都提节日——多数时候正常说话就好，真贴切时才顺口带一句。'));
+  });
+
+  test('只给城市：地点在最前，没有天气就写“没查到”的交代', () => {
+    const text = timeContextOf(EVENING, { city: '南昌市' });
+    assert.ok(text.startsWith('【当下】你在南昌市（按网络粗估，不一定准），现在是'));
+    assert.ok(text.includes('工作日，外面的天气这次没查到，主人问起就说不知道、别编。'), `实际：${text}`);
+    assert.ok(text.includes('也别句句都提节日或天气'));
+  });
+
+  test('省 + 市：连写成“江西省南昌市”', () => {
+    const text = timeContextOf(EVENING, { region: '江西省', city: '南昌市' });
+    assert.ok(text.startsWith('【当下】你在江西省南昌市（按网络粗估，不一定准），现在是'), `实际：${text}`);
+  });
+
+  test('省市互相包含：只留带后缀的那个，不写成“北京市北京”', () => {
+    const text = timeContextOf(EVENING, { region: '北京市', city: '北京' });
+    assert.ok(text.startsWith('【当下】你在北京市（按网络粗估，不一定准），现在是'), `实际：${text}`);
+  });
+
+  test('拉丁文地名之间补一个空格', () => {
+    const text = timeContextOf(EVENING, { region: 'Jiangxi', city: 'Nanchang' });
+    assert.ok(text.startsWith('【当下】你在Jiangxi Nanchang（按网络粗估，不一定准），现在是'), `实际：${text}`);
+  });
+
+  test('城市与天气都有：天气接在工作日后面', () => {
+    const text = timeContextOf(EVENING, { region: '江西省', city: '南昌市', weather: WEATHER });
+    assert.ok(text.includes('工作日，外面阴，气温 13.1°C，体感 12.9°C，湿度 84%，风速 2 km/h。'), `实际：${text}`);
+  });
+
+  test('只有天气没有城市：省掉“你在……”，天气照写', () => {
+    const text = timeContextOf(EVENING, { weather: WEATHER });
+    assert.ok(!text.includes('你在'));
+    assert.ok(text.includes('工作日，外面阴，气温 13.1°C'));
+  });
+
+  test('整数气温不带小数点', () => {
+    const text = timeContextOf(EVENING, { weather: { ...WEATHER, temperatureC: 20, apparentC: 20 } });
+    assert.ok(text.includes('气温 20°C，体感 20°C'), `实际：${text}`);
+  });
+
+  test('非法 Date 且给了 env：仍返回空串', () => {
+    assert.equal(timeContextOf(new Date('nope'), { city: '南昌市' }), '');
   });
 });

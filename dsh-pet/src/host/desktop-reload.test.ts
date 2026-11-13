@@ -1,44 +1,51 @@
 /**
  * 桌面端「重载配置」契约测试：右键菜单 → POST /dsh-pet-7340/reload → 宿主 syncDesktop()。
  *
- * 背景：桌面宠物的配置只在 Helper 启动时拉一次（renderer.js 的 boot → GET /config），手改配置文件后
- * 桌面端不会自己跟上——此前唯一的生效途径是回设置页点「保存」，而保存只是顺带重启了 Helper。
- * 菜单项「重载配置」把这条路径显式暴露出来。
+ * 背景：桌面宠物的配置只在 Helper 启动时拉一次（renderer.js 的 boot → GET /config），手改配置后
+ * 桌面端不会自己跟上；菜单项「重载配置」把这条路径显式暴露出来（浏览器端刷新页面即可，故为桌面专属）。
  *
- * 为什么必须走「宿主重启 Helper」而不是渲染端就地重拉配置：
+ * 重载必须复用 syncDesktop()（串行队列 + 等旧进程真正退出），不得自己实现一套停/起：
  *   ① 每只桌面宠物一个窗口，是宿主启动时按 DSH_PET_PETS 建的——就地重拉改不了宠物数量 / display / size；
- *   ② 本页的余额 / 触发计数 / 工作状态等全局轮询由 events.js 的 loopsStarted 一次性启动，
- *      就地重建 sprite 会漏启新循环（新宠物没有碎碎念/广播轮询）或留下旧定时器。
- * 因此「重载」必须复用 syncDesktop()（串行队列 + 等旧进程真正退出），不得自己实现一套停/起。
+ *   ② 余额 / 触发计数 / 工作状态等全局轮询由 events.js 的 loopsStarted 一次性启动，就地重建 sprite 会漏启新循环或留下旧定时器。
  *
- * 本文件钉住独立桌面应用与宿主之间的契约：
- *   ① 宿主有 POST /reload 路由，且它调用的正是 syncDesktop()，且**不写任何配置文件**；
+ * 本文件钉住跨半侧契约（两半各自构建、无法互相 import，只能读源码断言）：
+ *   ① 宿主有 POST /reload 路由，且它调用的正是 syncDesktop()，且不写任何配置文件；
  *   ② 桌面端菜单项与宿主路由名一致（从桌面源码抽出路由名再回查宿主：改名漏改一侧即失败）；
+ *   ③ 浏览器端不得注入该项。
  *
  * 用 Node 内置 test runner（node:test），不引入任何 npm 依赖。
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 /** 包内文件源码（守卫用；相对 src/host/ 解析） */
 const readSource = (rel: string): string => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
 
-const host = readSource('./index.ts');
-const configRoute = readSource('./config-route.ts');
-const controlRoute = readSource('./standalone-control-route.ts');
-const hostRoutes = `${host}\n${configRoute}\n${controlRoute}`;
-const sprite = readSource('../../runtime/electron-helper/sprite.js');
-const menu = readSource('../shared/menu.ts');
+/** 路由源码：扫整个目录而不是写死文件名——领域拆分与搬迁不该让守卫误报 */
+const routeSource = readdirSync(fileURLToPath(new URL('./routes/', import.meta.url)))
+  .filter((name) => name.endsWith('.ts') && !name.endsWith('.test.ts'))
+  .map((name) => readSource('./routes/' + name))
+  .join('\n');
+const host = readSource('./index.ts') + '\n' + routeSource;
+/** 渲染端宠物本体的源码：已按职责拆成 sprite.js 与 sprite-*.js，守卫要读全份。 */
+const sprite = [
+  readSource('../../runtime/electron-helper/sprite.js'),
+  ...readdirSync(fileURLToPath(new URL('../../runtime/electron-helper/sprite/', import.meta.url))).map((name) =>
+    readSource('../../runtime/electron-helper/sprite/' + name),
+  ),
+].join('\n');
+const clientPet = readSource('../client/pet.ts');
+const menu = readSource('../shared/menu.ts') + readSource('../shared/menu/types.ts');
 
 describe('桌面端「重载配置」—— 菜单 → 宿主重启 Helper', () => {
   test('宿主：POST /reload 复用 syncDesktop()，且只重启、不写配置文件', () => {
-    const block = /if \(rest === 'reload'\) \{([\s\S]*?)\n {4}\}/.exec(configRoute);
+    const block = /if \(rest === 'reload'\) \{([\s\S]*?)\n {2}\}/.exec(routeSource);
     assert.ok(block, '宿主必须有 /reload 路由');
     const body = block[1];
     assert.ok(/method !== 'POST'/.test(body), 'reload 只接受 POST（重载是动作，不是可缓存的资源）');
-    assert.ok(/reloadDesktop\(\)/.test(body), 'reload 必须走注入的 Helper 重载动作');
+    assert.ok(/void requestRestart\(\)/.test(body), 'reload 必须复用 requestRestart()：与保存同一条重启路径');
     assert.ok(
       !/writeFile|saveUserConfig|syncUserConfigFromDefault/.test(body),
       'reload 只重启 Helper，绝不碰配置文件（写盘是 PUT /config 的职责）',
@@ -52,14 +59,27 @@ describe('桌面端「重载配置」—— 菜单 → 宿主重启 Helper', () 
     assert.ok(m, "reloadDesktop() 必须 POST 到 BASE + '/<路由名>'（bridge 已支持 POST，无需新增 IPC）");
     const route = m[1];
     assert.ok(
-      new RegExp(`rest === '${route}'`).test(hostRoutes),
+      new RegExp(`rest === '${route}'`).test(host),
       `桌面端请求的路由 /${route} 在宿主不存在（改名只改了一侧）`,
     );
   });
 
-  test('syncDesktop 是唯一的重启入口：配置写入、显示切换与 /reload 都走它', () => {
-    const calls = configRoute.match(/deps\.reloadDesktop\(\)/g) ?? [];
-    assert.equal(calls.length, 5, 'PUT/POST /config、批量/单只显示切换与 /reload 都应走 syncDesktop()');
+  test('浏览器端不注入该项：网页刷新即可，重载是桌面专属', () => {
+    assert.ok(!/action: 'reload'/.test(clientPet), '浏览器端不得有 reload 菜单项（它会重启整个桌面 Helper）');
+  });
+
+  test('requestRestart 是唯一的重启入口：四个写接口与「重载配置」都走它', () => {
+    // 按模块断言「这条路由里有调用」，而不是数全仓调用点：以后新增写接口不该让用例变红，
+    // 而某个既有接口丢了重启必须红。调用点可能写作 `void requestRestart()` 或 `void deps.requestRestart()`。
+    const call = /void (?:deps\.)?requestRestart\(\)/;
+    for (const rel of [
+      './routes/config/save.ts',
+      './routes/config/display.ts',
+      './routes/config/entry.ts',
+      './routes/desktop.ts',
+    ]) {
+      assert.ok(call.test(readSource(rel)), rel + ' 必须经 requestRestart() 重启 Helper（自己停/起会与串行队列打架）');
+    }
   });
 
   test('shared 菜单契约放行 reload（桌面壳注入该动作，类型必须包含它）', () => {

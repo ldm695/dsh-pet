@@ -5,7 +5,7 @@
  * 不负责取数与时区换算：`datetime-local` 的读写都按浏览器本地时区，与用户看到的一致。
  * @module dsh-pet/src/shared/todo/format
  */
-import type { TodoItem } from './types';
+import type { TodoItem } from './types.ts';
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;

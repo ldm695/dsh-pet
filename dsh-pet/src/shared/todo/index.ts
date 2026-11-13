@@ -5,11 +5,11 @@
  * 浏览器半侧从气泡外壳直接 import 本模块，桌面 shared-core 经 shared/index 打包同一份。
  * @module dsh-pet/src/shared/todo
  */
-export { addTodo, loadTodos, patchTodo, removeTodo, TODOS_PATH } from './api';
-export { createTodoPanel } from './panel';
-export type { TodoPanel, TodoPanelOptions } from './panel';
-export { todoPanelTopMarginPx } from './styles';
-export { TODO_HOTKEY_HINT, isTodoHotkey } from './hotkey';
+export { addTodo, loadTodos, patchTodo, removeTodo, TODOS_PATH } from './api.ts';
+export { createTodoPanel } from './panel.ts';
+export type { TodoPanel, TodoPanelOptions } from './panel.ts';
+export { todoPanelTopMarginPx } from './styles.ts';
+export { TODO_HOTKEY_HINT, isTodoHotkey } from './hotkey.ts';
 export {
   dueLabel,
   formatDateTimeLocal,
@@ -18,7 +18,7 @@ export {
   remainingLabel,
   spanText,
   todoUrgency,
-} from './format';
-export type { TodoUrgency } from './format';
-export { parseTodoItem, parseTodoList, sortTodoItems } from './types';
-export type { TodoItem } from './types';
+} from './format.ts';
+export type { TodoUrgency } from './format.ts';
+export { parseTodoItem, parseTodoList, sortTodoItems } from './types.ts';
+export type { TodoItem } from './types.ts';

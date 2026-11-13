@@ -1,11 +1,11 @@
-// 字体（src/shared 单一来源，桌面 shared-core 共用）：
-// 本文件是「字体种类 id → 实际 CSS 字体栈」的唯一映射表 + font 段默认值。
-// 设置页的下拉框选项由 FONT_PRESETS 生成；渲染层（气泡 / 悬浮提示 / 对话窗 / 得分弹窗）
-// 按 id 经 fontStackOf 取栈应用，不再各写一份字面量。
-// 为什么配置里只存 id、不存字体栈：字体栈是 CSS 片段，用户手改写错会把样式拼坏；id 有白名单可校验
-// （host 侧 topFieldValid 的 fontValid 用的是本清单的自包含副本——host 不能 import src/shared，
-//  见 src/host/config.ts 头部注释，所以两边改动必须同步）。
-import type { FontConfig, FontFamilyId } from './types';
+/**
+ * 字体：字体种类 id → CSS 字体栈的唯一映射，以及字号换算。
+ * 设置页选项由 FONT_PRESETS 生成，渲染层一律经 fontStackOf / resolveFontPx 取值，不再各写字面量。
+ * 配置里只存 id 不存字体栈：字体栈手改写错会拼坏样式，id 有白名单可校验。
+ * 宿主半侧也经本模块取清单：字体种类只此一份，改清单两端同时生效。
+ * @module dsh-pet/src/shared/fonts
+ */
+import type { FontConfig, FontFamilyId } from './types.ts';
 
 /** 一个字体预设：id（写进 config.jsonc 的 font.family）+ 两端共用的 CSS 字体栈 */
 export interface FontPreset {

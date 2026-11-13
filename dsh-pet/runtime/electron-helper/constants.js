@@ -22,8 +22,10 @@ const CONFIG = {
   scale: Number(params.get('scale') || '1'),
   petIndex: Number(params.get('petIndex') || '0'),
   petLayouts,
+  notificationWorker: params.get('notificationWorker') === '1',
   topInsetRatio: Number(params.get('topInsetRatio') || '0'),
-  // X11 窗口管理器会把越界窗口钳回工作区；只在该平台把宠物本体偏移到窗口可视位置。
+  // 窗口是否被系统钳在工作区内：X11 的窗口管理器如此（Windows / macOS 允许窗口探出屏幕），
+  // 由主进程按平台注入。开启时窗口探不出屏幕，本体靠窗口内偏移贴边（见 fitWindow）。
   isWindowClampedToWorkArea: params.get('isWindowClampedToWorkArea') === '1',
 };
 
@@ -39,10 +41,9 @@ function toLocal(v) {
 // bridge 模式（DSH_PET_BRIDGE=1）：请求走自定义 scheme 经主进程转宿主管道，绕开 DSH 桌面应用的
 // 浏览器访问闸门（它只放行带令牌的请求，插件自拉进程的裸 HTTP 一律 403）。
 const BRIDGE = params.get('bridge') === '1';
-// 独立版通过主进程注入此标记；独立菜单项仍依赖它区分宿主版功能。
-const STANDALONE = params.get('standalone') === '1';
-// 工具项「打开网站」的去向（主进程按宿主形态注入）：desktop = 唤起 DSH 桌面应用主窗口，site = 打开站点。
-const OPEN_TARGET = params.get('openTarget') === 'desktop' ? 'desktop' : 'site';
+// 菜单首项去向（主进程按宿主形态注入）：desktop 唤起桌面应用，standalone 打开本机 AI 设置页，web 打开站点。
+const OPEN_TARGET_RAW = params.get('openTarget');
+const OPEN_TARGET = OPEN_TARGET_RAW === 'desktop' || OPEN_TARGET_RAW === 'standalone' ? OPEN_TARGET_RAW : 'web';
 // 视口 = 全部显示器工作区的外接矩形，只是坐标系原点与比例换算基准；边界判定一律走 AREAS 的并集
 // （不规则布局下外接矩形含大片不属于任何屏的空洞）。主进程下发的是物理像素，VIEW 是 ÷scale 后的 CSS 系。
 const VIEW_SCREEN = {
@@ -146,7 +147,8 @@ const ORIGIN = new URL(CONFIG.configUrl).origin;
 const BASE = BRIDGE ? 'dsh-pet-bridge://dsh-pet/dsh-pet-7340' : ORIGIN + '/dsh-pet-7340';
 const STATE_URL = BASE + '/state'; // 轮询统一状态 S：前端 1s 轮询的唯一数据源（余额/工作状态/通知/说话）
 const BALANCE_URL = BASE + '/balance'; // 余额刷新动作（POST，写 S；数据本身从 /state 读）
-const ENVIRONMENT_URL = BASE + '/environment'; // 天气查询动作（POST，结果写入该宠物的说话气泡）
+const ENVIRONMENT_URL = BASE + '/environment'; // 环境查询动作（POST，强制刷新并写 sections.env）
+const FOCUS_SESSION_URL = BASE + '/focus-session'; // 跳会话动作（POST，写 sections.focusSession；页面据此切过去）
 const WHISPER_URL = BASE + '/whisper';
 // 实况上报（渲染端 → 宿主，内部通道）：第三方用 GET /pose 读宿主存下的这份快照
 const POSE_REPORT_URL = BASE + '/pose/report';

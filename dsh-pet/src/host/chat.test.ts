@@ -1,10 +1,10 @@
 /**
- * 对话配图解析单元测试 —— 钉住「模型选图」的取舍规则：
+ * 对话标记解析单元测试 —— 钉住「模型选图 / 选动作」的取舍规则：
  * - 命中池内 → 采纳并从正文剥离标记（标记不得留在用户可见文本里）；
  * - 池外名称（模型幻觉）→ 不配图且正文原样保留（绝不因解析失败丢回复）；
  * - 只回标记不回正文 → 视为没选（否则气泡会空掉）。
  *
- * 解析函数住在 memes.ts（纯函数、无 LLM 依赖），故本测试只 import 它——
+ * 两个解析函数都是纯函数、无 LLM 依赖（选图在 memes.ts、选动作在 chat-action.ts），故本测试只 import 它们——
  * 避免拉起 chat.ts 的 @deepseek-ai/dsh-llm 依赖链。
  *
  * 跑法：node --experimental-strip-types --test src/host/chat.test.ts
@@ -12,6 +12,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { extractChatAction } from './chat-action.ts';
 import { extractChatImage, memeCatalog, type MemeEntry } from './memes.ts';
 
 const POOL: MemeEntry[] = [
@@ -78,5 +79,49 @@ describe('memeCatalog —— 给模型看的候选清单', () => {
     assert.ok(cat.includes('- 死掉了：累瘫阵亡'));
     assert.ok(cat.includes('- 就一碗：蹭饭大碗'));
     assert.equal(cat.split('\n').length, POOL.length);
+  });
+});
+
+describe('图与动作标记共存 —— 两个开关同时开启时的剥离顺序', () => {
+  const NAMES = ['优雅女仆舞', '原地小憩沉眠'];
+
+  test('两个标记同时出现：各取一个，正文只剩文字', () => {
+    const acted = extractChatAction('好呀～看我转一圈！\n[动作:优雅女仆舞]\n[图:可爱]', NAMES);
+    const picked = extractChatImage(acted.text, POOL);
+    assert.equal(acted.action, '优雅女仆舞');
+    assert.equal(picked.image, '可爱');
+    assert.equal(picked.text, '好呀～看我转一圈！');
+  });
+
+  test('顺序反过来（图在前、动作在后）同样剥得干净', () => {
+    const acted = extractChatAction('好呀\n[图:可爱]\n[动作:原地小憩沉眠]', NAMES);
+    const picked = extractChatImage(acted.text, POOL);
+    assert.equal(acted.action, '原地小憩沉眠');
+    assert.equal(picked.image, '可爱');
+    assert.equal(picked.text, '好呀');
+  });
+
+  test('只写动作：配图解析保持原样，不凭空配图', () => {
+    const acted = extractChatAction('嗯嗯\n[动作:优雅女仆舞]', NAMES);
+    const picked = extractChatImage(acted.text, POOL);
+    assert.equal(acted.action, '优雅女仆舞');
+    assert.equal(picked.image, undefined);
+    assert.equal(picked.text, '嗯嗯');
+  });
+
+  test('只写图：动作解析不采纳（动作开关关闭时的实际路径）', () => {
+    const acted = extractChatAction('嗯嗯\n[图:可爱]', []);
+    const picked = extractChatImage(acted.text, POOL);
+    assert.equal(acted.action, undefined);
+    assert.equal(picked.image, '可爱');
+    assert.equal(picked.text, '嗯嗯');
+  });
+
+  test('动作名无效、图名也无效：动作标记剥掉，图标记按配图规则原样保留', () => {
+    const acted = extractChatAction('嗯\n[动作:自创动作]\n[图:池外图]', NAMES);
+    const picked = extractChatImage(acted.text, POOL);
+    assert.equal(acted.action, undefined);
+    assert.equal(picked.image, undefined);
+    assert.equal(picked.text, '嗯\n[图:池外图]');
   });
 });

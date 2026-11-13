@@ -8,8 +8,8 @@
  */
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { cloneTodo, parseTodoFile, sortTodos, TODO_FILE_VERSION, type TodoFile, type TodoRecord } from './types';
-import type { LoggerLike } from '../log-file';
+import { cloneTodo, parseTodoFile, sortTodos, TODO_FILE_VERSION, type TodoFile, type TodoRecord } from './types.ts';
+import type { LoggerLike } from '../log-file.ts';
 
 /** 待办文件名：落在插件用户数据目录下；宿主建库与设置页展示路径共用这一份。 */
 export const TODO_FILE_NAME = 'todos.json';

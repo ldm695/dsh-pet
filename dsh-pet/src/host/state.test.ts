@@ -16,9 +16,17 @@ import assert from 'node:assert/strict';
 import { MAX_STATE_WAIT_MS, parseStateWaitQuery, PollStateStore } from './state.ts';
 
 describe('PollStateStore —— 初始形态', () => {
-  test('四个全局叶子都是 {counter:0, data:null}（0 = 从未写过，前端首拉当基线）', () => {
+  test('七个全局叶子都是 {counter:0, data:null}（0 = 从未写过，前端首拉当基线）', () => {
     const s = new PollStateStore().read();
-    assert.deepEqual(Object.keys(s.sections).sort(), ['balance', 'config', 'menu', 'notify', 'workStatus']);
+    assert.deepEqual(Object.keys(s.sections).sort(), [
+      'balance',
+      'config',
+      'env',
+      'focusSession',
+      'menu',
+      'notify',
+      'workStatus',
+    ]);
     for (const leaf of Object.values(s.sections)) assert.deepEqual(leaf, { counter: 0, data: null });
     assert.deepEqual(s.pets, {});
   });
@@ -82,8 +90,8 @@ describe('PollStateStore —— 写入与读取', () => {
     const store = new PollStateStore();
     store.writePet('main', 'position', { x: 0.5, y: 0.5, mode: 'spring' });
     const entry = store.read().pets.main;
-    // 形状恒定：只要被写过任意一个叶子，五个键就都存在（消费端不必判 undefined）
-    assert.deepEqual(Object.keys(entry).sort(), ['anim', 'lock', 'position', 'say', 'throw']);
+    // 形状恒定：只要被写过任意一个叶子，六个键就都存在（消费端不必判 undefined）
+    assert.deepEqual(Object.keys(entry).sort(), ['anim', 'lock', 'position', 'say', 'sleep', 'throw']);
     assert.deepEqual(entry.position.data, { x: 0.5, y: 0.5, mode: 'spring' });
     assert.deepEqual(entry.say, { counter: 0, data: null }, '没写过的槽位保持空叶子');
     assert.deepEqual(entry.anim, { counter: 0, data: null });

@@ -11,10 +11,10 @@
  */
 
 import { BlockAssembler, createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm';
-import { PET_CALL_IDENTITY, noTextReason } from './llm-call';
-import { supportsReasoningOff } from './llm-reasoning';
-import { defaultLog } from './log-file';
-import { modelCandidates, modelLabel, type ModelRef } from './model-selection';
+import { PET_CALL_IDENTITY, noTextReason } from './llm-call.ts';
+import { supportsReasoningOff } from './llm-reasoning.ts';
+import { defaultLog } from './log-file.ts';
+import { modelCandidates, modelLabel, type ModelRef } from './model-selection.ts';
 
 /** 生成失败原因（与 shared/whisper.ts 的 WhisperState 失败分支同构）。 */
 export type WhisperGenerateResult =
@@ -27,8 +27,11 @@ const TIMEOUT_MS = 30_000;
 /** 碎碎念指令：纯文本（没有配图时的原样请求）。 */
 const USER_TEXT = '随便说一句日常碎碎念，一句就好，20 字以内。';
 
-/** 睡眠期间使用的功能指令；与碎碎念共用人设和模型，只改变这一轮生成的语义。 */
-export const SLEEP_TALK_INSTRUCTION = '你正在睡觉，随便嘟囔一句梦话，一句就好，20 字以内；含糊、半梦半醒，不要清醒地回应任何人。';
+/** 梦话指令：睡觉期间嘟囔一句。与碎碎念指令同属「功能指令」，不进配置（配置里只有人设）。 */
+const SLEEP_TALK_TEXT = '你正在睡觉，随便嘟囔一句梦话，一句就好，20 字以内；含糊、半梦半醒，不要清醒地回应任何人。';
+
+/** 梦话指令的对外出口：调用方传进 generateWhisper 的 instruction，避免再抄一份文案。 */
+export const SLEEP_TALK_INSTRUCTION = SLEEP_TALK_TEXT;
 
 /**
  * 碎碎念指令：带表情包时要求模型配合作画说一句。
@@ -49,24 +52,30 @@ function userTextWithMeme(meme: { name: string; desc: string }): string {
   );
 }
 
+/** 一次生成请求：人设必填，其余可选。参数改对象是为了不再往函数签名上挂第 5 个参数。 */
+export interface WhisperRequest {
+  /** 人设 system 提示词（whisperPrompt）。 */
+  system: string;
+  /** 配图（开启配图时传入；缺省 = 纯文本碎碎念）。生成成功时原样带回，客户端据此展示图片。 */
+  meme?: { name: string; desc: string };
+  /** 条目单独指定的模型（whisperModel）；缺省 / 留空 = 只用当前对话的模型。 */
+  preferred?: ModelRef;
+  /** 功能指令（梦话传 SLEEP_TALK_INSTRUCTION）；缺省 = 碎碎念指令。 */
+  instruction?: string;
+}
+
 /**
- * 用指定（或当前对话的）provider/model 生成一句碎碎念。
+ * 用指定（或当前对话的）provider/model 生成一句话。
  * @param ctx - 宿主上下文（注入 agentDefaultModel / llm）。
- * @param system - 人设提示词（whisperPrompt）。
- * @param meme - 配图（开启配图时传入；缺省 = 纯文本碎碎念）。生成成功时原样带回，
- *             客户端据此展示图片（host 不判断模型是否真的贴合）。
- * @param preferred - 条目单独指定的模型（whisperModel）；缺省 / 留空 = 只用当前对话的模型。
+ * @param request - 人设、可选配图、可选模型与指令。
  * @returns 生成的文本（+ 配图），或结构化失败（provider 缺失 / 生成错误）。
  */
 export async function generateWhisper(
   ctx: { agentDefaultModel: { currentSelection(): { provider: string; model: string } }; llm?: unknown },
-  system: string,
-  meme?: { name: string; desc: string },
-  preferred?: ModelRef,
-  instruction?: string,
+  request: WhisperRequest,
 ): Promise<WhisperGenerateResult> {
   // 候选链：配置的模型优先 → 当前对话的模型兜底（whisperModel 留空时链上只有后者）
-  const candidates = modelCandidates(ctx, preferred);
+  const candidates = modelCandidates(ctx, request.preferred);
   if (candidates.length === 0) {
     return { ok: false, reason: 'provider-missing', message: '当前对话未配置模型' };
   }
@@ -80,7 +89,7 @@ export async function generateWhisper(
   // 兜底文案与失败分支同源，避免两处字面量漂移
   let last: WhisperGenerateResult = { ok: false, reason: 'generate-error', message: noTextReason(undefined) };
   for (const [i, sel] of candidates.entries()) {
-    const result = await generateWith(ctx, llm, sel, system, meme, instruction);
+    const result = await generateWith(ctx, llm, sel, request);
     if (result.ok) return result;
     last = result;
     // 回落要留痕：配的模型没生效时能在日志里看到原因（否则「我明明配了 A，怎么还是用 B」没法查）
@@ -99,9 +108,7 @@ async function generateWith(
   ctx: { llm?: unknown },
   llm: { stream(o: unknown): AsyncIterable<unknown> },
   sel: ModelRef,
-  system: string,
-  meme?: { name: string; desc: string },
-  instruction?: string,
+  request: WhisperRequest,
 ): Promise<WhisperGenerateResult> {
   const deadline = AbortSignal.timeout(TIMEOUT_MS);
   // 仅当模型声明支持 reasoning effort（含 "off"）时才传，否则省略：
@@ -115,11 +122,13 @@ async function generateWith(
     sessionId: PET_CALL_IDENTITY,
     messages: [
       createUserMessage({
-        content: [{ type: 'text', text: instruction ?? (meme ? userTextWithMeme(meme) : USER_TEXT) }],
+        content: [
+          { type: 'text', text: request.instruction ?? (request.meme ? userTextWithMeme(request.meme) : USER_TEXT) },
+        ],
         source: { kind: 'user' },
       }),
     ],
-    system,
+    system: request.system,
     // 不显式限 maxTokens：推理模型会把思考计入预算，显式小上限只会截断正文报「模型未返回文本」；
     // 不传由 dsh-llm 按适配器 defaultMaxTokens（默认 32768）兜底，碎碎念短指令输出仍短。
     temperature: 1,
@@ -147,5 +156,5 @@ async function generateWith(
     .join('')
     .trim();
   if (!text) return { ok: false, reason: 'generate-error', message: noTextReason(assembler.finish) };
-  return meme ? { ok: true, text, image: meme.name } : { ok: true, text };
+  return request.meme ? { ok: true, text, image: request.meme.name } : { ok: true, text };
 }

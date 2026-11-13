@@ -1,36 +1,35 @@
-// src/shared —— 浏览器 bundle 与桌面 shared-core（构建产物）共用的纯逻辑层。
-// 约定：
-//   - 只含无 React / DOM 依赖的纯函数、类型、常量、拍平逻辑；
-//   - 配置的读取/合并/校验收敛在 host（src/host/config.ts 的 readAllConfig，经
-//     GET /dsh-pet-7340/config 暴露成品）；本目录只负责把成品拍平成渲染列表（flattenConfigPets）；
-//   - host 半侧**不得运行时 import** 本目录（DSH 单文件加载约束会拆 chunk 导致加载失败）；
-//     少数共享 DTO 只允许通过 `import type` 引用，编译后不会留下运行时依赖；
-//     其配置实现仍是自包含的（见 src/host/config.ts 头部注释）；
-//   - 新增「行为」请落在这里 + 两边的薄壳（浏览器 React 组件 / 桌面 DOM sprite）。
-export * from './types';
-export * from './constants';
-export * from './pickers';
-export * from './displays'; // 多显示器几何（桌面 = 工作区矩形并集，而非它们的外接矩形）
-export * from './motion';
-export * from './balance';
-export * from './whisper';
-export * from './config';
-export * from './fonts'; // 字体预设（id → CSS 字体栈）+ 字号换算（浏览器与桌面共用同一份）
-export * from './notify';
-export * from './menu'; // 统一右键菜单（本目录唯一的 DOM 例外：树=纯函数，渲染=两端共用同一份）
-export * from './chat'; // 对话弹窗（menu 之后第二个 DOM 例外：数据=纯函数，弹窗=两端共用同一份）
-export * from './chat-enter';
-export * from './physics'; // 拖拽抛掷物理（弹簧跟手 + 甩抛 + 重力反弹）
-export * from './score'; // 点击积分（速度/大小 → 分数，纯逻辑）
-export * from './score-popup'; // 点击积分弹窗 + 粒子爆发（menu/chat 之后第三个 DOM 例外：渲染=两端共用同一份）
-export * from './work-status'; // 工作状态联动（DSH 会话事件 → 档位动画/气泡：档位常量 + reducer + 文案，浏览器消费）
-export * from './work-status-assignment'; // Agent→桌宠占用分配器（Electron 共享逻辑）
-export * from './state'; // 轮询统一状态 S 的客户端侧纯逻辑（拉取 / 拍平 / 比对；两端共用）
-export * from './env-icon';
-export * from './env-view';
-export * from './weights';
-export * from './tooltip'; // 悬浮提示（替代原生 title 属性：class + 样式 + 翻转判据，两端共用同一份）
-export * from './voice';
-export * from './bubble-hold';
-export * from './todo';
-export * from './hotkey';
+/**
+ * 共享层出口：浏览器半侧 bundle 与桌面 shared-core 共用同一份纯逻辑。
+ * 不负责配置的读取、合并与校验：成品配置由宿主半侧的 readAllConfig 给出，本层只把它拍平。
+ * 宿主半侧不得 import 本目录（DSH 单文件加载约束会拆 chunk），其实现自包含、改动须与本层同步。
+ * menu / chat / score-popup / todo / tooltip 导出 DOM 样式与挂载：数据与判据仍是纯函数，渲染两端共用同一份。
+ * 本文件是打包入口：scripts/build-desktop-core.mjs 把它打成 shared-core.js，产物以 window.PetShared
+ * 暴露全部符号供桌面 JS 取用（那一侧没有类型检查）。
+ * @module dsh-pet/src/shared/index
+ */
+export * from './types.ts';
+export * from './constants.ts';
+export * from './pickers.ts';
+export * from './displays.ts';
+export * from './motion.ts';
+export * from './balance/index.ts';
+export * from './whisper.ts';
+export * from './config.ts';
+export * from './fonts.ts';
+export * from './notify.ts';
+export * from './menu.ts';
+export * from './chat/index.ts';
+export * from './physics.ts';
+export * from './score.ts';
+export * from './score-popup.ts';
+export * from './work-status.ts';
+export * from './work-status-assignment.ts';
+export * from './state.ts';
+export * from './env-icon.ts';
+export * from './env-view.ts';
+export * from './bubble-hold.ts';
+export * from './display-hotkey.ts';
+export * from './sleep-hotkey.ts';
+export * from './todo/index.ts';
+export * from './tooltip.ts';
+export * from './voice.ts';

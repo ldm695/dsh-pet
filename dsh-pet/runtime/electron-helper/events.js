@@ -1,8 +1,10 @@
 /**
  * dsh-pet desktop helper —— 事件联动（余额 / 碎碎念 / 广播 / 工作状态）。
  *
- * 展示与 tick 回调经 PetSprite.prototype 挂载（运行时可解析，顺序无碍）；
- * startLoops 是全部轮询的组装入口（boot 后调用）。依赖 constants.js / sprite.js。
+ * 展示与 tick 回调挂在 PetSprite.prototype 上，必须在 sprite.js 之后加载（顶层就改写原型）；startLoops 是全部轮询的
+ * 唯一入口，boot 成功后调用。不负责动画播放与气泡渲染本身（见 sprite.js）。依赖 constants.js / sprite.js。
+ *
+ * @module dsh-pet/runtime/electron-helper/events
  */
 'use strict';
 
@@ -18,8 +20,10 @@ PetSprite.prototype.onWorkTick = function onWorkTick(snapshot, tick, animateWork
   const previousAnim = this.anim;
   this.prevWorkTick = tick;
   const state = snapshot && snapshot.state ? snapshot.state : null;
-  // 只有本轮选中的宠物保留可恢复的工作状态；否则菜单/互动动画结束时，未选中的宠物也可能自行切回工作动画。
-  this.workState = animateWorkStatus ? state : null;
+  this.workState = state; // 当前工作状态：互动/事件动画播完恢复档位循环用
+  // 当前展示条目所属会话：点气泡跳过去要用它。外部槽（`api`）宿主已写成 null，这里只认非空串。
+  this.workSessionId =
+    snapshot && typeof snapshot.sessionId === 'string' && snapshot.sessionId ? snapshot.sessionId : null;
   const stateChanged = this.prevWorkState !== state;
   this.prevWorkState = state;
   if (this.sleeping) return;
@@ -35,23 +39,23 @@ PetSprite.prototype.onWorkTick = function onWorkTick(snapshot, tick, animateWork
     previousAnim,
   });
   if (!state) {
-    // 回空闲时立即退出工作状态动画，不能继续等当前 WebM 播完：循环素材可能很长，视觉上会像
-    // 中断后状态还残留。切换到普通待机动画后，双缓冲会停掉原工作片段。
-    if (S.poolIncludes(this.animations.events?.workStatus ?? [], this.anim)) {
-      logWorkStatusDiagnostic('idle-reset', { petId: this.pet.id, from: this.anim, target: 'idle-chain' });
-      this.playIdle();
-    } else if (previousState) {
-      logWorkStatusDiagnostic('idle-reset-missed-current-not-work-anim', {
-        petId: this.pet.id,
-        previousState,
-        currentAnim: this.anim,
-      });
+    // 回空闲：把正在循环播的进行中档位动画改成「播完即停」。进行中档位走 switchTo(name, false)
+    // （loop=true），正常不触发 ended；这里不切动画，链就拿不到推进信号，
+    // 宠物会卡在那段工作动画上。只改当前段：它结束后走 handleEnded → playIdle。
+    // 睡觉时前台那段是睡姿循环：改掉它的 loop/onended 会既打断睡姿又把随机链拽回来，跳过。
+    if (!this.sleeping && S.poolIncludes(this.animations.events?.workStatus ?? [], this.anim)) {
+      const frontEl = this.front === 0 ? this.videoA : this.videoB;
+      if (frontEl) {
+        frontEl.loop = false;
+        frontEl.onended = () => this.handleEnded();
+      }
     }
     // 空闲：收起常驻气泡
     if (this.workTimer !== null) window.clearTimeout(this.workTimer);
     this.workTimer = null;
     this.workOn = false;
     this.workText = null;
+    this.workSessionId = null;
     this.renderBubble();
     return;
   }
@@ -122,8 +126,10 @@ PetSprite.prototype.onWorkTick = function onWorkTick(snapshot, tick, animateWork
       : null; // 非终态：常驻，不设自动收起
   }
   this.renderBubble();
-  // 循环语义（与浏览器 setOnce 一致）：终态播一遍回 idle；非终态多候选档位播一遍 →
-  // ended 由 sprite.handleEnded 轮换到下一候选（长时间状态不单段重复）；非终态单候选档位无限循环。
+  // 睡觉：气泡与 workState 已经更新，动画不换——自动来源不该打断睡姿（睡姿循环归睡觉状态机）。
+  if (this.sleeping) return;
+  // 循环语义：终态播一遍回 idle；非终态多候选档位播一遍 → ended 轮换到下一候选；
+  // 非终态单候选档位无限循环。
   const rotating = !terminal && Array.isArray(slot) && slot.length > 1;
   logWorkStatusDiagnostic('animation-select', {
     petId: this.pet.id,
@@ -138,7 +144,21 @@ PetSprite.prototype.onWorkTick = function onWorkTick(snapshot, tick, animateWork
   }
 };
 
-// ---- 余额事件（自动轮询按 balanceEnabled 门控，手动请求无条件；档位与气泡内容来自 shared） ----
+// 点工作气泡：发「切到这条会话」的意图，再请主进程把 DSH 主窗口提到前台。
+// 提窗口必须走主进程的 dsh://（与右键「打开软件」同一条路）：页面侧的 iframe 唤不动被挡住的窗口。
+// 桌面宠物是独立渲染进程、拿不到页面的会话服务，跨进程这一跳只能经宿主中转（契约见 openapi 的 /focus-session）。
+PetSprite.prototype.openWorkSession = function openWorkSession() {
+  const sessionId = this.workSessionId;
+  if (!sessionId) return;
+  S.postAction(FOCUS_SESSION_URL, { sessionId }).then((ok) => {
+    if (!ok) console.warn('[dsh-pet] 跳会话：宿主未接受 pet=' + this.pet.id);
+  });
+  if (window.petBridge && typeof window.petBridge.focusDshHost === 'function') {
+    window.petBridge.focusDshHost();
+  }
+};
+
+// 余额事件：自动轮询按 balanceEnabled 门控，手动请求无条件。
 // manual = 这次刷新是用户主动要的（右键「查看余额」/ `/balance` 命令）：不受开关限制，一律给答复。
 // 自动余额报告由 host 传入全局 targetPetId，只播给轮到的桌宠；本地轮流选择保留给
 // 未指定目标的旧状态/多宠物 renderer。每宠物独立窗口时不能在各 renderer 各自轮流，否则会同时命中所有窗口。
@@ -168,14 +188,15 @@ PetSprite.prototype.onBalanceTick = function onBalanceTick(state, tick, manual, 
   this.showBalanceNow(state, manual);
 };
 
-// 余额不可用（服务商未登记 / 缺凭证 / 抓取失败）：只弹**文字说明**气泡，不播档位动画
-// （非 ok 没有百分比语义，档位动画无从映射）。显隐/定时与成功路径同一套（10s 自动消失）；
-// 不 stopMove——本次没有动画要抢前台，宠物没必要停下漫游。
-// 门控：自动轮询要求 balanceEnabled；**手动请求无条件弹**（用户问了就该有答复，包括"服务商不支持"这件事）。
+// 余额不可用（服务商未登记 / 缺凭证 / 抓取失败）：只弹文字说明气泡，不播档位动画。
+// 显隐与定时和成功路径同一套；不 stopMove——本次没有动画要抢前台。
+// 门控：自动轮询要求 balanceEnabled，手动请求无条件弹（包括「服务商不支持」这件事）。
+// 睡觉一票否决：与档位动画同一口径，手动请求也不打断睡姿。
 PetSprite.prototype.showBalanceNotice = function showBalanceNotice(state, manual) {
   if (this.sleeping) return;
   if (!this.pet.balanceEnabled && !manual) return; // 自动轮询受开关门控；手动无条件通过
-  if (this.frozen && !manual) return; // 锁期间不让自动余额提示覆盖联动
+  if (this.frozen && !manual) return; // 占用锁：自动来源不看；手动照常（用户问了就得有答复）
+  if (this.sleeping) return; // 睡着不弹：睡姿优先于余额说明
   if (!state || state.ok) return;
   this.bubbleOn = true;
   this.balanceWrap = true; // 文字说明可能多行：renderBubble 据此套用紧凑变体（字号缩到 0.75、宽度下限更窄）
@@ -195,18 +216,32 @@ PetSprite.prototype.showBalanceNotice = function showBalanceNotice(state, manual
 // startBroadcastLoop 1s 轮询 /broadcast）。现在三者都写进 S 的 pets.<id>.say，由上面的
 // /state 统一轮询分发到对应宠物（见 applySayLeaf）——本窗口只装一只宠物，按 id 命中即可。
 
-// 收起说话气泡（POST /bubble/clear 的落点）。**只动气泡**：正在播的动画、余额气泡、
-// 工作状态气泡都不碰——气泡与动作是两把锁、分别释放（issue #122 第 5 条）。
-// 清除当前桌宠的碎碎念气泡。
-PetSprite.prototype.clearWhisper = function clearWhisper() {
+// 推进说话气泡的收起计划并重排计时器：语音合成期间挂起，播完再留一小段尾巴。
+// 计划与常量在 shared/bubble-hold，与浏览器端共用同一份（两端行为不能各自漂移）。
+PetSprite.prototype.applyWhisperHold = function applyWhisperHold(event) {
+  const next = S.reduceBubbleHold(this.whisperHold, event);
+  if (next === this.whisperHold) return; // 同引用 = 无事发生，不白重排计时器
+  this.whisperHold = next;
+  this.whisperOn = next.on;
   if (this.whisperTimer !== null) window.clearTimeout(this.whisperTimer);
   this.whisperTimer = null;
-  this.whisperHoldState = S.reduceBubbleHold(this.whisperHoldState || S.BUBBLE_HOLD_IDLE, { kind: 'clear' });
-  this.whisperOn = false;
+  if (next.delayMs !== null) {
+    this.whisperTimer = window.setTimeout(() => {
+      this.whisperTimer = null;
+      this.applyWhisperHold({ kind: 'hide' });
+    }, next.delayMs);
+  }
+  this.renderBubble();
+};
+
+// 收起说话气泡（POST /bubble/clear 的落点）。只动气泡：正在播的动画、余额气泡、
+// 工作状态气泡都不碰——气泡与动作是两把锁、分别释放。与浏览器端 clearWhisperBubble 同一语义。
+PetSprite.prototype.clearWhisper = function clearWhisper() {
+  this.whisperText = '';
   this.whisperView = null;
   this.whisperImage = '';
-  this.whisperImageUrl = '';
-  this.renderBubble();
+  this.whisperUrl = '';
+  this.applyWhisperHold({ kind: 'clear' });
 };
 
 // 碎碎念展示（本宠物）：随机抽 events.whisper 动画 + 弹文本气泡（与余额同一套定时语义）
@@ -241,18 +276,18 @@ PetSprite.prototype.showWhisper = function showWhisper(text, image, url, duratio
       (image ? ' [' + image + ']' : ''),
   );
   // 先起动画：它与气泡时长是两个独立参数（duration=0 时动画照播、只是不弹泡）
-  if (name !== null) {
+  // 睡觉：气泡照弹（拒绝台词就是这么来的），动画不换——自动来源不该打断睡姿（睡姿循环归睡觉状态机）。
+  if (name !== null && !this.sleeping) {
     this.stopMove();
     this.playOnce(name);
   }
   if (duration === 0) return;
-  this.whisperOn = true;
   this.whisperView = S.whisperBubbleView({ ok: true, text, ts: 0 });
+  this.whisperText = text;
   this.whisperImage = typeof image === 'string' ? image : '';
-  this.whisperImageUrl = typeof url === 'string' ? url : '';
-  this.renderBubble();
-  // 气泡定时消失（与动画解耦，与余额同一语义；重复触发先清旧定时器）
-  this.applyWhisperHold({ kind: 'show', durationMs: duration ?? BUBBLE_DURATION_MS });
+  this.whisperUrl = typeof url === 'string' ? url : '';
+  // 收起时机交给收起计划：这句要念时，随后的语音开始事件会把它挂起（见 applyWhisperHold）。
+  this.applyWhisperHold({ durationMs: duration ?? BUBBLE_DURATION_MS, kind: 'show' });
 };
 
 // 余额展示（气泡 + 档位动画）：周期轮询与菜单点播共用同一展示路径，视觉/行为严格一致。
@@ -267,8 +302,8 @@ PetSprite.prototype.showBalanceNow = function showBalanceNow(state, manual) {
   this.bubbleOn = true;
   this.balanceWrap = false; // 正常余额气泡用常规尺寸，别继承上一次文字说明的紧凑变体
   this.balanceView = S.balanceBubbleView(state);
-  this.balanceState = state; // 展开态要拿完整读数现算三窗口行（balanceView 只是收起态那两行）
-  this.balanceViewIndex = 0;
+  this.balanceState = state; // 展开态按页现算窗口明细与用量行（balanceView 只是收起态那两行）
+  this.balanceViewIndex = 0; // 新一轮查询一律从第一页开始（与浏览器一致）
   this.renderBubble();
   // 气泡 10s 定时消失（与动画解耦：即使动画被点击/拖拽打断，气泡也按时收起；重复触发先清旧定时器）
   if (this.bubbleTimer !== null) window.clearTimeout(this.bubbleTimer);
@@ -277,6 +312,8 @@ PetSprite.prototype.showBalanceNow = function showBalanceNow(state, manual) {
     this.renderBubble();
   }, BUBBLE_DURATION_MS);
   // 档位动画：开关关闭的宠物不演；没有百分比语义（纯余额金额）也没有档位可映射
+  // 睡觉：气泡已经亮起，动画不换——自动来源不该打断睡姿（睡姿循环归睡觉状态机）。
+  if (this.sleeping) return;
   if (!this.pet.balanceEnabled) return;
   if (p === undefined) return;
   const pool = this.animations.events?.balance;
@@ -319,16 +356,37 @@ PetSprite.prototype.toggleBalanceDetail = function toggleBalanceDetail() {
   }, BUBBLE_DURATION_MS);
 };
 
-// ---------- 轮询组装（容器统一拉取/触发，与浏览器 PetMulti 同一套路径；boot 成功后调用） ----------
+// 环境气泡（查询天气）：宿主写完 sections.env 后由 applyEnvLeaf 调到这里。
+// 睡着不弹（睡姿优先）；占用锁不挡——用户主动点的一次性查询，与手动余额同口径。
+// 计时器用自己的 envTimer：与余额共用 bubbleTimer 会互相提前收起。
+PetSprite.prototype.showEnvNow = function showEnvNow(state) {
+  if (!state || state.petId !== this.pet.id) return;
+  if (this.sleeping) return;
+  this.envState = state;
+  this.envOn = true;
+  this.renderBubble();
+  if (this.envTimer !== null) window.clearTimeout(this.envTimer);
+  this.envTimer = window.setTimeout(() => {
+    this.envTimer = null;
+    this.envOn = false;
+    this.renderBubble();
+  }, BUBBLE_DURATION_MS);
+};
 
-// 余额不可用 → 文字说明气泡（周期轮询与手动 /balance 触发共用这一条路径；判定在 shared，与浏览器同一份）：
-// explicit=true（手动触发）一律弹——用户问了就该有答复，包括"服务商不支持"这件事；
-// 自动轮询仅在原因（含服务商）变化时弹一次，避免每 30 分钟反复刷同一句话。
-function applyBalanceNotice(state, explicit, targetPetId) {
-  if (targetPetId && !sprites.some((s) => s.pet.id === targetPetId)) return;
+// 轮询组装：容器统一拉取与触发，与浏览器端同一套路径。
+
+// 余额不可用 → 文字说明气泡（周期轮询与手动 /balance 共用这一条路径，判定在 shared）：
+// explicit（手动触发）一律弹；自动轮询只在原因（含服务商）变化时弹一次，避免反复刷同一句话。
+// petId 给了就只弹给那只（右键菜单点的那只），缺省照旧全员。
+function applyBalanceNotice(state, explicit, petId) {
   const notice = S.decideBalanceNotice(state, balanceNoticeKey, explicit);
   balanceNoticeKey = notice.key;
-  if (notice.show) selectBalancePet(targetPetId)?.showBalanceNotice(state, explicit);
+  if (notice.show) {
+    for (const s of sprites) {
+      if (petId !== undefined && petId !== s.pet.id) continue;
+      s.showBalanceNotice(state, explicit);
+    }
+  }
   // 未登记服务商是配置事实（已由气泡说明），不再刷 console；其余原因照旧显式报错，绝不伪造余额
   if (state.reason !== 'unsupported') {
     console.error('[dsh-pet] 余额查询失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''));
@@ -344,7 +402,8 @@ let stateSince;
 /** 独立模式不能挂起请求；本机服务器通过响应的 longPoll: false 明确标识。 */
 let stateLongPoll = true;
 
-/** 余额叶子 → 展示（成功播档位动画 + 气泡；不可用按 shared 判定弹文字说明） */
+/** 余额叶子 → 展示（成功播档位动画 + 气泡；不可用按 shared 判定弹文字说明）。
+ *  叶子带 petId 时只给那只宠物（右键菜单点的那只），不带则所有开了余额的照常显示。 */
 function applyBalanceLeaf(leaf) {
   const hit = S.readBalance(leaf);
   if (!hit) return;
@@ -352,80 +411,41 @@ function applyBalanceLeaf(leaf) {
   window.__dshPetDebug.lastBalanceOk = hit.state && hit.state.ok === true;
   if (hit.state.ok) {
     balanceTick++;
-    selectBalancePet(hit.targetPetId)?.onBalanceTick(hit.state, balanceTick, hit.manual, hit.targetPetId);
+    // 睡着一律不播：档位动画与气泡都不更新，手动请求也不例外（睡姿优先）
+    for (const s of sprites) {
+      if (s.sleeping) continue;
+      if (hit.petId !== undefined && hit.petId !== s.pet.id) continue;
+      s.onBalanceTick(hit.state, balanceTick, hit.manual);
+    }
   } else {
     // 不可用：manual（用户主动要的）一律弹，周期刷新只在原因变化时弹一次
-    applyBalanceNotice(hit.state, hit.manual, hit.targetPetId);
+    applyBalanceNotice(hit.state, hit.manual, hit.petId);
   }
 }
 
-/** 环境叶子只点亮目标宠物的独立环境气泡，不经 say 通道覆盖其他气泡内容。 */
-function applyEnvironmentLeaf(leaf) {
+/** 环境叶子 → 对应宠物弹环境气泡。`petId` 是叶子写的「谁弹」，本窗口只装一只，按 id 命中。
+ *  睡着不弹（不打断睡姿）；占用锁不挡——它是用户点「查询天气」发起的一次性查询。 */
+function applyEnvLeaf(leaf) {
   const state = S.readEnv(leaf);
   if (!state) return;
-  for (const sprite of sprites) {
-    if (sprite.pet.id === state.petId && !sprite.sleeping) sprite.showEnvironment(state);
-  }
+  for (const s of sprites) s.showEnvNow(state);
 }
 
-/** 说话叶子 → 对应宠物播说话动画 + 气泡（碎碎念/命令气泡/对话回复/清空四合一）。
- *  `kind: 'clear'`（POST /bubble/clear）= 收起气泡；其余 = 弹一个气泡。
- *  petId 由路径解析出来（pets.<id>.say）；本窗口只装一只宠物，按 id 命中即可。 */
-PetSprite.prototype.applyWhisperHold = function applyWhisperHold(event) {
-  const current = this.whisperHoldState || S.BUBBLE_HOLD_IDLE;
-  const next = S.reduceBubbleHold(current, event);
-  if (next === current) return;
-  if (this.whisperTimer !== null) window.clearTimeout(this.whisperTimer);
-  this.whisperTimer = null;
-  this.whisperHoldState = next;
-  if (!next.on) {
-    this.whisperOn = false;
-    this.renderBubble();
-    return;
-  }
-  if (next.delayMs !== null) {
-    this.whisperTimer = window.setTimeout(() => {
-      this.whisperTimer = null;
-      this.applyWhisperHold({ kind: 'hide' });
-    }, next.delayMs);
-  }
-};
-
+/** 说话叶子 → 对应宠物播说话动画 + 气泡。`kind: 'clear'` = 收起气泡，其余 = 弹一个气泡。 */
 function applySayLeaf(petId, leaf) {
   const said = S.readSay(leaf);
   if (!said) return;
   for (const s of sprites) {
     if (s.pet.id !== petId) continue;
-    const kind = leaf && leaf.data && leaf.data.kind;
-    if (kind === 'sleep' || said.origin === 'sleep') {
-      s.showSleepText(said.text);
+    if (said.kind === 'clear') {
+      s.clearWhisper();
       continue;
     }
-    if (s.sleeping) continue;
-    if (
-      kind === 'chat' &&
-      config &&
-      config.notificationsEnabled &&
-      (!document.hasFocus() || document.hidden) &&
-      typeof Notification !== 'undefined' &&
-      Notification.permission !== 'denied'
-    ) {
-      try {
-        const name = typeof s.pet.name === 'string' && s.pet.name ? s.pet.name : '桌宠';
-        const body = said.text.length > 180 ? said.text.slice(0, 177) + '…' : said.text;
-        new Notification(name + ' 回复了你', {
-          body,
-          icon: CONFIG.notificationIcons['notify-done'] || CONFIG.notificationIcon,
-        });
-      } catch (error) {
-        console.warn('[dsh-pet] 桌面通知发送失败：' + String(error));
-      }
-    }
-    if (said.kind === 'clear') s.clearWhisper();
-    else {
-      s.showWhisper(said.text, said.image, said.url, said.duration, said.anim);
-      S.playSayVoice(said);
-    }
+    s.showWhisper(said.text, said.image, said.url, said.duration, said.anim);
+    // 两端各判各的：叶子点名 desktop 才念，没点名或点了网页端就只弹气泡。
+    // 必须留在按 petId 过滤的循环里：每个窗口都收到全部叶子（全局计数器唤醒所有窗口），
+    // 放到循环外会让没装这只宠物的窗口跟着一起念，N 只桌面宠物就是 N 份语音。
+    S.playSayVoice(said);
   }
 }
 
@@ -553,6 +573,9 @@ function applyWorkStatusLeaf(leaf) {
   const snap = S.toWorkStatus(leaf.data);
   if (!snap) return;
   applyWorkStatusAgents(snap, leaf.counter);
+  workTick++;
+  // 睡着不看不听：自动来源的工作状态整条跳过（动画与气泡都不更新），醒来后的下一次状态变化重新对齐
+  for (const s of sprites) if (!s.sleeping) s.onWorkTick(snap, workTick);
 }
 
 /** DSH 桥接通知 → 系统通知（总开关与宠物对话回复共用 notificationsEnabled）。 */
@@ -592,9 +615,26 @@ function applyAnimLeaf(petId, leaf) {
     const explicitFacing = hit.facing !== undefined;
     if (explicitFacing) s.facing = hit.facing;
     if (hit.url !== undefined) s.playUrlOnce(hit.url, hit.playbackId);
-    else if (hit.name !== undefined) {
-      s.onMenuAction({ label: hit.name, anim: hit.name, playbackId: hit.playbackId }, explicitFacing);
-    }
+    else if (hit.name !== undefined)
+      s.onMenuAction({ label: hit.name, anim: hit.name, playbackId: hit.playbackId }, explicitFacing, true);
+  }
+}
+
+/** Position command leaf → move only the matching pet. */
+function applyPositionLeaf(petId, leaf) {
+  const hit = S.readPosition(leaf);
+  if (!hit) return;
+  for (const sprite of sprites) {
+    if (sprite.pet.id === petId) sprite.moveToCenter(hit.x, hit.y, hit.mode, hit.duration);
+  }
+}
+
+/** Throw command leaf → launch only the matching pet through the shared physics path. */
+function applyThrowLeaf(petId, leaf) {
+  const hit = S.readThrow(leaf);
+  if (!hit) return;
+  for (const sprite of sprites) {
+    if (sprite.pet.id === petId) sprite.throwWith(hit.angle, hit.power);
   }
 }
 
@@ -606,37 +646,30 @@ function applyLockLeaf(petId, leaf) {
   }
 }
 
+/** 睡觉叶子 → 对应宠物进睡/醒来。它同样是状态而不是指令：三段名由宿主挑定，sprite 只照播并
+ *  自己推进「开始（一次）→ 循环（无限）→ 起来（一次）」——视频播完只有渲染端知道。 */
 function applySleepLeaf(petId, leaf) {
-  const hit = S.readSleep(leaf);
-  if (!hit) return;
-  for (const sprite of sprites) {
-    if (sprite.pet.id === petId) sprite.setSleep(hit);
+  const data = leaf && leaf.data;
+  if (!data || typeof data !== 'object') return;
+  let state;
+  if (data.sleeping === false) {
+    state = { sleeping: false };
+  } else if (data.sleeping === true) {
+    // sleeping: true 却缺任何一段名 = 形状非法：宁可不睡（保持现状），也不播一段不存在的动画
+    for (const key of ['start', 'loop', 'end']) {
+      if (typeof data[key] !== 'string' || data[key] === '') return;
+    }
+    state = { sleeping: true, start: data.start, loop: data.loop, end: data.end };
+  } else {
+    return; // 不认识的取值（老宿主 / 脏数据）：跳过这一拍
   }
-}
-
-/** 位置指令叶子 → 对应宠物挪过去（其他插件经 POST /position 写进 S）。
- *  复用 sprite.moveToCenter（instant / spring / line 三条路都在那儿），与 /anim 同一族：只分发，
- *  不重写运动学。petId 由路径解析出来（pets.<id>.position）；本窗口只装一只宠物，按 id 命中即可。 */
-function applyPositionLeaf(petId, leaf) {
-  const hit = S.readPosition(leaf);
-  if (!hit) return;
   for (const s of sprites) {
-    if (s.pet.id === petId) s.moveToCenter(hit.x, hit.y, hit.mode, hit.duration);
+    if (s.pet.id === petId) s.setSleep(state);
   }
 }
 
-/** 抛掷指令叶子 → 对应宠物按给定角度/力度飞出去（其他插件经 POST /throw 写进 S）。
- *  初速换算在 shared（S.throwVelocity），下游全是既有抛掷物理（重力/反弹/摩擦/落地 Q 弹）。 */
-function applyThrowLeaf(petId, leaf) {
-  const hit = S.readThrow(leaf);
-  if (!hit) return;
-  for (const s of sprites) {
-    if (s.pet.id === petId) s.throwWith(hit.angle, hit.power);
-  }
-}
-
-/** 第三方菜单快照叶子 → 灌进各宠物（右键菜单据此拼「更多」）。
- *  与上面那些"指令"不同，这是**当前状态**：注册/覆盖时写一次，所有窗口共用同一份快照。 */
+/** 第三方菜单快照叶子 → 灌进各宠物（右键菜单据此拼「更多」）。它是当前状态、不是事件，
+ *  注册与覆盖时写一次，所有窗口共用同一份快照。 */
 function applyMenuLeaf(leaf) {
   const items = S.readMenuItems(leaf ? leaf.data : null, 'desktop');
   for (const s of sprites) s.menuItems = items;
@@ -661,6 +694,11 @@ async function pollStateOnce() {
       }
       // 第三方菜单项是**当前状态**不是事件：首拉就要装上，否则 helper 重启后要等下次注册才出现
       applyMenuLeaf(s.sections ? s.sections.menu : null);
+      // 睡觉同样是状态：helper 重启 / 重载配置后宿主仍记着它在睡，这里必须补一次；
+      // 否则渲染端显示醒着，而宿主因「已在睡」不回写叶子，只能等宿主重启才恢复。
+      for (const [petId, entry] of Object.entries((s && s.pets) || {})) {
+        if (entry && entry.sleep && entry.sleep.data !== null) applySleepLeaf(petId, entry.sleep);
+      }
       return true;
     }
     const changes = S.takeChanged(s, stateBaseline);
@@ -677,7 +715,7 @@ async function pollStateOnce() {
     for (const change of changes) {
       if (change.leaf.data === null) continue;
       if (change.path === 'sections.balance') applyBalanceLeaf(change.leaf);
-      else if (change.path === 'sections.env') applyEnvironmentLeaf(change.leaf);
+      else if (change.path === 'sections.env') applyEnvLeaf(change.leaf);
       else if (change.path === 'sections.workStatus') applyWorkStatusLeaf(change.leaf);
       else if (change.path === 'sections.notify') applyNotifyLeaf(change.leaf);
       else if (change.path === 'sections.menu') applyMenuLeaf(change.leaf);
@@ -696,6 +734,7 @@ async function pollStateOnce() {
       } else if (change.path.startsWith('pets.') && change.path.endsWith('.lock')) {
         applyLockLeaf(change.path.slice('pets.'.length, -'.lock'.length), change.leaf);
       } else if (change.path.startsWith('pets.') && change.path.endsWith('.sleep')) {
+        // 睡觉：同上切片。它是状态而不是指令（见 applySleepLeaf）
         applySleepLeaf(change.path.slice('pets.'.length, -'.sleep'.length), change.leaf);
       }
     }
@@ -716,10 +755,23 @@ function startLoops() {
     }
   });
 
-  // 统一轮询：**自调度长轮询**（请求 → 处理 → 立刻再请求）。宿主在版本没变时挂起，所以
-  // 空闲时是 1 请求/秒（与改造前一致），叶子一变立刻收到——不需要"前端动作后叫醒一拍"了
-  // （动作端点都会写叶子 → 版本变 → 挂着的这一拍自己就返回）。本窗口只装一只宠物，
-  // 所以每个窗口各跑一份；全局计数器意味着任意写入会唤醒所有窗口（有意为之，见 host ./state）。
+  // 语音状态一变就重绘气泡：转圈 → 喇叭（或退回无角标）要立刻反映出来，
+  // 不能等到下一条消息把气泡重画。桌面端没有 react，只能靠订阅手动重绘。
+  S.subscribeVoiceState(() => {
+    for (const s of sprites) s.renderBubble();
+  });
+
+  // 语音每句的开始/结束推进气泡的收起计划：合成慢时气泡挂住，播完再收。
+  // 按文本认句：本窗口只装一只宠物，但同一份状态是模块单例，认句才不会算到别人头上。
+  S.subscribeVoiceUtterance((event) => {
+    // 状态机只认 hold/release，语音给的是 start/end：翻译与网页端共用同一份，别再各写一遍。
+    const hold = S.utteranceToHold(event);
+    for (const s of sprites) if (s.whisperText === event.text) s.applyWhisperHold(hold);
+  });
+
+  // 统一轮询是自调度的长轮询（请求 → 处理 → 立刻再请求）：宿主在版本没变时挂起，空闲时
+  // 1 请求/秒，叶子一变立刻收到。本窗口只装一只宠物，所以每个窗口各跑一份；全局计数器意味着
+  // 任意写入会唤醒所有窗口（有意为之）。
   const stateLoop = async () => {
     const hit = await pollStateOnce();
     setTimeout(() => void stateLoop(), hit && stateLongPoll ? 0 : 1000);

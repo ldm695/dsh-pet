@@ -24,28 +24,10 @@
           sans-serif;
         user-select: none;
       }
-      body {
-        opacity: 1;
-      }
-      body.dsh-pet-fullscreen-hidden {
-        opacity: 0;
-        pointer-events: none;
-      }
-      body.dsh-pet-fullscreen-transition {
-        transition: opacity var(--dsh-pet-fullscreen-fade-duration, 220ms) ease;
-      }
-      body.dsh-pet-fullscreen-transition video.pet-video {
-        transition: none;
-      }
-      button,
-      input,
-      select,
-      textarea {
-        font-family: inherit;
-      }
+      /* 宠物画布必须与窗口内容区重合：主进程按 winOffset 算命中区，假定 #root 原点就是窗口内容原点。
+         body 里的行内节点（如 alpha 滤镜的 0×0 SVG）会生成行盒把它整体顶下一行（约 20px），
+         画面与命中区会同时错位，所以这里绝对定位、脱离 body 流。 */
       #root {
-        /* Pin the pet canvas to the Electron window's content box. This keeps the renderer's
-           geometry aligned with main-process hit testing even if body-level UI is added later. */
         position: absolute;
         inset: 0;
       }
@@ -71,6 +53,12 @@
         pointer-events: none;
         opacity: 0;
         transition: opacity 0.18s ease;
+      }
+      /* 1/255 修正：WebM 的「透明」背景实测 alpha 恒为 1/255（109 个素材逐一验证），Chromium 按
+         0.4% 不透明度合成，浅色底上就是一层淡灰矩形；扣掉一档即精确归零。开关是共享常量
+         PET_ALPHA_FIX_ENABLED——静态样式表读不到它，由 renderer.js 挂 class。 */
+      html.pet-alpha-fix video.pet-video {
+        filter: url(#dsh-pet-alpha-fix);
       }
       video.pet-video.is-front {
         opacity: 1;
@@ -107,7 +95,7 @@
         background: rgba(255, 255, 255, 0.92);
         color: #2b2b2b;
         /* 字体族走全局配置变量（renderer.js 注入到 documentElement）：对话窗/得分弹窗挂在 body 下、
-           继承不到宠物根容器，气泡也统一从这里取；回退参数 = 改造前的原栈 */
+           继承不到宠物根容器，气泡也统一从这里取；回退参数是变量未注入时的默认字体栈 */
         font-family: var(
           --dsh-pet-font-family,
           'ShangshouSoftCandy',
@@ -198,6 +186,56 @@
         color: #d94f3d;
         font-size: calc(var(--f) * 0.7692);
       }
+      /* ---- 环境气泡（天气）：与网页端气泡的同名规则数值逐条对应 ---- */
+      .pet-bub-title {
+        font-size: calc(var(--f) * 0.7692);
+        color: rgba(43, 43, 43, 0.6);
+        margin-bottom: calc(var(--f) * 0.24);
+      }
+      .pet-bub-val {
+        font-size: calc(var(--f) * 0.7692);
+        font-weight: 650;
+        font-variant-numeric: tabular-nums;
+        color: #1f1f1f;
+      }
+      .pet-bub-row .pet-bub-val {
+        white-space: nowrap;
+      }
+      .pet-env-main {
+        display: flex;
+        align-items: center;
+        gap: calc(var(--f) * 0.4);
+      }
+      .pet-env-icon {
+        color: #5f7f9e;
+        display: block;
+      }
+      .pet-env-icon svg {
+        width: calc(var(--f) * 1.55);
+        height: calc(var(--f) * 1.55);
+        display: block;
+      }
+      .pet-env-temp {
+        font-size: calc(var(--f) * 1.75);
+        line-height: 1.1;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        font-variant-numeric: tabular-nums;
+        color: #1f1f1f;
+      }
+      .pet-env-summary {
+        font-size: calc(var(--f) * 0.95);
+        color: rgba(43, 43, 43, 0.68);
+        align-self: flex-end;
+        padding-bottom: calc(var(--f) * 0.22);
+      }
+      .pet-env-foot {
+        margin-top: calc(var(--f) * 0.3);
+        padding-top: calc(var(--f) * 0.18);
+        border-top: 1px solid rgba(43, 43, 43, 0.1);
+        font-size: calc(var(--f) * 0.6);
+        color: rgba(43, 43, 43, 0.45);
+      }
       .pet-bub-tier {
         font-weight: 700;
       }
@@ -271,6 +309,9 @@
         font-size: calc(var(--f) * 0.7692);
         color: rgba(43, 43, 43, 0.6);
       }
+      /* 用量页（第三页）：三行两列占满展开态宽度，总量是唯一的大字。
+         配色只给进/出两处强调，其余沿用次级灰——同页里超过两种彩色会盖过数值本身。
+         与浏览器端 src/client/bubble.ts 的规则逐条对应，数值必须同步 */
       .pet-bub-usage {
         display: flex;
         flex-direction: column;
@@ -284,8 +325,7 @@
         gap: calc(var(--f) * 0.8);
         line-height: 1.45;
       }
-      .pet-bub-usage-title,
-      .pet-bub-usage-period {
+      .pet-bub-usage-title {
         font-size: calc(var(--f) * 0.7692);
         color: rgba(43, 43, 43, 0.62);
       }
@@ -297,18 +337,27 @@
         letter-spacing: -0.02em;
         color: #1f1f1f;
       }
-      .pet-bub-usage-in,
-      .pet-bub-usage-out,
-      .pet-bub-usage-spend {
+      .pet-bub-usage-in {
         font-size: calc(var(--f) * 0.7692);
         font-variant-numeric: tabular-nums;
+        color: #3f6ea8;
       }
-      .pet-bub-usage-in { color: #3f6ea8; }
-      .pet-bub-usage-out { color: #b4703c; }
+      .pet-bub-usage-out {
+        font-size: calc(var(--f) * 0.7692);
+        font-variant-numeric: tabular-nums;
+        color: #b4703c;
+      }
+      .pet-bub-usage-period {
+        font-size: calc(var(--f) * 0.7692);
+        color: rgba(43, 43, 43, 0.62);
+      }
       .pet-bub-usage-spend {
+        font-size: calc(var(--f) * 0.7692);
         font-weight: 650;
+        font-variant-numeric: tabular-nums;
         color: #1f1f1f;
       }
+      /* 进出比例条：两段按真实占比分宽，颜色与下面的数字一一对应；占比极小时只留一条细线，不放大 */
       .pet-bub-usage-bar {
         display: flex;
         height: calc(var(--f) * 0.3);
@@ -317,13 +366,16 @@
         background: rgba(43, 43, 43, 0.1);
         margin: calc(var(--f) * 0.05) 0;
       }
-      .pet-bub-usage-bar-in,
+      .pet-bub-usage-bar-in {
+        display: block;
+        height: 100%;
+        background: #3f6ea8;
+      }
       .pet-bub-usage-bar-out {
         display: block;
         height: 100%;
+        background: #b4703c;
       }
-      .pet-bub-usage-bar-in { background: #3f6ea8; }
-      .pet-bub-usage-bar-out { background: #b4703c; }
       /* 配置错误提示（大声报错，不做静默兜底）：配置缺失/非法时显示，每 5s 自动重试 */
       .pet-error {
         position: fixed;
@@ -356,13 +408,32 @@
     </style>
   </head>
   <body>
+    <!-- alpha 修正滤镜：见 video.pet-video 的 filter 注释 -->
+    <svg width="0" height="0" aria-hidden="true">
+      <defs>
+        <filter id="dsh-pet-alpha-fix">
+          <feComponentTransfer>
+            <feFuncA type="linear" slope="1" intercept="-0.0039215686" />
+          </feComponentTransfer>
+        </filter>
+      </defs>
+    </svg>
     <div id="root"></div>
     <div id="pet-error" class="pet-error"></div>
     <!-- 共享纯逻辑（src/shared 的 iife 构建产物，window.PetShared）——经经典 script，避开 file:// ESM 的 CORS 限制。
-         桌面端同模式拆分：constants（基础设施）→ sprite（宠物本体）→ events（事件联动）→ renderer（启动入口） -->
+         桌面端同模式拆分：shared-core（纯逻辑）→ constants（基础设施）→ sprite（宠物本体与几何）→ sprite-*（原型扩展，
+         须排在 sprite.js 之后）→ events（事件联动）→ renderer（启动入口） -->
     <script src="./shared-core.js"></script>
     <script src="./constants.js"></script>
     <script src="./sprite.js"></script>
+    <script src="./sprite/window-fit.js"></script>
+    <script src="./sprite/init.js"></script>
+    <script src="./sprite/playback.js"></script>
+    <script src="./sprite/motion.js"></script>
+    <script src="./sprite/move-targets.js"></script>
+    <script src="./sprite/input.js"></script>
+    <script src="./sprite/bubble.js"></script>
+    <script src="./sprite/menu.js"></script>
     <script src="./events.js"></script>
     <script src="./renderer.js"></script>
   </body>

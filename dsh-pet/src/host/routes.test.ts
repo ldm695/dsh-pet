@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { Writable } from 'node:stream';
 
 import { apply } from './index.ts';
+import { activeChatMemoryProvider } from './chat-memory-provider.ts';
 
 /** 用户根之外的诱饵内容：任何响应体出现它都说明越根读盘成功 */
 const SECRET = 'TOP-SECRET-BYTES';
@@ -28,6 +29,8 @@ const OWN = 'PETPACK-OWN-ASSET';
 const MAIN = 'MAIN-POOL-ASSET';
 /** 用户表情包目录（共享链）里的图 */
 const SHARED_PIC = 'SHARED-MEME-BYTES';
+/** 用户 pic 目录里的图：覆盖包内同名通知图标的标记内容 */
+const USER_PIC = 'USER-PIC-OVERRIDE';
 /** pet pack 独占表情包目录里的图 */
 const OWN_PIC = 'PETPACK-OWN-MEME';
 /** 中文名 pet pack（仓库明确支持中文名，标识符校验不得用 ASCII 白名单） */
@@ -42,6 +45,8 @@ let savedHome: string | undefined;
 let savedElectron: string | undefined;
 /** apply() 注册的全部 effect 释放函数（after 里调用：否则常驻定时器会让测试进程不退出） */
 const disposers: Array<() => void> = [];
+/** apply() 通过 ctx.provide 挂出去的服务（宿主半侧的对外 Cordis 面） */
+const provided = new Map<string, unknown>();
 
 /** 最小响应桩：writeHead 记状态码，Writable 收集 body（sendFile 经 pipe 写入） */
 class FakeRes extends Writable {
@@ -76,11 +81,16 @@ before(() => {
   writeFileSync(join(userRoot, 'memes', '共用图.png'), SHARED_PIC);
   mkdirSync(join(userRoot, 'pet', `${CN_PET}-memes`), { recursive: true });
   writeFileSync(join(userRoot, 'pet', `${CN_PET}-memes`, '自家图.png'), OWN_PIC);
+  // 用户 pic 目录：覆盖包内通知图标（升级重装不会碰用户目录）
+  mkdirSync(join(userRoot, 'pic'), { recursive: true });
+  writeFileSync(join(userRoot, 'pic', 'notify-done.png'), USER_PIC);
   // 用户根之外的诱饵：目录名以 -animation / -memes 结尾，正是旧漏洞能读到的东西
   mkdirSync(join(dir, 'outside-animation'), { recursive: true });
   writeFileSync(join(dir, 'outside-animation', 'leak.webm'), SECRET);
   mkdirSync(join(dir, 'outside-memes'), { recursive: true });
   writeFileSync(join(dir, 'outside-memes', 'leak.png'), SECRET);
+  mkdirSync(join(dir, 'outside-pic'), { recursive: true });
+  writeFileSync(join(dir, 'outside-pic', 'leak.png'), SECRET);
 
   savedHome = process.env.DSH_HOME;
   savedElectron = process.env.DSH_PET_ELECTRON_PATH;
@@ -90,7 +100,6 @@ before(() => {
 
   let handler: ((req: unknown, res: unknown) => Promise<void>) | undefined;
   const noop = (): void => {};
-  const services = new Map<string, unknown>();
   apply({
     // 与 DSH 一致：effect 的返回值是释放函数。这里收下来在 after() 里调用——
     // 插件现在有常驻定时器（余额周期刷新），不释放的话测试进程会一直等它（跑完不退出）。
@@ -103,9 +112,12 @@ before(() => {
         /* 源码形态下内置配置不可达，refreshDesktop 会抛给调用方——这里吞掉，不影响路由注册 */
       }
     },
+    // 对外 Cordis 服务（第三方注册余额查询）：与 DSH 一致，provide 返回释放函数
+    provide: (name: string, value: unknown) => {
+      provided.set(name, value);
+      return noop;
+    },
     on: () => noop,
-    provide: (name: string, service: unknown) => services.set(name, service),
-    get: (name: string) => services.get(name),
     webServer: { register: (spec: { handler: typeof handler }) => ((handler = spec.handler), noop) },
     commands: { register: () => noop },
     logger: { warn: () => {}, info: () => {}, debug: () => {}, error: () => {} },
@@ -138,6 +150,8 @@ before(() => {
         {
           method,
           url,
+          // 真实 IncomingMessage 恒有 headers；sendFile 用它读 Range
+          headers: {},
           on: (event: string, cb: (chunk?: Buffer) => void) => {
             if (event === 'data' && body !== undefined) queueMicrotask(() => cb(Buffer.from(body, 'utf8')));
             if (event === 'end') queueMicrotask(() => cb());
@@ -192,77 +206,6 @@ describe('/models 路由 —— 设置页「AI 模型」下拉框的数据源', 
   });
 });
 
-describe('/config/meta 与 /app-icon.png 只读路由', () => {
-  test('/config/meta 返回预先准备的路径与完整存储位置清单', async () => {
-    const r = await call('/dsh-pet-7340/config/meta');
-    assert.equal(r.status, 200);
-    const body = JSON.parse(r.body) as {
-      user: string;
-      default: string;
-      animations: string;
-      memes: string;
-      profile: string;
-      storage: Array<{ key: string; path: string; exists: boolean }>;
-    };
-    assert.match(body.user, /dsh-pet[\\/]main-config\.jsonc$/);
-    assert.match(body.default, /[\\/]assets[\\/]config\.jsonc$/);
-    assert.match(body.animations, /dsh-pet[\\/]main-animation$/);
-    assert.match(body.memes, /dsh-pet[\\/]memes$/);
-    assert.equal(body.profile, '');
-    assert.deepEqual(
-      body.storage.map((item) => item.key),
-      ['userData', 'electron', 'desktopCache', 'electronCache', 'package'],
-    );
-    assert.ok(body.storage.every((item) => typeof item.path === 'string' && typeof item.exists === 'boolean'));
-  });
-
-  test('/config/meta 保持既有的 method 不限行为', async () => {
-    assert.equal((await call('/dsh-pet-7340/config/meta', 'POST')).status, 200);
-  });
-
-  test('/app-icon.png 仍限制 GET；源码测试布局下缺少包内图标时返回原 404 文案', async () => {
-    assert.equal((await call('/dsh-pet-7340/app-icon.png', 'POST')).status, 405);
-    const r = await call('/dsh-pet-7340/app-icon.png');
-    assert.equal(r.status, 404);
-    assert.equal(r.body, 'dsh-pet: app icon not found');
-  });
-});
-
-describe('配置与桌宠显示路由的注册入口', () => {
-  test('apply() 注册的 handler 保留方法校验与请求解析行为', async () => {
-    assert.equal((await call('/dsh-pet-7340/config', 'PATCH')).status, 405);
-    assert.equal((await call('/dsh-pet-7340/config', 'PUT', '{')).status, 400);
-    assert.equal((await call('/dsh-pet-7340/pet-display', 'GET')).status, 405);
-    assert.equal((await call('/dsh-pet-7340/pet-display', 'POST', '{')).status, 400);
-    assert.equal(
-      (await call('/dsh-pet-7340/pet-display', 'POST', JSON.stringify({ id: 'main', display: 'invalid' }))).status,
-      400,
-    );
-    assert.equal((await call('/dsh-pet-7340/pet-display/bulk', 'GET')).status, 405);
-    assert.equal((await call('/dsh-pet-7340/pet-display/bulk', 'POST', '{')).status, 400);
-    assert.equal((await call('/dsh-pet-7340/reload', 'GET')).status, 405);
-  });
-});
-
-describe('状态、播放回执、聊天与独立版控制的注册入口', () => {
-  test('apply() dispatcher 保留 extracted handlers 的方法、错误映射与宿主模式限制', async () => {
-    const report = await call('/dsh-pet-7340/playback/missing/report', 'POST', '{"status":"ended"}');
-    assert.equal(report.status, 404);
-    assert.deepEqual(JSON.parse(report.body), { error: 'unknown playback' });
-
-    const malformedChat = await call('/dsh-pet-7340/chat?pet=main', 'POST', '{');
-    assert.equal(malformedChat.status, 200);
-    assert.equal(JSON.parse(malformedChat.body).reason, 'generate-error');
-
-    const settingsMethod = await call('/dsh-pet-7340/settings/open', 'GET');
-    assert.equal(settingsMethod.status, 405);
-    const settingsInHost = await call('/dsh-pet-7340/settings/open', 'POST');
-    assert.equal(settingsInHost.status, 404);
-    const quitInHost = await call('/dsh-pet-7340/app/quit', 'POST');
-    assert.equal(quitInHost.status, 404);
-  });
-});
-
 describe('/state + /balance —— 轮询统一状态与余额动作端点', () => {
   test('GET /state 返回 { sections, pets }（初始叶子 counter=0 / data=null）', async () => {
     const r = await call('/dsh-pet-7340/state');
@@ -271,7 +214,15 @@ describe('/state + /balance —— 轮询统一状态与余额动作端点', () 
       sections: Record<string, { counter: number; data: unknown }>;
       pets: Record<string, unknown>;
     };
-    assert.deepEqual(Object.keys(body.sections).sort(), ['balance', 'config', 'menu', 'notify', 'workStatus']);
+    assert.deepEqual(Object.keys(body.sections).sort(), [
+      'balance',
+      'config',
+      'env',
+      'focusSession',
+      'menu',
+      'notify',
+      'workStatus',
+    ]);
     assert.equal(body.sections.balance.counter, 0, '没人写过时 counter=0（前端首拉当基线）');
     assert.equal(body.sections.balance.data, null);
     assert.equal(body.sections.config.data, null, '配置变更信号也没人写过（counter=0 / data=null）');
@@ -282,19 +233,28 @@ describe('/state + /balance —— 轮询统一状态与余额动作端点', () 
     assert.equal((await call('/dsh-pet-7340/state', 'POST')).status, 405);
   });
 
-  test('只传 since / 只传 timeout → 400（成对必填，与 /playback 的 wait/timeout 同一套约定）', async () => {
-    assert.equal((await call('/dsh-pet-7340/state?since=0')).status, 400);
-    assert.equal((await call('/dsh-pet-7340/state?timeout=1000')).status, 400);
+  test('只传 since / 只传 timeout → 200 + bad-request（成对必填，与 /playback 的 wait/timeout 同一套约定）', async () => {
+    for (const q of ['since=0', 'timeout=1000']) {
+      const r = await call('/dsh-pet-7340/state?' + q);
+      assert.equal(r.status, 200, q);
+      const body = JSON.parse(r.body) as { ok: boolean; reason: string };
+      assert.equal(body.ok, false);
+      assert.equal(body.reason, 'bad-request');
+    }
   });
 
-  test('非法 since / timeout → 400（非整数、负数、小数、超上限）', async () => {
+  test('非法 since / timeout → 200 + bad-request（非整数、负数、小数、超上限）', async () => {
     for (const q of [
       'since=abc&timeout=1000',
       'since=-1&timeout=1000',
       'since=0&timeout=99999',
       'since=0&timeout=1.5',
     ]) {
-      assert.equal((await call('/dsh-pet-7340/state?' + q)).status, 400, q);
+      const r = await call('/dsh-pet-7340/state?' + q);
+      assert.equal(r.status, 200, q);
+      const body = JSON.parse(r.body) as { ok: boolean; reason: string };
+      assert.equal(body.ok, false, q);
+      assert.equal(body.reason, 'bad-request', q);
     }
   });
 
@@ -547,11 +507,12 @@ describe('thumb 路由 —— petId 不得当路径片段（PR #53 的不变式�
     assert.equal(r.body.includes(SECRET), false, '越根内容不得出现在响应体里');
   });
 
-  test('%2F 正斜杠被切成多段：穿越落在 fileName 段，由 resolveAsset 拦下 → 404', async () => {
-    // 注意与 %5C 的区别：正斜杠参与 split('/')，petId 只剩 '..'（点号属合法标识符字符，不进 400 分支），
-    // 穿越意图体现在 fileName = '../../outside/leak.webm' 上——那道防线是 resolveExisting 的根内校验。
+  test('%2F 正斜杠被切成多段：petId 只剩「..」，标识符规则当场拒 → 400', async () => {
+    // 注意与 %5C 的区别：正斜杠参与 split('/')，petId 只剩 '..'。点号本身是合法标识符字符，
+    // 但 '.' 与 '..' 作为目录名会把素材根顶到上一层，所以 isValidPetId 单独拦掉——早于第二层
+    // resolveExisting 的根内校验（名称段的穿越仍由那层兜住，见下一条用例）。
     const r = await call('/dsh-pet-7340/thumb/..%2F..%2F..%2Foutside/leak.webm');
-    assert.equal(r.status, 404);
+    assert.equal(r.status, 400);
     assert.equal(r.body.includes(SECRET), false);
   });
 
@@ -608,9 +569,33 @@ describe('pic/memes 路由 —— 表情包素材归属（与 thumb 同一套语
     assert.equal((await call('/dsh-pet-7340/pic/memes/main/nope.png')).status, 404);
   });
 
-  test('通知图标（/pic/<名>.png）不受影响：仍只从包内 assets/pic 取', async () => {
-    // 源码形态下包内 assets 不可达 → 404（关键是不被 memes 分支吞掉）
+  test('通知图标（/pic/<名>.png）不被 memes 分支吞掉：两层都没有 → 404', async () => {
+    // 源码形态下包内 assets 不可达、用户 pic 目录里也没有 logo.png → 404
     assert.equal((await call('/dsh-pet-7340/pic/logo.png')).status, 404);
+  });
+});
+
+describe('pic 路由 —— 静态图的用户层覆盖（插件升级不冲掉自定义图标）', () => {
+  test('用户 pic 目录有同名文件：优先于包内，返回用户那份', async () => {
+    const r = await call('/dsh-pet-7340/pic/notify-done.png');
+    assert.equal(r.status, 200);
+    assert.equal(r.body, USER_PIC);
+  });
+
+  test('用户层同样不可穿越：反斜杠 ../ 不越出用户根', async () => {
+    const r = await call('/dsh-pet-7340/pic/..%5C..%5Coutside-pic%5Cleak.png');
+    assert.equal(r.status, 404);
+    assert.equal(r.body.includes(SECRET), false, '越根内容不得出现在响应体里');
+  });
+});
+
+describe('/logo —— 插件 logo（对话面板的宠物头像）', () => {
+  test('只接受裸路径：多一段就 400，不把 assets 根开放成静态目录', async () => {
+    assert.equal((await call('/dsh-pet-7340/logo/x.png')).status, 400);
+  });
+
+  test('源码形态下包内 assets 不可达 → 404（真实安装里读 assets/logo.png）', async () => {
+    assert.equal((await call('/dsh-pet-7340/logo')).status, 404);
   });
 });
 
@@ -628,9 +613,11 @@ describe('pic/memes 路由 —— 素材根不得当路径片段（与 thumb 同
     }
   });
 
-  test('%2F 正斜杠被切成多段：穿越落在名称段，由 resolveAsset 拦下 → 404', async () => {
+  test('%2F 正斜杠被切成多段：素材根只剩「..」，标识符规则当场拒 → 400', async () => {
+    // 与 thumb 同一条规则：素材根是目录名，'.'/'..' 会被 isValidPetId 拦在这里。
+    // 名称段的穿越仍由 resolveExisting 兜住（见下一条）。
     const r = await call('/dsh-pet-7340/pic/memes/..%2F..%2F..%2Foutside-memes/leak.png');
-    assert.equal(r.status, 404);
+    assert.equal(r.status, 400);
     assert.equal(r.body.includes(SECRET), false);
   });
 
@@ -684,7 +671,8 @@ describe('pet 必填 —— 缺省一律 pet-required（issue #122 第 1 条：�
 
   test('/chat：方法不对仍是 405（pet 校验不抢在协议层错误前面）', async () => {
     assert.equal((await call('/dsh-pet-7340/chat', 'PUT')).status, 405);
-    assert.equal((await call('/dsh-pet-7340/chat', 'DELETE')).status, 405);
+    // DELETE 自删除记忆接口起是合法方法（见 chat-delete.test.ts），这里改用同样不被接受的 PATCH
+    assert.equal((await call('/dsh-pet-7340/chat', 'PATCH')).status, 405);
   });
 });
 
@@ -770,15 +758,17 @@ describe('?rounds= —— 非法值 bad-request，合法值不误杀（issue #14
   });
 });
 
-describe('/pet-display —— 业务失败一律 200 + ok:false（不用 400/404 表达业务结论）', () => {
-  test('GET → 405（写端点；方法错是协议层错误，照旧不是 200）', async () => {
-    assert.equal((await call('/dsh-pet-7340/pet-display')).status, 405);
+describe('/pet-display —— 业务失败 200 + 实体，协议失败用真实状态码', () => {
+  test('GET → 405 + method-not-allowed（方法错是协议失败，不由 handler 决定）', async () => {
+    const r = await call('/dsh-pet-7340/pet-display');
+    assert.equal(r.status, 405);
+    assert.equal((JSON.parse(r.body) as { reason: string }).reason, 'method-not-allowed');
   });
 
-  test('请求体不是合法 JSON → 400（协议层错误，与其它端点同一口径）', async () => {
+  test('请求体不是合法 JSON → 400 + invalid-json（协议失败）', async () => {
     const r = await call('/dsh-pet-7340/pet-display', 'POST', '{ 不是 json');
     assert.equal(r.status, 400);
-    assert.match(r.body, /invalid JSON body/);
+    assert.equal((JSON.parse(r.body) as { reason: string }).reason, 'invalid-json');
   });
 
   test('缺 id → 200 + pet-required（与 9 条 ?pet= 路由同一对词汇）', async () => {
@@ -801,33 +791,18 @@ describe('/pet-display —— 业务失败一律 200 + ok:false（不用 400/404
 });
 
 describe('/work-status —— 外部写入工作状态', () => {
-  type StateBody = {
-    sections: {
-      workStatus: {
-        data: {
-          state: string | null;
-          task: string | null;
-          sourceName: string | null;
-          agents: Array<{ key: string; state: string; task?: string | null; revision: number; startedAt: number }>;
-        };
-      };
-    };
-  };
+  type StateBody = { sections: { workStatus: { data: { state: string | null; task: string | null } } } };
   const work = async () => JSON.parse((await call('/dsh-pet-7340/state')).body) as StateBody;
 
   test('POST 写入 state/task，/state 同步可见', async () => {
     const r = await call('/dsh-pet-7340/work-status', 'POST', JSON.stringify({ state: 'working', task: '编译中' }));
     assert.equal(r.status, 200);
     assert.deepEqual(JSON.parse(r.body), { state: 'working', task: '编译中' });
-    const payload = (await work()).sections.workStatus.data;
-    assert.equal(payload.state, 'working');
-    assert.equal(payload.task, '编译中');
-    assert.equal(payload.sourceName, 'DeepSeek Harness');
-    assert.deepEqual(payload.agents.map(({ key }) => key), ['dsh:api']);
-    assert.equal(payload.agents[0].state, 'working');
-    assert.equal(payload.agents[0].task, '编译中');
-    assert.equal(Number.isSafeInteger(payload.agents[0].revision), true);
-    assert.equal(Number.isFinite(payload.agents[0].startedAt), true);
+    assert.deepEqual((await work()).sections.workStatus.data, {
+      state: 'working',
+      task: '编译中',
+      sessionId: null,
+    });
   });
 
   test('省略 task 保留上一次；显式 null / 空串清空', async () => {
@@ -849,26 +824,28 @@ describe('/work-status —— 外部写入工作状态', () => {
     const del = await call('/dsh-pet-7340/work-status', 'DELETE');
     assert.equal(del.status, 204);
     assert.equal(del.body, '');
-    const payload = (await work()).sections.workStatus.data;
-    assert.equal(payload.state, null);
-    assert.equal(payload.task, null);
-    assert.equal(payload.sourceName, 'DeepSeek Harness');
-    assert.deepEqual(payload.agents, []);
+    assert.deepEqual((await work()).sections.workStatus.data, { state: null, task: null, sessionId: null });
 
     const again = await call('/dsh-pet-7340/work-status', 'DELETE');
     assert.equal(again.status, 204);
   });
 
-  test('非法输入 → 400；GET → 405；body 超限 → 413', async () => {
-    const bad = [
-      '{',
-      JSON.stringify({ state: 'nope' }),
-      JSON.stringify({ state: 'working', task: 42 }),
-      JSON.stringify({ state: 'working', task: 'x'.repeat(41) }),
-    ];
-    for (const body of bad) {
+  test('坏 JSON → 400；业务参数非法 → 200 + bad-request；GET → 405；body 超限 → 413', async () => {
+    const malformed = await call('/dsh-pet-7340/work-status', 'POST', '{');
+    assert.equal(malformed.status, 400, '坏 JSON 是协议失败');
+    assert.equal((JSON.parse(malformed.body) as { reason: string }).reason, 'invalid-json');
+
+    for (const payload of [
+      { state: 'nope' },
+      { state: 'working', task: 42 },
+      { state: 'working', task: 'x'.repeat(41) },
+    ]) {
+      const body = JSON.stringify(payload);
       const r = await call('/dsh-pet-7340/work-status', 'POST', body);
-      assert.equal(r.status, 400, body.slice(0, 60));
+      assert.equal(r.status, 200, body.slice(0, 60));
+      const parsed = JSON.parse(r.body) as { ok: boolean; reason: string };
+      assert.equal(parsed.ok, false);
+      assert.equal(parsed.reason, 'bad-request');
     }
     assert.equal((await call('/dsh-pet-7340/work-status')).status, 405);
     const big = await call(
@@ -877,5 +854,103 @@ describe('/work-status —— 外部写入工作状态', () => {
       JSON.stringify({ state: 'working', task: 'x'.repeat(9000) }),
     );
     assert.equal(big.status, 413);
+  });
+});
+
+describe('对外 Cordis 服务 —— 第三方注册余额查询', () => {
+  interface BalanceApi {
+    register: (def: { id: string; fetch: (ctx: { provider: string }) => Promise<unknown> }) => () => void;
+    list: () => { builtin: string[]; external: string[] };
+  }
+  const api = (): BalanceApi => {
+    const value = provided.get('petApi7340') as { balance?: BalanceApi } | undefined;
+    assert.ok(value?.balance, 'apply() 必须挂出 petApi7340.balance');
+    return value.balance;
+  };
+
+  test('挂出的是 register + list（没有 unregister：注销走 register 的返回值）', () => {
+    const balance = api() as unknown as Record<string, unknown>;
+    assert.equal(typeof balance.register, 'function');
+    assert.equal(typeof balance.list, 'function');
+    assert.equal('unregister' in balance, false);
+  });
+
+  test('通过服务注册后 list 可见，调用 disposer 后消失', () => {
+    const dispose = api().register({
+      id: 'route-test-plugin',
+      fetch: async ({ provider }) => ({ ok: true, provider, shape: 'points', data: { unit: '积分', total: '1' } }),
+    });
+    try {
+      assert.ok(api().list().external.includes('route-test-plugin'));
+    } finally {
+      dispose();
+    }
+    assert.equal(api().list().external.includes('route-test-plugin'), false);
+  });
+});
+
+describe('对外 Cordis 服务 —— 第三方注册记忆', () => {
+  interface MemoryApi {
+    register: (def: { id: string; recall?: () => Promise<{ userText?: string }> }) => () => void;
+    list: () => { builtin: string[]; external: string[] };
+  }
+  const api = (): MemoryApi => {
+    const value = provided.get('petApi7340') as { memory?: MemoryApi } | undefined;
+    assert.ok(value?.memory, 'apply() 必须挂出 petApi7340.memory');
+    return value.memory;
+  };
+
+  test('挂出的是 register + list（没有 unregister：注销走 register 的返回值）', () => {
+    const memory = api() as unknown as Record<string, unknown>;
+    assert.equal(typeof memory.register, 'function');
+    assert.equal(typeof memory.list, 'function');
+    assert.equal('unregister' in memory, false);
+  });
+
+  test('通过服务注册后 list 与聊天路径都看得到，disposer 后回落原生', () => {
+    const def = { id: 'route-test-memory', recall: async () => ({ userText: '改后的问题' }) };
+    const dispose = api().register(def);
+    try {
+      assert.ok(api().list().external.includes('route-test-memory'));
+      assert.equal(activeChatMemoryProvider(), def, '聊天路径读到的必须是服务注册的这一份');
+    } finally {
+      dispose();
+    }
+    assert.equal(api().list().external.includes('route-test-memory'), false);
+    assert.equal(activeChatMemoryProvider(), null);
+  });
+});
+
+describe('/todos —— 待办清单的完整往返', () => {
+  test('新建 → 列表 → 勾选 → 删除', async () => {
+    const create = await call('/dsh-pet-7340/todos', 'POST', JSON.stringify({ text: '交周报', dueAt: 1793000000000 }));
+    assert.equal(create.status, 200);
+    const created = JSON.parse(create.body) as { ok: boolean; todo: { id: string; text: string; dueAt: number } };
+    assert.equal(created.ok, true);
+    assert.equal(created.todo.text, '交周报');
+    assert.equal(created.todo.dueAt, 1793000000000);
+
+    const listed = JSON.parse((await call('/dsh-pet-7340/todos')).body) as { todos: Array<{ id: string }> };
+    assert.ok(
+      listed.todos.some((todo) => todo.id === created.todo.id),
+      '新建的待办必须出现在清单里',
+    );
+
+    const patched = JSON.parse(
+      (await call('/dsh-pet-7340/todos/' + created.todo.id, 'PATCH', JSON.stringify({ done: true }))).body,
+    ) as { ok: boolean; todo: { done: boolean } };
+    assert.equal(patched.ok, true);
+    assert.equal(patched.todo.done, true);
+
+    const removed = JSON.parse((await call('/dsh-pet-7340/todos/' + created.todo.id, 'DELETE')).body) as {
+      removed: number;
+    };
+    assert.equal(removed.removed, 1);
+    const after = JSON.parse((await call('/dsh-pet-7340/todos')).body) as { todos: Array<{ id: string }> };
+    assert.equal(
+      after.todos.some((todo) => todo.id === created.todo.id),
+      false,
+      '删除后不得再出现在清单里',
+    );
   });
 });

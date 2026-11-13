@@ -11,10 +11,10 @@
  * @module dsh-pet/src/host/broadcast
  */
 
-import { findPetInstance } from './config';
-import { matchMeme, readMemePool } from './memes';
+import { findPetInstance } from './config.ts';
+import { matchMeme, readMemePool } from './memes.ts';
 // url 参数的 scheme 规则与 /anim 是同一条（两个「第三方投喂」端点不各写一份，免得走样）
-import { normalizeHttpUrl } from './anim';
+import { normalizeHttpUrl } from './anim.ts';
 
 /** 气泡默认显示时长（ms）——与两端消费侧的常量同值（host 不得 import src/shared，只能各写一份）。
  *  它只用于把缺省解析成显式值写进叶子，让 /state 里能看到实际生效的时长。 */
@@ -53,6 +53,13 @@ export function normalizeBroadcastDuration(duration: unknown): number | null {
  *  宽松是有意的：老调用方不会传这个字段，宽松口径保证它们的行为一个字都不变。 */
 export function normalizeBroadcastAnim(anim: unknown): boolean {
   return anim !== false;
+}
+
+/** 播报开关规范化：只有严格 `true` 才念，其余（含 `"true"` 字符串）一律不念。
+ *  缺省不念是有意的：投喂的文本与时机都由调用方决定，默认不该出声——否则任何一次
+ *  高频投喂都会变成持续朗读，而调用方往往意识不到自己打开了扬声器。 */
+export function normalizeBroadcastVoice(speak: unknown): boolean {
+  return speak === true;
 }
 
 /**

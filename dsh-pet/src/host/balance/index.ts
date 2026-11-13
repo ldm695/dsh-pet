@@ -1,64 +1,27 @@
 /**
- * 余额查询（host 半侧）：把「当前服务商」映射到对应的余额/用量接口并抓取。
+ * 余额查询入口（host 半侧）：按当前服务商取余额并归一化结果。
  *
- * 设计：
- * - 数据源按「服务商 provider id」寻址（来源 = agentDefaultModel.currentSelection().provider）；
- * - 只登记**有查询接口**的服务商（公开文档化，或第一方 CLI 正在用的未文档化路由）；一个都没有的
- *   服务商不在此表 → 显式 `unsupported`，由上层决定不显示，绝不静默伪造 0 余额；
- * - **一个服务商 = 一个自包含文件**（见 ./providers/）：接口地址、业务常量、响应解析都在它自己那份，
- *   本文件只留注册表与统一的凭证/失败口径。加一个服务商 = 加一个 provider 文件 + 在下面加一行；
- * - key 由调用方经 DSH 官方 credentialRef 解析后注入（不直接读 .credentials.yaml）；
- * - 例外：DSH 账号路由（`deepseek-account`，免费额度 / 平台登录）**没有** API Key，它的凭证是
- *   账号服务持有的授权记录，由调用方经 `resolveAccount` 注入查询（同样不直接读凭证存储）；
- * - 失败口径统一：provider 只负责成功路径，任何失败一律 `throw`，这里统一落成 `fetch-error`。
+ * 只负责路由与失败归一，不负责展示：服务商口径在 ./providers/，名录在 ./registry.ts。
+ * 凭证由调用方经 DSH credentialRef 解析后注入，插件不直接读凭证存储；账号路由走注入的
+ * resolveAccount。第三方经 registerBalanceProvider 注册，拿不到 key 与 resolveAccount。
+ * 始终成立：服务商只走成功路径，任何失败都在此落成 fetch-error，绝不伪造 0 余额。
+ *
+ * @module dsh-pet/src/host/balance/index
  */
-import { commandCode } from './providers/commandcode';
-import { deepseekAccount } from './providers/deepseek-account';
-import { deepseekOfficial } from './providers/deepseek-official';
-import { opencodeGo } from './providers/opencode-go';
-import type { AccountBalanceSnapshot, BalanceProvider, BalanceResult, PluginProvider } from './types';
+import { BUILTIN_PROVIDERS, matchBalanceProvider } from './registry.ts';
+import type { AccountBalanceSnapshot, BalanceResult } from './types.ts';
 
-/** 已登记的服务商（登记口径见模块头：只收有接口的，其余 → `unsupported`） */
-export const BALANCE_PROVIDERS: BalanceProvider[] = [opencodeGo, commandCode, deepseekOfficial, deepseekAccount];
+export { BUILTIN_PROVIDERS, listBalanceProviders, matchBalanceProvider, registerBalanceProvider } from './registry.ts';
 
-/** 第三方余额 provider 只在当前宿主进程内存中登记。 */
-const externalProviders = new Map<string, PluginProvider>();
-/** Third-party providers may ignore AbortSignal, so bound the host's wait independently. */
+/** 内置服务商名录；沿用此导出名，避免既有调用方改动。 */
+export const BALANCE_PROVIDERS = BUILTIN_PROVIDERS;
+
+/** 第三方取数等待上限（ms）；内置 HTTP 服务商走各自的超时与重试。 */
 const PLUGIN_FETCH_TIMEOUT_MS = 20_000;
 
-/** provider id → 唯一匹配定义；未匹配返回 undefined（= 不支持查询） */
-export function matchBalanceProvider(provider: string): BalanceProvider | PluginProvider | undefined {
-  return BALANCE_PROVIDERS.find((p) => p.ids.includes(provider)) ?? externalProviders.get(provider);
-}
-
-/** 注册第三方余额查询；注销函数只会移除本次注册的实例。 */
-export function registerBalanceProvider(def: PluginProvider): () => void {
-  if (!def || typeof def !== 'object') throw new TypeError('provider 定义必须是对象');
-  if (typeof def.id !== 'string' || def.id.length === 0) throw new TypeError('id 必须是非空字符串');
-  if (typeof def.fetch !== 'function') throw new TypeError('fetch 必须是函数');
-  if (BALANCE_PROVIDERS.some((provider) => provider.ids.includes(def.id))) {
-    throw new Error('不能覆盖内置服务商: ' + def.id);
-  }
-  if (externalProviders.has(def.id)) throw new Error('该服务商 id 已被注册: ' + def.id);
-
-  externalProviders.set(def.id, def);
-  return () => {
-    if (externalProviders.get(def.id) === def) externalProviders.delete(def.id);
-  };
-}
-
-/** 列出当前可查询的内置与第三方 provider id，供插件调试。 */
-export function listBalanceProviders(): { builtin: string[]; external: string[] } {
-  return {
-    builtin: BALANCE_PROVIDERS.flatMap((provider) => provider.ids),
-    external: [...externalProviders.keys()],
-  };
-}
-
 /**
- * 失败结果（三种 reason 一个出口，避免各处手写字段）。
- * `message` 缺省时**不写这个键** —— 叶子的形状是对外契约，多一个 `undefined` 键会让
- * `deepStrictEqual` 一类的严格比对失败（消费端也按「有/无」判断）。
+ * 构造失败结果：三种 reason 走同一个出口，避免各处手写字段。
+ * `message` 缺省时不写这个键——叶子形状是对外契约，多一个 undefined 键会破坏严格比对。
  */
 function failed(
   provider: string,
@@ -68,13 +31,17 @@ function failed(
   return message === undefined ? { ok: false, provider, reason } : { ok: false, provider, reason, message };
 }
 
+/** 把取数异常归一成 fetch-error（内置与第三方同一口径）。 */
+function fetchFailed(provider: string, e: unknown): BalanceResult {
+  return failed(provider, 'fetch-error', e instanceof Error ? e.message : String(e));
+}
+
 /**
  * 按当前服务商查询余额。
- * @param provider agentDefaultModel.currentSelection().provider
- * @param resolveKey 凭证解析：ref 名 → key（由调用方注入 ctx.credentials.resolve）
- * @param resolveAccount 账号余额查询（由调用方注入 ctx.deepseekAccount.getBalance）；
- *   只被 `deepseek-account` 用到。缺省时该路由报 `credential-missing`（账号服务不在场）
- * @returns 结构化结果：成功 / 不支持 / 缺凭证 / 抓取失败（失败带 message，绝不返回伪造数字）
+ * @param provider - 当前服务商 id（agentDefaultModel.currentSelection().provider）。
+ * @param resolveKey - 凭证解析：ref 名 → key。
+ * @param resolveAccount - 账号余额查询；仅 deepseek-account 使用，缺省时该路由报 credential-missing。
+ * @returns 成功、不支持、缺凭证或抓取失败；失败绝不返回伪造数字。
  */
 export async function queryBalance(
   provider: string,
@@ -84,25 +51,25 @@ export async function queryBalance(
   const def = matchBalanceProvider(provider);
   if (!def) return failed(provider, 'unsupported');
 
-  // 第三方 provider 只收到 provider id。密钥、DSH 账号服务与宿主 credentialRef 都不传给它。
+  // 第三方 provider 没有 credential：不解析 key、也不给 resolveAccount，
+  // 否则等于允许它顺带查用户的 DSH 账号余额。
   if (!('credential' in def)) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error('余额查询超时（20 秒），请稍后重试')), PLUGIN_FETCH_TIMEOUT_MS);
-        timer.unref?.();
+        timer.unref();
       });
-      // The timeout only releases the caller; a late provider result is discarded by Promise.race.
+      // 超时只结束宿主等待，不宣称取消第三方请求；迟到结果由 race 丢弃。
       return await Promise.race([def.fetch({ provider }), timeout]);
     } catch (e) {
-      return failed(provider, 'fetch-error', e instanceof Error ? e.message : String(e));
+      return fetchFailed(provider, e);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
   }
 
-  // 凭证前置检查放在 try 之外：解析凭证本身抛错属于意外异常，由调用方（refreshBalance）兜底 ——
-  // 与拆分前的口径一致。账号路由没有 API Key，改为判定「账号服务在不在场」。
+  // 凭证检查放在 try 之外：解析凭证抛错属意外，由调用方兜底；账号路由改判账号服务是否在场。
   let key = '';
   if (def.credential.mode === 'ref') {
     const resolved = await resolveKey(def.credential.ref);
@@ -115,13 +82,13 @@ export async function queryBalance(
   try {
     return await def.fetch({ provider, key, resolveAccount });
   } catch (e) {
-    return failed(provider, 'fetch-error', e instanceof Error ? e.message : String(e));
+    return fetchFailed(provider, e);
   }
 }
 
-// ---- 对外再导出：调用方（宿主与测试）只需要认这一个入口 ----
-export { parseAccountBalance } from './providers/deepseek-account';
-export { parseCommandCode } from './providers/commandcode';
+/** 对外再导出：调用方（宿主与测试）只需认这一个入口。 */
+export { parseAccountBalance } from './providers/deepseek-account.ts';
+export { parseCommandCode } from './providers/commandcode.ts';
 export type {
   AccountBalanceSnapshot,
   BalanceFetchContext,
@@ -139,4 +106,4 @@ export type {
   PointsBalance,
   PricingTier,
   WindowsUsage,
-} from './types';
+} from './types.ts';

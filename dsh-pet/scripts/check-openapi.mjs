@@ -1,11 +1,12 @@
-// OpenAPI 文档校验（随 prepack 门禁运行）：
-//   1. YAML 可解析
-//   2. 所有 $ref 都能解析到（悬空引用是文档类交付最常见的低级错误）
-//   3. 路径/操作/响应结构符合 OpenAPI 3.1 基本要求
-//   4. 文档里列出的每条路径都真实存在于 host 路由实现里（防止文档漂移）
-//
-// 路径一律从本文件位置解析（不依赖 CWD）：openapi.yaml 在仓库根，本文件在 dsh-pet/scripts/。
-import { readFileSync } from 'node:fs';
+/**
+ * OpenAPI 文档校验，随发布链的 prepack 门禁运行：YAML 可解析、所有 $ref 都能解析到、
+ * 路径/操作/响应符合 3.1 基本要求、文档里每条路径都真实存在于宿主半侧的路由实现里（防文档漂移）。
+ * 只做静态比对，不起服务、不发请求，也不校验示例内容的语义。
+ * 路径一律从本文件位置解析而非 CWD：文档在仓库根，本文件在 dsh-pet/scripts/。
+ * 必须始终：任何一项失败都以非零退出码结束，坏文档不能进发布链。
+ * @module dsh-pet/scripts/check-openapi
+ */
+import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,26 +16,7 @@ const yaml = require('js-yaml');
 
 const HERE = dirname(fileURLToPath(import.meta.url)); // dsh-pet/scripts
 const SPEC_PATH = join(HERE, '..', '..', 'openapi.yaml'); // 仓库根
-const HOST_SRC = join(HERE, '..', 'src', 'host', 'index.ts');
-const HOST_ROUTE_SRCS = [
-  HOST_SRC,
-  ...[
-    'asset-route.ts',
-    'readonly-route.ts',
-    'config-route.ts',
-    'action-route.ts',
-    'lock-route.ts',
-    'state-route.ts',
-    'menu-route.ts',
-    'external-work-status-route.ts',
-    'playback-route.ts',
-    'chat-route.ts',
-    'pose-route.ts',
-    'standalone-control-route.ts',
-    'voice-route.ts',
-    'pet-avatar.ts',
-  ].map((file) => join(HERE, '..', 'src', 'host', file)),
-];
+const ROUTES_DIR = join(HERE, '..', 'src', 'host', 'routes');
 
 const doc = yaml.load(readFileSync(SPEC_PATH, 'utf8'));
 const fail = [];
@@ -102,17 +84,25 @@ for (const [p, item] of Object.entries(doc.paths)) {
 }
 ok.push(`${Object.keys(doc.paths).length} 条路径 / ${ops} 个操作`);
 
-// ---- 4. 文档路径 vs 真实实现 ----
-// host 路由是 if (rest === 'x') 链 + scope 分支。rest 可能是两段（config/meta），
-// 所以两边都归一化成「一级段」（config/meta → config）再比对，否则会误报。
-const routeSources = HOST_ROUTE_SRCS.map((path) => readFileSync(path, 'utf8')).join('\n');
-const implemented = new Set([...routeSources.matchAll(/rest === '([^']+)'/g)].map((m) => m[1].split('/')[0]));
-// Some focused handlers use an inverse guard (`if (rest !== 'chat') return undefined`)
-// or a conjunction of inverse guards for several routes they own. Count those names too.
-for (const match of routeSources.matchAll(/if\s*\((rest !== '[^']+'(?:\s*&&\s*rest !== '[^']+')*)\)\s*return undefined/g)) {
-  for (const route of match[1].matchAll(/rest !== '([^']+)'/g)) implemented.add(route[1].split('/')[0]);
+// 宿主半侧的路由分派在各领域处理器里：精确匹配写 `rest === 'x'`，rest 可能是两段（config/meta）；
+// 素材领域按一级段兜底，写 `scope === 'x'`。所以两侧都归一化成一级段再比对，否则会互相误报。
+// 逐个处理器扫而不是只看分发器：分发器只列处理器，段名都在各自文件里。
+// 必须递归：领域处理器按子目录分（如 routes/config/），只扫一层会把子目录里的 rest 分支漏掉，
+// 于是「文档里有、实现也在」被误报成实现缺失。
+const routeSources = (dir) =>
+  readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) return routeSources(full);
+    return entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts') ? [full] : [];
+  });
+
+const implemented = new Set();
+for (const file of routeSources(ROUTES_DIR)) {
+  const src = readFileSync(file, 'utf8');
+  for (const m of src.matchAll(/rest === '([^']+)'/g)) implemented.add(m[1].split('/')[0]);
+  // 素材领域既有正向分支，也有反向守卫（`scope !== 'thumb'` 才是 thumb 分支），两种都算。
+  for (const m of src.matchAll(/scope (?:===|!==) '([^']+)'/g)) implemented.add(m[1]);
 }
-for (const s of ['font', 'pic', 'thumb']) implemented.add(s);
 const documented = new Set();
 for (const p of Object.keys(doc.paths)) {
   const seg = p.slice('/dsh-pet-7340/'.length).split('/')[0];

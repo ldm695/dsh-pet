@@ -1,11 +1,10 @@
-// 配置层（src/shared 单一来源，Electron renderer 与桌面 shared-core 共用）：
-// 配置的读取/合并/校验收敛在 host（src/host/config.ts 的 readAllConfig，经
-// GET /dsh-pet-7340/config 暴露成品）；本模块只做一件事：把**成品聚合**
-// （{ main: {...}, test1: {...}, ... }，字段已填满、绝对正确）拍平成渲染用宠物列表，
-// 条目级字段（animations / animationWeights / eventsRefreshSec / physics / font / confineToScreen /
-// workStatusTexts / whisperModel / chatModel）吹进每只实例——它们都是「所属条目一份、多实例共享」；
-// 其中 10 个「全局默认」字段的条目值来自用户层（main-config.jsonc），见 types.ts / host/config.ts。
-// 不依赖 React/DOM；host 因 DSH 单文件加载约束不 import 本目录。
+/**
+ * 共享层：把宿主半侧的成品配置拍平成渲染用宠物列表。
+ * 不负责读取、合并与校验——那是宿主半侧 readAllConfig 的职责，本层只消费其结果。
+ * 不依赖 React / DOM；宿主半侧不 import 本目录，其配置实现自包含、规则须与本层同步。
+ * 条目级字段必须吹进每只实例：多实例共享所属条目的同一份值。
+ * @module dsh-pet/src/shared/config
+ */
 import type {
   Animations,
   FontConfig,
@@ -15,10 +14,13 @@ import type {
   PetDisplayPriority,
   PhysicsParams,
   Weights,
-} from './types';
+} from './types.ts';
 
-/** Windows EXE 支持的显示位置。 */
-export const PET_DISPLAYS: PetDisplay[] = ['desktop', 'none'];
+/** 可用显示位置。 */
+export const PET_DISPLAYS: PetDisplay[] = ['web', 'desktop', 'both', 'none'];
+
+/** 该宠物是否参与浏览器半侧渲染。 */
+export const isWebVisible = (display: PetDisplay): boolean => display === 'web' || display === 'both';
 
 /** 桌面窗口层级白名单 */
 export const PET_DISPLAY_PRIORITIES: PetDisplayPriority[] = [
@@ -29,7 +31,7 @@ export const PET_DISPLAY_PRIORITIES: PetDisplayPriority[] = [
 ];
 
 /** 该宠物是否参与桌面模式（Electron 透明窗）渲染 */
-export const isDesktopVisible = (display: PetDisplay): boolean => display === 'desktop';
+export const isDesktopVisible = (display: PetDisplay): boolean => display === 'desktop' || display === 'both';
 
 /** 把 host 的成品聚合拍平成渲染用宠物列表：
  *  条目级字段（animations / animationWeights / eventsRefreshSec / physics / font / confineToScreen /
@@ -51,8 +53,19 @@ export function flattenConfigPets(merged: Record<string, Record<string, unknown>
         font: conf.font as FontConfig | undefined,
         confineToScreen: conf.confineToScreen as boolean | undefined,
         workStatusTexts: conf.workStatusTexts as string[][] | undefined,
+        // 睡觉文案：渲染端要能「睡着时点对话/碎碎念就弹拒绝台词」，所以必须在拍平时带出来
+        // （与 workStatusTexts 同一类条目级字段：多实例共享所属条目那一份）。
+        sleepStartTexts: conf.sleepStartTexts as string[] | undefined,
+        sleepEndTexts: conf.sleepEndTexts as string[] | undefined,
+        sleepRefuseTexts: conf.sleepRefuseTexts as string[] | undefined,
         whisperModel: conf.whisperModel as ModelSelection | undefined,
         chatModel: conf.chatModel as ModelSelection | undefined,
+        // 表情包三件套：右键「配图」菜单要按配置里的清单与顺序分组，客户端不读磁盘，
+        // 所以只能在拍平时一并带出；文件是否存在由宿主在生成时校验（见 host/memes 的池判定）。
+        memes: conf.memes as Record<string, string> | undefined,
+        chatImageEnabled: conf.chatImageEnabled as boolean | undefined,
+        chatAnimationEnabled: conf.chatAnimationEnabled as boolean | undefined,
+        chatImageLimit: conf.chatImageLimit as number | undefined,
         assetRoot: entry,
         extra: entry !== 'main',
       });

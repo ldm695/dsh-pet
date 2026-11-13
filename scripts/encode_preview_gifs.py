@@ -145,6 +145,9 @@ PINYIN = {
     "工作状态-原地踱步张望": "gongzuozhuangtai-yuandi-duobu-zhangwang",
     "工作状态-雀跃庆祝": "gongzuozhuangtai-queyue-qingzhu",
     "工作状态-垂头叹气冒汗": "gongzuozhuangtai-chuitou-tanqi-maohan",
+    "睡觉-开始": "shuijiao-kaishi",
+    "睡觉-循环": "shuijiao-xunhuan",
+    "睡觉-起来": "shuijiao-qilai",
 }
 
 
@@ -203,3 +206,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

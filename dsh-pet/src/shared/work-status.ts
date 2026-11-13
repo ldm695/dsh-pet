@@ -36,8 +36,10 @@ export const WORK_STATUS_INDEX: Record<WorkStatusState, number> = {
 export interface WorkStatusSnapshot {
   state: WorkStatusState | null; // null = 空闲
   task: string | null; // 当前任务详情（todo/write 提供，可 null）
-  sourceName?: string; // DeepSeek Harness / Codex / Claude Code；终态气泡用于标明完成来源
-  agents: WorkStatusAgentSnapshot[]; // 每个会话/Agent 的状态；空数组表示当前没有活动状态
+  /** Parallel sessions published by the versioned work-status bridge. */
+  agents?: WorkStatusAgentSnapshot[];
+  /** 当前展示条目所属会话；空闲 / 外部槽 / 老版本宿主缺该字段时都不出现，气泡因此不可点。 */
+  sessionId?: string | null;
 }
 
 /** Serialized `sections.workStatus.data` payload written by the host. */
@@ -52,39 +54,37 @@ export interface WorkStatusSnapshotWire {
 /** 快照解析：必须包含 agents 数组；缺少新契约字段或形状非法时跳过，不回退单状态格式。 */
 export function toWorkStatus(raw: unknown): WorkStatusSnapshot | null {
   if (!raw || typeof raw !== 'object') return null;
-  const r = raw as { state?: unknown; task?: unknown; sourceName?: unknown; agents?: unknown };
-  if (!Array.isArray(r.agents)) return null;
+  const r = raw as { state?: unknown; task?: unknown; sessionId?: unknown; agents?: unknown };
   const state: WorkStatusState | null =
     r.state === null || (typeof r.state === 'string' && (WORK_STATUS_STATES as readonly string[]).includes(r.state))
       ? (r.state as WorkStatusState | null)
       : null;
-  const agents = r.agents.flatMap((item) => {
-    if (!item || typeof item !== 'object') return [];
-    const agent = item as Record<string, unknown>;
-    if (
-      typeof agent.key !== 'string' ||
-      typeof agent.state !== 'string' ||
-      !(WORK_STATUS_STATES as readonly string[]).includes(agent.state) ||
-      !Number.isSafeInteger(agent.revision) ||
-      !Number.isFinite(agent.startedAt)
-    ) {
-      return [];
-    }
-    return [
-      {
-        key: agent.key,
-        state: agent.state as WorkStatusState,
-        ...(typeof agent.sourceName === 'string' ? { sourceName: agent.sourceName } : {}),
-        ...(typeof agent.task === 'string' || agent.task === null ? { task: agent.task } : {}),
-        revision: agent.revision as number,
-        startedAt: agent.startedAt as number,
-      },
-    ];
-  });
-  return {
-    state,
-    task: typeof r.task === 'string' ? r.task : null,
-    ...(typeof r.sourceName === 'string' ? { sourceName: r.sourceName } : {}),
-    agents,
-  };
+  const sessionId =
+    typeof r.sessionId === 'string' && r.sessionId !== '' && r.sessionId !== 'unknown' ? r.sessionId : null;
+  const agents = Array.isArray(r.agents)
+    ? r.agents.flatMap((rawAgent): WorkStatusAgentSnapshot[] => {
+        if (!rawAgent || typeof rawAgent !== 'object') return [];
+        const agent = rawAgent as Record<string, unknown>;
+        if (
+          typeof agent.key !== 'string' ||
+          !agent.key ||
+          typeof agent.state !== 'string' ||
+          !(WORK_STATUS_STATES as readonly string[]).includes(agent.state) ||
+          !Number.isSafeInteger(agent.revision) ||
+          typeof agent.startedAt !== 'number' ||
+          !Number.isFinite(agent.startedAt)
+        ) {
+          return [];
+        }
+        return [{
+          key: agent.key,
+          state: agent.state as WorkStatusState,
+          sourceName: typeof agent.sourceName === 'string' ? agent.sourceName : undefined,
+          task: typeof agent.task === 'string' ? agent.task : null,
+          revision: agent.revision as number,
+          startedAt: agent.startedAt,
+        }];
+      })
+    : undefined;
+  return { state, task: typeof r.task === 'string' ? r.task : null, sessionId, agents };
 }

@@ -1,4 +1,4 @@
-import { STANDALONE_SETTINGS_HTML } from './settings-page';
+import { settingsPage } from './settings-page.ts';
 
 /** The AI settings route shares the same HTML shell and React renderer as the main settings page. */
-export const settingsPage = STANDALONE_SETTINGS_HTML;
+export { settingsPage };

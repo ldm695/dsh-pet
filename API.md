@@ -9,77 +9,121 @@ DSH Pet Windows 应用在本机 HTTP 服务上提供统一的 `/dsh-pet-7340` �
 
 ## 状态查询
 
-| 接口 | 功能 |
-| --- | --- |
-| `GET /dsh-pet-7340/state` | **轮询唯一数据源**：所有状态位都在这里；带 `?since=&timeout=` 可长轮询 |
-| `GET /dsh-pet-7340/config` | 读合并后的成品配置（内置默认 + 用户层，字段已填满） |
-| `GET /dsh-pet-7340/config/meta` | 配置文件路径、各类数据落盘位置、卸载该用哪个 profile |
-| `GET /dsh-pet-7340/models` | 当前宿主可用的服务商与模型清单；独立模式返回已启用的独立 AI 模型 |
-| `GET /dsh-pet-7340/chat?pet=&rounds=` | 读某只桌宠最近的对话记忆窗口；`rounds` 为本次读取轮数（0–200），不传用配置 |
-| `GET /dsh-pet-7340/pose?pet=` | 读取桌面端最近一次上报的位置与朝向快照 |
+| 接口                            | 功能                                                                                                       |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `GET /dsh-pet-7340/state`       | **轮询唯一数据源**：所有状态位都在这里；带 `?since=&timeout=` 可长轮询                                     |
+| `GET /dsh-pet-7340/config`      | 读合并后的成品配置（内置默认 + 用户层，字段已填满）                                                        |
+| `GET /dsh-pet-7340/config/meta` | 配置文件路径、日志文件路径、各类数据落盘位置、卸载该用哪个 profile                                         |
+| `GET /dsh-pet-7340/models`      | 可用服务商与模型清单（与 DSH 自己的模型选择器同源）                                                        |
+| `GET /dsh-pet-7340/chat?pet=`   | 读某只桌宠最近的对话记忆窗口；带 `?rounds=` 可指定本次读取的轮数（0–200，不传用配置的 `chatMemoryRounds`） |
+| `GET /dsh-pet-7340/pose?pet=`   | 读**桌面端**宠物的实况（位置 + 朝向）；网页端用客户端服务 `petApi7340`，不走这条路                         |
 
 ## 操作
 
-| 接口 | 功能 |
-| --- | --- |
-| `POST /dsh-pet-7340/whisper?pet=&surface=desktop` | 让桌宠**生成**一句碎碎念（走当前模型），成功响应含 `text` 和可选 `image` |
-| `POST /dsh-pet-7340/broadcast?pet=&surface=desktop` | **第三方投喂**：把文本及可选远程配图写进气泡（不生成，只搬运） |
-| `POST /dsh-pet-7340/bubble/clear?pet=&surface=desktop` | **清空气泡**：提前收起说话气泡（只动气泡，不动动画） |
-| `POST /dsh-pet-7340/anim?pet=&surface=desktop` | **点播动画**：播放池内动画或远程视频，可选指定朝向；回 `playbackId` |
-| `POST /dsh-pet-7340/sleep?pet=&surface=desktop` | 让桌宠按配置播放入睡过渡并进入循环睡眠；睡眠期间忽略自动动画与常规事件 |
-| `POST /dsh-pet-7340/wake?pet=&surface=desktop` | 唤醒桌宠并播放睡眠配置中的起身动画；未睡时幂等成功 |
-| `GET /dsh-pet-7340/playback/{id}` | **播放回执**：查那次点播的真实状态；带 `?wait=&timeout=` 可挂起等待 |
-| `POST /dsh-pet-7340/playback/{id}/report` | 渲染端上报播放状态（**内部通道**，第三方不用调） |
-| `POST /dsh-pet-7340/chat?pet=&surface=desktop` | 对桌宠说一句话并生成回复，同时写入对话记忆；成功响应含 `text` 和可选 `image` |
-| `POST /dsh-pet-7340/pose/report?pet=&surface=desktop` | 桌面 Helper 上报宠物位置与朝向（内部通道） |
-| `POST /dsh-pet-7340/position?pet=&surface=desktop` | **位置控制**：挪到归一化坐标，`mode` = 直接/弹簧/直线；不碰动画 |
-| `POST /dsh-pet-7340/throw?pet=&surface=desktop` | **原生抛掷**：给桌宠一个初速度让它飞出去（`angle` 度、`power` 倍率） |
-| `POST /dsh-pet-7340/lock?pet=&surface=desktop` | 申请或续期单只桌宠的独占控制租约 |
-| `POST /dsh-pet-7340/lock/release?pet=` | 释放租约；用户接管时可强制释放 |
-| `POST /dsh-pet-7340/balance` | 立即刷新一次余额 |
-| `POST /dsh-pet-7340/environment?pet=&surface=desktop&fresh=1` | 查询 IP 粗略定位的城市与天气，并在指定桌宠的独立环境气泡显示结果 |
-| `GET /dsh-pet-7340/todos` | 读取本机待办清单 |
-| `POST /dsh-pet-7340/todos` | 新建待办：`{ text, dueAt }`，`dueAt` 可为毫秒时间戳或 `null` |
-| `PATCH /dsh-pet-7340/todos/{id}` | 修改待办正文、期限或完成状态 |
-| `DELETE /dsh-pet-7340/todos/{id}` | 删除待办 |
-| `GET /dsh-pet-7340/voice/voices` | 列出内置语音音色 |
-| `POST /dsh-pet-7340/voice/speak` | 将不超过 500 字的文本合成为 MP3；合成结果缓存在本机 |
-| `POST /dsh-pet-7340/broadcast?pet=&surface=desktop` | 向气泡投递文本；可传 `speak: true` 请求语音播报（需在全局设置中启用） |
-| `POST /dsh-pet-7340/reload` | 重载桌面端（重启桌面宠物进程，按最新配置重建窗口） |
+| 接口                                   | 功能                                                                                                               |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `POST /dsh-pet-7340/lock?pet=`         | **占用锁**：联动演出期间独占这只宠物（除持锁者外全静音）；取锁会先把它叫醒，占用期间不能再睡下；`lockId` 给了=续期、没给=新建，回 `lockId` + `expiresAt` |
+| `POST /dsh-pet-7340/lock/release?pet=` | **释放占用**：`lockId`=持锁者收工 / `force`=用户接管（渲染端上报，第三方不用调）                                   |
+
+**锁占用期间，桌宠完全静止**：它自己不动、也不弹气泡——余额、碎碎念、工作状态这些全都让路。
+
+标了「（需锁）」的接口，第三方调用时**必须带上 `?lock=<lockId>`**。锁就是给第三方用的：带上它，
+才能保证这段时间归你控制，不被别的插件、也不被桌宠自己的事件打断。没带 → `lock-required`；
+编号不对 → `lock-lost`（附 `cause`：过期 / 已释放 / 被用户抢走）。
+
+两条边界：
+
+- **没有锁时**：不传 `?lock=` 一切照旧；传了 `?lock=` 说明你以为自己还持有 → 回 `lock-lost`，
+  `cause` 告诉你锁是怎么没的（过期 / 已释放 / 被用户抢走）；
+- **用户优先**：用户拖一下宠物、或把它隐藏 / 关闭，锁会立刻被撤掉。`/whisper`、`/balance`、`/chat`
+  是用户自己点的入口（右键菜单 / 斜杠命令），占用期间照常可用。
+
+## 三、让它说话（气泡）
+
+| 接口                                   | 功能                                                                                                                                                                                                                                                     |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /dsh-pet-7340/whisper?pet=`      | 让桌宠**生成**一句碎碎念（走当前模型）；响应带 `text`（配图时另有 `image`），同时照旧写进气泡                                                                                                                                                            |
+| `POST /dsh-pet-7340/broadcast?pet=`    | **第三方投喂**（需锁）：把外部给定的文本写进气泡（不生成，只搬运）；配图（`image` 池内名 / `url` 自带地址）、时长、动画联动、是否念（`speak`，缺省不念）可选                                                                                             |
+| `POST /dsh-pet-7340/bubble/clear?pet=` | **清空气泡**（需锁）：提前收起说话气泡（只动气泡，不动动画）                                                                                                                                                                                             |
+| `POST /dsh-pet-7340/chat?pet=`         | 对桌宠说一句话并生成回复，同时写入对话记忆；响应带 `text`（配图时另有 `image`），同时照旧写进气泡。可选 `attachment`（`mediaType` + base64）随本轮送一张图：图片**记进记忆**（存附件引用，不存本体），但只影响这一轮、不进气泡；不传时行为与旧版逐字一致。配置 `chatAnimationEnabled` 时回复可带 `[动作:名称]`，采纳后与 `/anim` 同链路点播 |
+| `DELETE /dsh-pet-7340/chat?pet=`       | **删除对话记忆**：带 `?ts=`（可重复，取自 `GET /chat` 的 `messages[].ts`）只删这些轮——一轮两条共享 `ts`，成对删；不带 `ts` 清空整只。响应 `{ ok: true, removed }`，删空后不留空对象                                                                      |
+| `GET /dsh-pet-7340/chat/memory`        | 列出**已删宠物**残留的对话历史（宠物删了但历史还在，`GET /chat` 读不到）；只给条数与最后时间                                                                                                                                                             |
+| `DELETE /dsh-pet-7340/chat/memory`     | 一次清空这些残留历史                                                                                                                                                                                                                                     |
+| `POST /dsh-pet-7340/balance`           | 立即刷新一次余额（可见效果同样是弹气泡 + 档位动画）；带 `?pet=`（需 `surface=`）时只让这只弹，不带则所有开启余额的宠物都弹 |
+| `POST /dsh-pet-7340/environment`       | **查环境**：城市 + 天气；带 `?pet=`（需 `surface=`）时写进 `sections.env`，`?fresh=1` 跳过缓存 |
+
+## 四、让它做动作
+
+| 接口                                      | 功能                                                                                                                                                                           |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST /dsh-pet-7340/anim?pet=`            | **点播动画**（需锁）：播池内名字（同右键「动作」菜单）或第三方自带的 `url`；`facing` 可选指定朝向（`left`/`right`，不传则不动朝向）；回 `playbackId`                           |
+| `GET /dsh-pet-7340/playback/{id}`         | **播放回执**：查那次点播的真实状态；带 `?wait=&timeout=` 可挂起等待                                                                                                            |
+| `POST /dsh-pet-7340/playback/{id}/report` | 渲染端上报播放状态（**内部通道**，第三方不用调）                                                                                                                               |
+| `POST /dsh-pet-7340/pose/report?pet=`     | 桌面渲染端上报实况（**内部通道**，第三方不用调）                                                                                                                               |
+| `POST /dsh-pet-7340/position?pet=`        | **位置控制**（需锁）：挪到归一化坐标，`mode` = 直接/弹簧/直线；不碰动画。额外回**夹取后**的 `x`/`y`                                                                            |
+| `POST /dsh-pet-7340/throw?pet=`           | **原生抛掷**（需锁）：给桌宠一个初速度让它飞出去（`angle` 度、`power` 倍率）                                                                                                   |
+| `POST /dsh-pet-7340/sleep?pet=`           | **让它睡下**：从 `animations.sleep` 里挑一整套（开始/循环/起来）写进 `pets.<id>.sleep`；睡着期间自动来源与手动触发一律拒绝（持锁时让路）；没配睡觉动画回 `no-sleep-animations` |
+| `POST /dsh-pet-7340/wake?pet=`            | **叫醒**：播「起来」后回随机链；本来没睡也回 ok（幂等）                                                                                                                        |
+| `POST /dsh-pet-7340/focus-session`        | **跳会话**：让页面切到指定会话；桌面端点会话气泡走这条                                                                                                                          |
 
 ## 配置管理
 
-| 接口 | 功能 |
-| --- | --- |
-| `PUT /dsh-pet-7340/config` | 保存用户层配置（白名单重建，用户手写的精调字段会保留） |
-| `POST /dsh-pet-7340/pet-display` | **改单只宠物的显示位置**（`desktop` / `none`），只传 `{ id, display }` |
-| `POST /dsh-pet-7340/config` | 用内置默认整份覆盖用户配置，即「恢复默认」 |
+| 接口                             | 功能                                                                                                                   |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `PUT /dsh-pet-7340/config`       | 保存用户层配置（白名单重建，用户手写的精调字段会保留）                                                                 |
+| `POST /dsh-pet-7340/config`      | 用内置默认整份覆盖用户配置，即「恢复默认」                                                                             |
+| `POST /dsh-pet-7340/pet-display` | **改单只宠物的显示位置**（`web` / `desktop` / `both` / `none`），只传 `{ id, display }`                                |
+| `POST /dsh-pet-7340/pet-config`  | **按种类写回全部实例**（`{ entry, pets }`，`entry` = `pet/<名>-config.json` 的前缀）；白名单重建，顶层动画池与人设保留 |
+| `POST /dsh-pet-7340/reload`      | 重载桌面端（重启桌面宠物进程，按最新配置重建窗口）                                                                     |
 
 ## 第三方菜单项
 
-| 接口 | 功能 |
-| --- | --- |
-| `POST /dsh-pet-7340/menu/item` | 注册菜单项：`{ owner, labels: ["弹弓","钓鱼"] }`，整体覆盖该 owner 的菜单 |
-| `DELETE /dsh-pet-7340/menu/item?owner=` | 清除该 owner 的全部菜单项 |
-| `GET /dsh-pet-7340/menu/events?owner=&wait=` | 查询点击事件，读取即消费；wait 为长轮询毫秒数 |
-| `POST /dsh-pet-7340/menu/click` | 渲染端上报点击，第三方无需调用 |
+| 接口                                         | 功能                                                                                                                                               |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /dsh-pet-7340/menu/item`               | **注册菜单项**（该 `owner` 的菜单项整体覆盖）：`{ owner, labels: ["弹弓","钓鱼"], target?: "web"\|"desktop"\|"both" }`，`target` 不写 = 两端都显示 |
+| `DELETE /dsh-pet-7340/menu/item?owner=`      | **清除菜单项**（该 `owner` 的全部项，幂等）：回 `{ ok: true, removed: 2 }`                                                                         |
+| `GET /dsh-pet-7340/menu/events?owner=&wait=` | **查询触发**（读取即清空，`wait` = 长轮询毫秒数）：回 `{ 弹弓: "main", 钓鱼: null }`                                                               |
+| `POST /dsh-pet-7340/menu/click`              | 渲染端上报点击（**内部通道**，第三方不用调）                                                                                                       |
 
-第三方菜单统一显示在右键菜单的「更多」下；一个 owner 只有一项时直接显示该项。
+第三方菜单项统一收在右键菜单的**「更多」**下。`label` 在全部第三方项里唯一时直接平铺
+（`更多 / 弹弓`）；`label` 重名时，每个 `owner` 在「更多」下各占一个子菜单（`更多 / owner / label`），
+靠它区分同名项。宿主自己的菜单项固定，不参与重名判定。
 
 ## 静态资源
 
-| 接口 | 功能 |
-| --- | --- |
-| `GET /dsh-pet-7340/thumb/{petId}/{file}` | 动画素材（`.webm` / `.mov`，按宠物归属） |
-| `GET /dsh-pet-7340/font/{file}` | 字体文件 |
-| `GET /dsh-pet-7340/pic/{file}` | 通知图标（用户目录 `dsh-pet/pic/` 优先，包内素材兜底）与表情包（`pic/memes/{素材根}/`，按宠物归属） |
+| 接口                                     | 功能                                                              |
+| ---------------------------------------- | ----------------------------------------------------------------- |
+| `GET /dsh-pet-7340/thumb/{petId}/{file}` | 动画素材（`.webm` / `.mov`，按宠物归属）                          |
+| `GET /dsh-pet-7340/font/{file}`          | 字体文件                                                          |
+| `GET /dsh-pet-7340/pic/{file}`           | 通知图标（`pic/`）与表情包（`pic/memes/{素材根}/`，按宠物归属）   |
+| `GET /dsh-pet-7340/attachment?id=`       | **取图**：把对话记忆里 `image.attachmentId`（`sha256:…`）换回图片 |
+| `GET /dsh-pet-7340/logo?root=`           | 宠物头像：缺省回插件 logo（`assets/logo.png`）；带 `root=<素材根>` 时回该 pet pack 上传的头像，没有就回默认 |
+| `GET /dsh-pet-7340/character?root=`      | **角色参考图**：按素材根回一张官方设定图（png / jpg / webp / gif），第三方自建生图时对齐角色用；**不代调生图模型**，出图与计费都在调用方 |
+| `POST /dsh-pet-7340/pet-avatar?root=`    | **上传头像**：`{ base64 }`，覆盖写 `pet/<素材根>-avatar.<ext>`；`root=main`（内置）被拒 |
 
 ## 八、工作状态（外部写入）
 
-| 接口 | 功能 |
-| --- | --- |
-| `POST /dsh-pet-7340/work-status` | **外部写入工作状态**：`{ state, task? }`，固定外部槽，最后写入者生效 |
-| `DELETE /dsh-pet-7340/work-status` | **清空外部槽**回空闲（幂等，204） |
+| 接口                               | 功能                                                                 |
+| ---------------------------------- | -------------------------------------------------------------------- |
+| `POST /dsh-pet-7340/work-status`   | **外部写入工作状态**：`{ state, task? }`，固定外部槽，最后写入者生效 |
+| `DELETE /dsh-pet-7340/work-status` | **清空外部槽**回空闲（幂等，204）                                    |
+
+## 九、语音
+
+| 接口                             | 功能                                                                         |
+| -------------------------------- | ---------------------------------------------------------------------------- |
+| `POST /dsh-pet-7340/voice/speak` | 合成并返回 mp3：`{ text, voice?, rate? }`；同一输入命中缓存，队列最多排 3 个 |
+| `POST /dsh-pet-7340/voice/hear`  | 识别音频回文字：`{ audio }`，16kHz/单声道/PCM16 WAV 的 base64                |
+| `GET /dsh-pet-7340/voice/voices` | 可用音色列表；前端拿它渲染选择器，不要硬编码 id                              |
+
+## 十、待办事项
+
+| 接口                              | 功能                                                         |
+| --------------------------------- | ------------------------------------------------------------ |
+| `GET /dsh-pet-7340/todos`         | 读取待办清单（未完成在前、到期越近越靠前，无期限垫底）       |
+| `POST /dsh-pet-7340/todos`        | 新建一条：`{ text, dueAt? }`，`dueAt` 为 epoch 毫秒或 `null` |
+| `PATCH /dsh-pet-7340/todos/{id}`  | 修改一条：`{ text?, dueAt?, done? }` 至少给一个              |
+| `DELETE /dsh-pet-7340/todos/{id}` | 删除一条（幂等，回 `removed` 条数）                          |
 
 ---
 
@@ -107,36 +151,16 @@ DSH Pet Windows 应用在本机 HTTP 服务上提供统一的 `/dsh-pet-7340` �
    状态位的路径（如 `sections.balance`、`pets.<id>.say`）请当作**不透明键**使用——
    宠物 id 允许含点号，**不要按 `.` 切分**。
 
-## 请求示例
-
-```bash
-BASE=http://127.0.0.1:<port>/dsh-pet-7340
-
-# 拉一次状态（只读、零副作用，可以随便轮询）
-curl -s $BASE/state
-
-# 长轮询：带上上一拍拿到的 counter —— 叶子一变立刻返回，最多挂 1 秒
-curl -s "$BASE/state?since=1755000000007&timeout=1000"
-
-# 让桌宠说一句外部给的话，然后立刻回读状态
-curl -s -X POST "$BASE/broadcast?pet=main&surface=desktop" \
-     -H 'content-type: application/json' \
-     -d '{"text":"巡检完毕，一切正常"}'
-curl -s $BASE/state   # → pets.main.say.data.text
-
-# 只弹 3 秒气泡、不播说话动画
-curl -s -X POST "$BASE/broadcast?pet=main&surface=desktop" \
-     -H 'content-type: application/json' \
-     -d '{"text":"该喝水了","duration":3000,"anim":false}'
-
-# 提前收起气泡（正在播的动画不受影响）
-curl -s -X POST "$BASE/bubble/clear?pet=main&surface=desktop"
-
-# 让它播一段动画（名字取自 GET /config 里**该宠物所属条目**的 animations：
-#  main 条目的宠物用 main 的池，pet/<名>-config.json 的种类各用自己的池）
-curl -s -X POST "$BASE/anim?pet=main&surface=desktop" \
-     -H 'content-type: application/json' \
-     -d '{"name":"东张西望"}'
+```jsonc
+{
+  "counter": 1755000000007,   // 整份 S 的版本号 = 最后一次写入的编号（顶层，不是叶子）
+  "sections": {               // 全局段：所有端共享一份
+    "balance": {…}, "workStatus": {…}, "notify": {…}, "config": {…}, "menu": {…}, "focusSession": {…}, "env": {…}
+  },
+  "pets": {                   // 每只宠物各自一份；键是宠物 id（可含点号，勿切分）
+    "main": { "say": {…}, "anim": {…}, "position": {…}, "throw": {…}, "lock": {…}, "sleep": {…} }
+  }
+}
 ```
 
 ## 独立模式
@@ -151,10 +175,10 @@ BASE=http://127.0.0.1:6952/dsh-pet-7340   # 默认端口；被占用时自动向
 
 独立模式另外提供运维端点（不在 `/dsh-pet-7340` 前缀下，故不在 OpenAPI 契约里）：
 
-| 端点 | 说明 |
-| --- | --- |
-| `GET /`、`GET /health` | 服务与插件信息：名称、插件根与版本、监听端口、已运行秒数 |
-| `POST /shutdown` | 优雅停机：释放插件注册的 effect（停止桌面助手、清掉周期定时器）后关闭服务，进程退出码 0 |
+| 接口                   | 功能                                                                                    |
+| ---------------------- | --------------------------------------------------------------------------------------- |
+| `GET /`、`GET /health` | 服务与插件信息：名称、插件根与版本、监听端口、已运行秒数                                |
+| `POST /shutdown`       | 优雅停机：释放插件注册的 effect（停止桌面助手、清掉周期定时器）后关闭服务，进程退出码 0 |
 
 独立 AI 设置页及其本机接口也在此前缀之外：
 
@@ -174,3 +198,5 @@ BASE=http://127.0.0.1:6952/dsh-pet-7340   # 默认端口；被占用时自动向
 - [`openapi.yaml`](openapi.yaml) —— 完整契约（OpenAPI 3.1，可直接导入 Swagger UI / Postman）
 - [`tools/api-tester.html`](tools/api-tester.html) —— 桌宠控制台：扮演第三方消费方的示例页面，
   可直观试用上述接口（用 `node tools/api-tester.cjs` 启动，它会带上本地代理解决跨域）
+
+

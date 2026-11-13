@@ -5,7 +5,7 @@
  * 到期越近提醒越密是这份模块的核心契约：调整档位只改下面的两张表，`nextReminderAt` 自动跟随。
  * @module dsh-pet/src/host/todo/policy
  */
-import type { TodoRecord } from './types';
+import type { TodoRecord } from './types.ts';
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;

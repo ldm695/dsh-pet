@@ -321,6 +321,7 @@ async function createFullMigrationBackup(home: string, purpose = 'migration-fail
     }
     throw new Error(
       `全量迁移备份失败，部分文件位于 ${backupDirectory}：${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
   }
 }
@@ -545,7 +546,7 @@ function copyLegacyMainConfig(userConfigPath: string, logger: MigrationLogger): 
     if (temporaryPath && existsSync(temporaryPath)) unlinkSync(temporaryPath);
     if (existsSync(userConfigPath)) return;
     logger.warn(`兼容上游旧主配置失败，原文件保留：${error instanceof Error ? error.message : String(error)}`);
-    throw new Error('Cannot migrate legacy main configuration.');
+    throw new Error('Cannot migrate legacy main configuration.', { cause: error });
   }
 }
 
@@ -648,7 +649,7 @@ function migrateMissingChatContextSettings(
     logger.warn(
       `迁移独立 AI 聊天上下文设置失败，原配置保留：${error instanceof Error ? error.message : String(error)}`,
     );
-    throw new Error('Cannot migrate standalone AI chat context settings.');
+    throw new Error('Cannot migrate standalone AI chat context settings.', { cause: error });
   }
 }
 
@@ -736,13 +737,16 @@ async function writeSafeFallbackConfiguration(home: string, paths: ReturnType<ty
   const defaultConfig = readFileSync(paths.defaultFile, 'utf8');
   await writePrivateTextAsync(paths.userFile, defaultConfig);
   writeAiSettings(home, DEFAULT_AI_SETTINGS);
+  // A failed migration may leave the prior DPAPI key intact; clear it only after
+  // the complete pre-migration backup has been verified by the caller.
+  await saveProtectedApiKey(join(userDirectory, 'standalone-ai-key.dpapi'), undefined);
 
   const parsedMain = readUserConfig(paths);
   if (!parsedMain) throw new Error('回退主配置写入后仍无法解析。');
   const pets = flattenPetList(readAllConfig(paths));
   if (pets.length === 0) throw new Error('回退配置没有可运行的默认桌宠。');
   const ai = createAiConfig(home, { initialApiKey: '' }).current();
-  if (ai.enabled || ai.automaticWhispers || ai.apiKey) {
+  if (ai.automaticWhispers || ai.apiKey) {
     throw new Error('回退独立 AI 配置未达到安全默认状态。');
   }
 }
@@ -773,6 +777,7 @@ export async function prepareStandaloneMigrations(options: {
       const fallbackReason = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
       throw new Error(
         `迁移异常数据已完整备份到 ${backup.directory}，但安全默认配置写入失败，程序无法继续启动：${fallbackReason}`,
+        { cause: fallbackError },
       );
     }
 

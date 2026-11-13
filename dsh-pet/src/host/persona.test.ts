@@ -1,5 +1,5 @@
 /**
- * 人设拼装单元测试：钉住碎碎念/对话共用 system 的三段结构（人设 + 名字声明 + 时间背景）。
+ * 人设拼装单元测试：钉住碎碎念/对话共用 system 的分段结构（人设 + 名字声明 + 时间背景 + 可选的历史说明）。
  *
  * 为什么单测这个：拼装以前内联在 host/index.ts 的 petSystemPrompt 里（需要起宿主才能跑），
  * 于是「实例级人设回落」「名字永远追加」「时间每次现算」这三条只能靠人工试。抽成纯函数后
@@ -45,14 +45,43 @@ describe('petPersona —— 实例级 → 条目级 → 空', () => {
   });
 });
 
-describe('composeSystemPrompt —— 三段拼装', () => {
+describe('composeSystemPrompt —— 分段拼装', () => {
   test('人设 + 名字 + 时间：顺序固定，行间单个换行', () => {
     const out = composeSystemPrompt({ prompt: '你是小女仆', name: '蓝毛', id: 'main', now: NOW });
     const lines = out.split('\n');
     assert.equal(lines[0], '你是小女仆');
     assert.equal(lines[1], '你的名字是“蓝毛”。');
     assert.ok(lines[2].startsWith('【当下】现在是2026年10月21日星期三 14:15，下午，工作日'), '第三行必须是时间背景');
-    assert.equal(lines.length, 3, '不多不少三段');
+    assert.equal(lines.length, 3, '不带历史说明时不多不少三段');
+  });
+
+  test('historyTimes → 末尾追加【历史】段，仍在时间背景之后', () => {
+    const out = composeSystemPrompt({ prompt: '你是小女仆', name: '蓝毛', id: 'main', now: NOW, historyTimes: true });
+    const lines = out.split('\n');
+    assert.equal(lines.length, 4, '带历史说明时是四段');
+    assert.ok(
+      lines[3].startsWith('【历史】对话记录里，主人的话前面标着 [月日 时:分]'),
+      `第四行必须是【历史】：${lines[3]}`,
+    );
+    assert.ok(lines[3].includes('不要写时间'), '必须明确禁止在回复正文里写时间');
+  });
+
+  test('historyTimes 但时间非法 → 【历史】也不加（它整句在引用“现在”）', () => {
+    const out = composeSystemPrompt({
+      prompt: '',
+      name: '蓝毛',
+      id: 'main',
+      now: new Date('nope'),
+      historyTimes: true,
+    });
+    assert.equal(out, '你的名字是“蓝毛”。');
+  });
+
+  test('historyTimes 缺省 / false → 不出现【历史】（碎碎念没有历史）', () => {
+    for (const parts of [{}, { historyTimes: false }]) {
+      const out = composeSystemPrompt({ prompt: '你是小女仆', name: '蓝毛', id: 'main', now: NOW, ...parts });
+      assert.ok(!out.includes('【历史】'));
+    }
   });
 
   test('没有人设 → 不以换行开头（只有名字 + 时间）', () => {
@@ -90,5 +119,35 @@ describe('composeSystemPrompt —— 三段拼装', () => {
     assert.match(a, /上午/);
     assert.match(b, /晚上/);
     assert.notEqual(a, b);
+  });
+});
+
+describe('composeSystemPrompt —— 环境段（城市与天气）', () => {
+  test('env 透传到时间行：地点与天气都出现', () => {
+    const out = composeSystemPrompt({
+      prompt: '',
+      name: '蓝毛',
+      id: 'main',
+      now: NOW,
+      env: {
+        region: '江西省',
+        city: '南昌市',
+        weather: { summary: '阴', temperatureC: 13.1, apparentC: 12.9, humidityPercent: 84, windKph: 2 },
+      },
+    });
+    assert.ok(out.includes('你在江西省南昌市（按网络粗估，不一定准）'), `实际：${out}`);
+    assert.ok(out.includes('外面阴，气温 13.1°C'));
+  });
+
+  test('只有城市：给出“没查到”的交代，不写任何温度', () => {
+    const out = composeSystemPrompt({ prompt: '', name: '蓝毛', id: 'main', now: NOW, env: { city: '南昌市' } });
+    assert.ok(out.includes('外面的天气这次没查到'));
+    assert.ok(!out.includes('气温'), '没有数据时不该出现气温');
+  });
+
+  test('不传 env：与加入环境前的输出一致（地点与天气都不出现）', () => {
+    const out = composeSystemPrompt({ prompt: '', name: '蓝毛', id: 'main', now: NOW });
+    assert.ok(!out.includes('你在'));
+    assert.ok(!out.includes('外面'));
   });
 });

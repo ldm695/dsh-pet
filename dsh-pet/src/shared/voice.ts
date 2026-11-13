@@ -7,7 +7,8 @@
  * 不负责合成与缓存：那些在宿主侧（`/voice/speak`）。
  * @module dsh-pet/src/shared/voice
  */
-import type { VoiceTarget } from './state';
+import { ROUTE_PATH } from './constants.ts';
+import type { VoiceTarget } from './state.ts';
 
 /** 当前音色；空串 = 不指定，由宿主用默认音色。 */
 let voiceName = '';
@@ -18,7 +19,7 @@ let notifyEnabled = false;
 /** 本端是网页端还是桌面端；`null` = 还没声明，此时不按叶子播放。 */
 let surface: VoiceTarget | null = null;
 /** 接口基址：网页端是同源前缀，桌面端由 `setVoiceBase` 换成 bridge 地址。 */
-let voiceBase = '/dsh-pet-7340';
+let voiceBase = ROUTE_PATH;
 /** 配置是否已就绪；网页端由 `setVoiceConfig` 置位，桌面端首次播放时懒加载。 */
 let configLoaded = false;
 /** 当前播报状态；气泡据此显示图标。 */

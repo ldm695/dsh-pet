@@ -7,8 +7,8 @@
  * aria-expanded 与 onOpenChange；值写成 `YYYY-MM-DDTHH:mm`，提醒链路不感知这里。
  * @module dsh-pet/src/shared/todo/due-picker
  */
-import { monthCells } from './calendar';
-import { dueLabel, formatDateTimeLocal } from './format';
+import { monthCells } from './calendar.ts';
+import { dueLabel, formatDateTimeLocal } from './format.ts';
 
 /** 周一为一周首日，与国内日历习惯一致。 */
 const WEEK_HEAD = ['一', '二', '三', '四', '五', '六', '日'] as const;

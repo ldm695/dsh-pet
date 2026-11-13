@@ -17,7 +17,7 @@ export interface Rect {
 }
 
 /** 桌宠显示位置。 */
-export type PetDisplay = 'desktop' | 'none';
+export type PetDisplay = 'web' | 'desktop' | 'both' | 'none';
 
 /** 桌面宠物窗口的显示层级（全局设置）。 */
 export type PetDisplayPriority =
@@ -52,7 +52,16 @@ export type EventSlot = string | string[];
 /** 事件动画：事件名 → 档位槽位数组（数组顺序 = 档位顺序；不进随机链，只由代码显式触发） */
 export type Events = Record<string, EventSlot[]>;
 
-/** 动画权重 */
+/** 一套睡觉动作：入睡 → 循环 → 醒来。
+ *  三段各是候选数组（进入该段时随机抽一个）；整套由 animations.sleep 的外层数组随机挑选，
+ *  三段必须来自同一套，否则会出现「蹲着入睡、趴着醒来」。 */
+export interface SleepSet {
+  start: string[];
+  loop: string[];
+  end: string[];
+}
+
+/** 动画权重。 */
 export interface Weights {
   idle: number;
   turn: number;
@@ -68,8 +77,13 @@ export interface Animations {
   moves: MovesConfig;
   categories: Category[];
   events: Events;
-  /** 可选睡眠动画套：一套包含入睡、循环、醒来三个阶段。 */
-  sleep?: Array<{ start: string[]; loop: string[]; end: string[] }>;
+  /** 睡觉动作套（可选）：没写 = 该条目没有睡觉功能，右键菜单不出现「睡觉」。
+   *  写了就「整套随机 → 段内随机」取，结构见 {@link SleepSet}。 */
+  sleep?: SleepSet[];
+  /** 内置玩法「吃白饭」的动画（可选）：键名即玩法 id，值是**恰好 5 个**动画名，
+   *  按位置对应：跑向屏幕底部、追饭时的侧身跑、到位后等开饭、吃到碗饭、吃饭团。
+   *  不写 = 该条目没有这个玩法；槽位数与顺序是玩法契约（代码按索引取），名字只是素材文件名。 */
+  baifan?: string[];
 }
 
 /** 一只宠物（与 jsonc pets[i] 同形，position 嵌套）。
@@ -96,11 +110,15 @@ export interface Pet {
    *  与 id 的区别：id 唯一、程序认它；name 给人看、可重复。缺失/留空按该宠物 id 处理并告警 */
   name: string;
   size: number;
-  /** 是否启用余额功能：true=触发余额动画+显示余额气泡；false=该宠物完全禁用余额。缺失即配置错误 */
+  /** 人物占屏宽上限（%，默认 20，不设上限）：按本体占屏换算出画框宽，`size` 仍是画框上限。
+   *  100 ≈ 不限制（宽窗口下与按 px 显示一致）；填 150 人物会宽于屏幕，但画框仍被 `size` 夹住。
+   *  小于 1 或非数字回落到 20。只作用于浏览器半侧——桌面透明窗始终用 `size`。 */
+  sizePercent?: number;
+  /** 是否启用余额功能：true = 触发余额动画并显示余额气泡，false = 该宠物完全禁用余额。缺失即配置错误 */
   balanceEnabled: boolean;
-  /** 是否启用碎碎念：true=按 eventsRefreshSec.whisper 周期生成一句话并播碎碎念动画；false=禁用。
-   *  缺失默认 true（内置默认开启：碎碎念每次生成会调用当前对话的模型，本地 LLM 单并发时
-   *  会顶掉正在跑的任务的 KV cache，见 config.jsonc 注释——不需要的宠物请显式写 false） */
+  /** 是否启用碎碎念：true = 按 eventsRefreshSec.whisper 周期生成一句话并播碎碎念动画，false = 禁用。
+   *  缺失默认 true；碎碎念每次生成都会调用当前对话的模型，本地 LLM 单并发时会顶掉正在跑的任务的 KV cache，
+   *  不需要的宠物请显式写 false。display 为 none 的宠物整体跳过：不生成、不调模型。 */
   whisperEnabled: boolean;
   /** 是否启用工作状态联动：true=监听 DSH 会话事件（tool/call 等），按 animations.events.workStatus
    *  数组切档位动画 + 气泡；false=禁用。缺失默认 true（内置默认开启）。监听不调用模型，无 KV cache 风险 */
@@ -112,7 +130,7 @@ export interface Pet {
    *  缺失默认 false（保持原行为：会自己走、会自己翻） */
   fixedEnabled: boolean;
   /** 仅允许横向漫游：自动移动与菜单移动保持当前高度，路线角度固定为 0°；拖拽与抛掷仍由用户操作控制。 */
-  horizontalOnly: boolean;
+  horizontalOnly?: boolean;
   /** 显示位置（desktop/none，必填）：缺失即配置错误，代码不做兜底 */
   display: PetDisplay;
   position: { corner: Corner; marginX: number; marginY: number };
@@ -135,8 +153,14 @@ export interface Pet {
   physics?: PhysicsParams;
   /** 全局默认：是否锁定在当前屏幕（归属规则同 physics）——抛掷与自主漫游都只在当前所在那块屏内活动 */
   confineToScreen?: boolean;
-  /** 条目级：工作状态气泡文案（二维数组，外层索引 = workStatus 档位 0..5，内层每档可多句随机抽；
-   *  host 合并已填默认，拍平时吹入；整字段缺失 = 不弹工作状态文本，只播动画） */
+  /** 条目级：睡觉期间被手动打扰时弹的拒绝台词（非空字符串数组，随机挑一句）。 */
+  sleepRefuseTexts?: string[];
+  /** 条目级：入睡时弹的台词（播「开始」时随机挑一句）。 */
+  sleepStartTexts?: string[];
+  /** 条目级：醒来时弹的台词（播「起来」时随机挑一句）。 */
+  sleepEndTexts?: string[];
+  /** 条目级：工作状态气泡文案（外层索引 = 档位 0..5，内层每档可多句随机抽）。
+   *  整字段缺失 = 不弹工作状态文本，只播动画。 */
   workStatusTexts?: string[][];
   /** 全局默认：碎碎念单独指定的服务商 + 模型（host 合并已填默认，拍平时吹入；
    *  provider 与 model 都为空 = 跟随当前对话的模型） */
@@ -145,6 +169,16 @@ export interface Pet {
   chatModel?: ModelSelection;
   /** 全局默认：字体（种类 / 字号 / 是否随宠物大小缩放；host 合并已填默认，拍平时吹入） */
   font?: FontConfig;
+  /** 条目级：表情包清单（名称 → 给模型看的描述），合并器吹进每只实例、多实例共享。
+   *  顺序即配置书写顺序，也就是 chatImageLimit 截取「前 N 张」的依据。 */
+  memes?: Record<string, string>;
+  /** 条目级：对话配图开关。true = 对话生成时把表情包清单交给模型按语境选一张；缺省按关处理。 */
+  chatImageEnabled?: boolean;
+  /** 条目级：对话动作联动开关。true = 对话时把 categories 下的动作清单交给模型，
+   *  由模型在语境贴合时挑一个当场表演；缺省按关处理。 */
+  chatAnimationEnabled?: boolean;
+  /** 条目级：对话配图张数上限（非负整数，0 = 不限制）。只截「交给模型的清单」，不截碎碎念抽图。 */
+  chatImageLimit?: number;
 }
 
 /** 一处「服务商 + 模型」选择（config.jsonc 的 whisperModel / chatModel 段）。
@@ -157,20 +191,31 @@ export interface ModelSelection {
 }
 
 /** config.jsonc 的 physics 段：拖拽抛掷手感参数（全局，所有宠物共用）。
- *  默认值 = src/shared/physics.ts 的常量（1400 / 0.78 / 2.5 / true / 1.0 / false），内置配置与代码两侧保持一致。 */
+ *  默认值见 {@link DEFAULT_PHYSICS}，内置配置与代码两侧保持一致。 */
 export interface PhysicsParams {
   /** 重力加速度（px/s²）：抛掷下落/反弹的基础重力，越大落得越快；0 = 无重力（合法，永不下落/均匀直线飞行） */
   gravity: number;
   /** 碰壁反弹恢复系数 0~1（1 = 完全弹性，0 = 撞上即停；墙/地共用） */
   restitution: number;
-  /** 地面水平摩擦（/s）：落地时水平速度的衰减率，0 = 无摩擦 */
+  /** 接触面切向摩擦（/s）：撞墙、落地、撞顶后沿接触面方向的速度衰减率，0 = 四面都像冰面 */
   groundFriction: number;
   /** 顶部是否反弹：true = 碰顶反弹；false = 顶部无边界，抛掷可飞出屏幕顶部（重力仍会拉回落） */
   ceilingBounce: boolean;
   /** 总力度（拖拽/抛掷输出增益）：弹簧跟手 K/C、甩抛初速与软上限整体 ×p（1.0 = 现状；必须 > 0） */
   throwPower: number;
-  /** 多宠物互相碰撞开关：true = 飞行中被甩出的宠物撞到其它宠物时按动量守恒弹开；false = 关闭（默认，互相穿过） */
+  /** 多宠物互相碰撞开关：true（默认）= 飞行中的宠物撞到其它宠物时按动量守恒弹开；false = 互相穿过 */
   petCollision: boolean;
+  /** 倾斜控制重力：true（默认）= 手机倾斜方向代替固定向下的重力方向（大小仍由 gravity 决定，竖直时取满值；
+   *  gravity 为 0 时倾斜没有可用的量，等同关闭）；false = 重力恒竖直向下。
+   *  仅浏览器半侧生效，且传感器只在安全上下文（HTTPS / localhost）可用；缺键按 true。 */
+  tiltGravity?: boolean;
+  /** 摇一摇抛出：true（默认）= 摇一摇沿甩动方向把宠物甩出去（力度 = 基准 × throwPower），与重力大小无关，
+   *  所以 gravity 为 0 时也能用；false = 不读加速度计。同样只在安全上下文可用。缺键按 true。 */
+  shakeThrow?: boolean;
+  /** 碰撞触觉反馈：true（默认）时撞墙 / 落地 / 撞顶与宠物互撞各震一下。
+   *  仅浏览器半侧生效，且要求环境有 Vibration API——iOS 与桌面端没有，静默跳过。
+   *  缺省按 true；旧配置里没有这个键也算开。 */
+  hapticEnabled?: boolean;
 }
 
 /** 字体种类预设 id（config.jsonc 的 font.family 白名单；清单与对应字体栈见 src/shared/fonts.ts） */
@@ -199,14 +244,25 @@ export interface ClientConfig {
   uiTheme: UiTheme;
   /** DSH 通知总开关：控制 DSH 工作流事件与桌宠对话回复的系统通知；缺失即配置错误 */
   notificationsEnabled: boolean;
-  /** 碎碎念配图开关：true=碎碎念每次从表情包池随机抽 1 张连同文本显示（碎碎念无上下文，故随机） */
+  /** 前台聚焦时也提醒：true = 页面可见且持有焦点时照常弹通知、照常播报工作状态语音；
+   *  false（默认）= 只在走开或被遮住时提醒。缺这个键按 false 处理，旧配置行为不变。 */
+  notifyWhenFocused: boolean;
+  /** 点击音效开关：true = 点击宠物时播放内置 click-duck.wav（音量 0.5、100ms 内去重），false = 静音。
+   *  内置默认 false（默认静音，不突袭既有用户）。只读 main 条目这一份，pet pack 不单独覆盖。 */
+  clickSoundEnabled: boolean;
+  /** 桌面模式系统托盘开关：true = 桌面端启动后在通知区域（macOS 为菜单栏）建托盘，列出配置里全部宠物
+   *  （含 display 为 web/none 的），勾选即可切回桌面；false = 不建。
+   *  缺失默认 true。关掉后「把不在桌面的宠物叫回桌面」在桌面侧没有入口，只能走设置页或网页端右键菜单。 */
+  trayEnabled: boolean;
+  /** 碎碎念配图开关：true = 每次从表情包池随机抽 1 张连同文本显示（碎碎念无上下文，故随机） */
   whisperImageEnabled: boolean;
   /** 对话配图开关：true=对话时把表情包清单交模型按语境选 1 张（可不选）；false=纯文本 */
   chatImageEnabled: boolean;
-  /** 是否锁定在当前屏幕：true=宠物只在当前所在那块屏内活动——甩出去只在松手时所在那块屏内弹
-   *  （屏缝当墙），自主漫游也只在当前所在那块屏内走（越出屏缝的那一步直接取消）；
-   *  false=跨屏飞行 / 跨屏行走（现状）。根字段（不属于 physics：它不改手感，只改「被允许去哪」），
-   *  条目级，缺失即配置错误 */
+  /** 对话动作联动开关：true = 把 categories 下的动作清单交模型按语境挑一个当场表演，false = 纯文字 */
+  chatAnimationEnabled: boolean;
+  /** 是否锁定在当前屏幕：true = 宠物只在当前所在那块屏内活动——甩出去只在该屏内弹（屏缝当墙），
+   *  自主漫游也只在屏内走；false = 跨屏飞行与跨屏行走。根字段，不属于 physics——它不改手感，只改「被允许去哪」。
+   *  条目级，必填，缺失即配置错误。 */
   confineToScreen: boolean;
   /** 桌面宠物显示层级：始终置顶 / 全屏时隐藏 / 全屏或最大化时隐藏 / 普通窗口层级。 */
   petDisplayPriority: PetDisplayPriority;

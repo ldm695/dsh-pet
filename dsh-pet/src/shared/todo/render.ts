@@ -4,9 +4,9 @@
  * 删除做成两步（先变成「确认」，2.5 秒后自动复原）：清单没有撤销，误点一次就没了太容易。
  * @module dsh-pet/src/shared/todo/render
  */
-import { createDuePicker, type DuePicker } from './due-picker';
-import { metaLabel, todoUrgency } from './format';
-import type { TodoItem } from './types';
+import { createDuePicker, type DuePicker } from './due-picker.ts';
+import { metaLabel, todoUrgency } from './format.ts';
+import type { TodoItem } from './types.ts';
 
 /** 面板里需要被面板逻辑持有的元素。 */
 export interface TodoPanelParts {

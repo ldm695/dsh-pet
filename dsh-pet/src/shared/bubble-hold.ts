@@ -4,7 +4,7 @@
  * 不决定这一句该不该念——那是 {@link module:dsh-pet/src/shared/voice} 的门禁。
  * @module dsh-pet/src/shared/bubble-hold
  */
-import type { VoiceUtteranceEvent } from './voice';
+import type { VoiceUtteranceEvent } from './voice.ts';
 
 /** 播完（或失败）后再留这么久，让人看完最后一个字（ms）。 */
 export const BUBBLE_HOLD_TAIL_MS = 1_500;

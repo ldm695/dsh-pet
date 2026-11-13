@@ -3,8 +3,8 @@
  * 按键规则归 shared/hotkey，本模块只绑定「哪个键 + 菜单文案」。
  * @module dsh-pet/src/shared/todo/hotkey
  */
-import { isBareKey } from '../hotkey';
-import type { HotkeyEvent } from '../hotkey';
+import { isBareKey } from '../hotkey.ts';
+import type { HotkeyEvent } from '../hotkey.ts';
 
 /** 快捷键的显示文案（菜单项右侧灰字）。与 {@link isTodoHotkey} 的按键保持同一份事实。 */
 export const TODO_HOTKEY_HINT = 'D 键';

@@ -6,7 +6,7 @@
  * 失败不抛也不记日志：说不说、怎么说由调用方决定。
  * @module dsh-pet/src/host/ip-city
  */
-import { fetchJson } from './fetch-json';
+import { fetchJson } from './fetch-json.ts';
 
 /** 一次定位可注入的依赖（测试用）。 */
 export interface LocateCityDeps {

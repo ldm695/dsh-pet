@@ -1,8 +1,13 @@
-// 纯选择逻辑：不依赖 React / DOM，可独立单测；桌面 shared-core 使用这一份源码。
-import type { Category, EventSlot, Events, Weights } from './types';
+/**
+ * 纯选择逻辑：随机抽取、事件档位取值、权重掷骰，可独立单测。
+ * 两端共用同一份，随机链必须走这里，否则浏览器半侧与桌面 Helper 会分叉。
+ * 不依赖 React / DOM。
+ * @module dsh-pet/src/shared/pickers
+ */
+import type { Category, EventSlot, Events, Weights } from './types.ts';
 
-/** 从字符串池里等概率随机抽一个；exclude 排除某个名字（避免连续重复） */
-export const pick = <T>(pool: T[], exclude?: T): T => {
+/** 从池里等概率抽一个；exclude 避开某个名字（减少连续重复）。 */
+export const pick = <T>(pool: readonly T[], exclude?: T): T => {
   const entries = exclude ? pool.filter((n) => n !== exclude) : pool;
   // 排除后池空（单元素池 + 排除自己）：退回原池抽——宁可重复，也不要返回 undefined
   const src = entries.length ? entries : pool;
@@ -10,10 +15,16 @@ export const pick = <T>(pool: T[], exclude?: T): T => {
 };
 
 /**
- * 事件档位取值：字符串槽位原样返回（固定播放，原行为不变）；
- * 数组槽位 = 档内候选，随机抽 1 并尽量避开 exclude（当前正在播的动画，避免连续重复）；
- * 排除后池空（单候选 + 排除自己）退回原数组——宁可重复，也不要返回 undefined（与 pick 同一哲学）。
+ * 挑一套睡觉动作：整套随机，调用方拿到的三段必须来自同一套（否则会「蹲着入睡、趴着醒来」）。
+ *
+ * @param sets - 配置里的 sleep 套数组；段内多候选由调用方对选中的那套再 `pick` 一次。
+ * @returns 选中的套；空数组返回 null，调用方据此隐藏「睡觉」入口。
  */
+export const pickSleepSet = <T>(sets: readonly T[]): T | null =>
+  sets.length > 0 ? sets[Math.floor(Math.random() * sets.length)] : null;
+
+/** 事件档位取值：字符串槽位原样返回（固定播放）；数组槽位 = 档内候选，随机抽 1 并尽量避开 exclude。
+ *  排除后池空（单候选且排除自己）退回原数组——宁可重复，也不返回 undefined。 */
 export const pickSlot = (slot: EventSlot, exclude?: string): string => {
   if (typeof slot === 'string') return slot;
   const entries = exclude === undefined ? slot : slot.filter((n) => n !== exclude);

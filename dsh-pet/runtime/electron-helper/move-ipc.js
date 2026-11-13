@@ -18,6 +18,7 @@ const MOVE_TARGETS_CHANNELS = Object.freeze({
   begin: 'pet:begin-move',
   end: 'pet:end-move',
   snapshot: 'pet:move-targets',
+  requestSnapshot: 'pet:request-move-targets',
   forget: 'pet:forget-move-target',
 });
 
@@ -26,6 +27,10 @@ const MOVE_TARGETS_CHANNELS = Object.freeze({
  * This module owns the IPC boundary only; MoveTargets remains the policy owner.
  */
 function registerMoveTargetHandlers({ ipcMain, BrowserWindow, windows, moveTargets, broadcastMoveTargets }) {
+  ipcMain.on(MOVE_TARGETS_CHANNELS.requestSnapshot, (event) => {
+    event.sender.send(MOVE_TARGETS_CHANNELS.snapshot, moveTargets.snapshot());
+  });
+
   ipcMain.on(MOVE_TARGETS_CHANNELS.begin, (event, payload) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     const petId = String(payload?.petId || '');

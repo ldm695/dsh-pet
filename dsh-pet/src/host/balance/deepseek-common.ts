@@ -4,7 +4,7 @@
  * 这里的两个东西都是 DeepSeek 自己的事实，不属于展示层：展示层只认「数据带出来的档位与基准」
  * （见 ./types.ts 的 MoneyBalance），所以它们住在 host 侧、由 provider 随数据一起带出。
  */
-import type { PricingTier } from './types';
+import type { PricingTier } from './types.ts';
 
 /**
  * 余额档位基准（¥）：余额 ≥ 该值视为 100%（未消耗），据此把余额折算成「已用百分比」驱动档位动画。

@@ -6,7 +6,8 @@
  *   - counter 没变 → 不产出（同一句话不会被反复渲染）；
  *   - 新增的 section / 宠物自动纳入（将来加叶子不用改这段逻辑）；
  *   - 脏数据（counter 非数字 / 叶子非对象）被丢弃，不把垃圾送进渲染层；
- *   - 余额叶子要解析成客户端视图（raw.data 摊平），并带上 host 标的手动标记。
+ *   - 余额叶子要解析成客户端视图（raw.data 摊平），并带上 host 标的手动标记；
+ *   - 路径只按最后一个点切叶子名（宠物 id 允许含点号）。
  *
  * 跑法：node --experimental-strip-types --test src/shared/state.test.ts
  */
@@ -17,9 +18,12 @@ import {
   flattenCounters,
   readAnim,
   readBalance,
+  readEnv,
   readPosition,
   readSay,
+  readSleep,
   readThrow,
+  resolveLeafPath,
   takeChanged,
   type PollState,
 } from './state.ts';
@@ -92,13 +96,51 @@ describe('takeChanged —— counter 变了才算变化', () => {
     );
   });
 
-  test('宠物 id 含点号也能正确区分（路径只当不透明键，绝不解析）', () => {
+  test('宠物 id 含点号也能正确区分（基线按整条路径作键）', () => {
     const baseline: Record<string, number> = {};
     const changes = takeChanged(makeState({}, { 'a.b': { say: [5, { text: 'x' }] } }), baseline);
     assert.deepEqual(
       changes.map((c) => c.path),
       ['pets.a.b.say'],
     );
+  });
+});
+
+describe('resolveLeafPath —— 路径解析成落点（分发规则的唯一口径）', () => {
+  test('sections 的六个叶子各自解析成落点', () => {
+    for (const name of ['config', 'balance', 'workStatus', 'notify', 'menu', 'focusSession'] as const) {
+      assert.deepEqual(resolveLeafPath('sections.' + name), { where: 'section', name });
+    }
+  });
+
+  test('pets 的五类叶子各自带上宠物 id', () => {
+    for (const name of ['say', 'anim', 'position', 'throw', 'lock'] as const) {
+      assert.deepEqual(resolveLeafPath('pets.main.' + name), { where: 'pet', name, petId: 'main' });
+    }
+  });
+
+  test('宠物 id 含点号：只按最后一个点切叶子名（`pets.a.b.say` 的宠物是 `a.b`）', () => {
+    assert.deepEqual(resolveLeafPath('pets.a.b.say'), { where: 'pet', name: 'say', petId: 'a.b' });
+  });
+
+  test('叶子名不合法 → null（不把 `say.text` 之类当成叶子名）', () => {
+    assert.equal(resolveLeafPath('pets.main.say.text'), null);
+    assert.equal(resolveLeafPath('sections.balances'), null);
+    assert.equal(resolveLeafPath('pets.main.unknown'), null);
+  });
+
+  test('空宠物 id / 空叶子名 / 缺叶子名 → null（都不是合法落点）', () => {
+    assert.equal(resolveLeafPath('pets..say'), null);
+    assert.equal(resolveLeafPath('pets.main.'), null);
+    assert.equal(resolveLeafPath('pets.main'), null);
+    assert.equal(resolveLeafPath('sections.'), null);
+  });
+
+  test('不属于任何一族的键 → null（顶层 counter、空串、别的插件的键）', () => {
+    assert.equal(resolveLeafPath(''), null);
+    assert.equal(resolveLeafPath('counter'), null);
+    assert.equal(resolveLeafPath('sectionsx.config'), null);
+    assert.equal(resolveLeafPath('pet.main.say'), null);
   });
 });
 
@@ -158,6 +200,14 @@ describe('readBalance —— 余额叶子 → 客户端视图', () => {
       data: { ok: false, provider: 'p', reason: 'unsupported', manual: 'yes' },
     });
     assert.equal(notBool?.manual, false, '只有严格 true 才算');
+  });
+
+  test('petId 归属：非空字符串才带出，缺省 / 空串 / 非字符串都不写这个键', () => {
+    const data = { ok: false as const, provider: 'p', reason: 'unsupported' as const };
+    assert.equal(readBalance({ counter: 1, data: { ...data, petId: 'main' } })?.petId, 'main');
+    assert.equal('petId' in (readBalance({ counter: 1, data }) ?? {}), false, '不带归属时不该造这个键');
+    assert.equal(readBalance({ counter: 1, data: { ...data, petId: '' } })?.petId, undefined);
+    assert.equal(readBalance({ counter: 1, data: { ...data, petId: 42 } })?.petId, undefined);
   });
 
   test('脏数据 → null（消费端跳过这一拍，不抛）', () => {
@@ -245,7 +295,7 @@ describe('readSay —— 说话叶子（弹气泡 / 清空 两种形态）', () 
     return hit && hit.kind === 'say' ? hit : null;
   };
 
-  test('弹气泡：文本与配图取到；不带 duration/anim 时两者都 undefined（= 老行为 10s + 联动）', () => {
+  test('弹气泡：文本与配图取到；不带 duration/anim/voiceTo 时三者都 undefined（= 老行为 10s + 联动 + 不念）', () => {
     assert.deepEqual(say({ text: '主人今天也要加油哦～', image: '可爱' }), {
       kind: 'say',
       text: '主人今天也要加油哦～',
@@ -253,6 +303,7 @@ describe('readSay —— 说话叶子（弹气泡 / 清空 两种形态）', () 
       url: undefined,
       duration: undefined,
       anim: undefined,
+      voiceTo: undefined,
     });
   });
 
@@ -283,6 +334,18 @@ describe('readSay —— 说话叶子（弹气泡 / 清空 两种形态）', () 
     assert.equal(say({ text: 'x', duration: 0, anim: false })?.anim, false);
     assert.equal(say({ text: 'x', duration: 3000, anim: true })?.duration, 3000);
     assert.equal(say({ text: 'x', duration: 3000, anim: true })?.anim, true);
+  });
+
+  test('voiceTo：只认 web / desktop，其余当作没给（undefined）', () => {
+    assert.equal(say({ text: 'x', voiceTo: 'web' })?.voiceTo, 'web');
+    assert.equal(say({ text: 'x', voiceTo: 'desktop' })?.voiceTo, 'desktop');
+    for (const v of ['both', 'any', 'WEB', 1, null, {}]) {
+      assert.equal(
+        say({ text: 'x', voiceTo: v })?.voiceTo,
+        undefined,
+        `voiceTo=${JSON.stringify(v)} 应归一成 undefined`,
+      );
+    }
   });
 
   test('清空形态：{ clear: true } → { kind: "clear" }（**空文本表达不了它**）', () => {
@@ -396,5 +459,74 @@ describe('readThrow —— 抛掷指令叶子（角度 + 力度）', () => {
     assert.equal(readThrow({ counter: 1, data: { angle: 45, power: 0 } }), null);
     assert.equal(readThrow({ counter: 1, data: { angle: 45, power: -1 } }), null);
     assert.equal(readThrow({ counter: 1, data: { angle: 45, power: NaN } }), null);
+  });
+});
+
+describe('readSleep —— 睡觉叶子解析（状态不是指令）', () => {
+  test('三种形态：睡着带三段名 / 醒着 / 从未写过', () => {
+    assert.deepEqual(readSleep({ counter: 1, data: { sleeping: true, start: 's', loop: 'l', end: 'e' } }), {
+      sleeping: true,
+      start: 's',
+      loop: 'l',
+      end: 'e',
+    });
+    assert.deepEqual(readSleep({ counter: 1, data: { sleeping: false } }), { sleeping: false });
+    assert.equal(readSleep({ counter: 0, data: null }), null);
+  });
+
+  test('形状非法一律丢弃：缺段名 / 空段名 / 非布尔 sleeping', () => {
+    assert.equal(readSleep({ counter: 1, data: { sleeping: true, start: 's', loop: 'l' } }), null);
+    assert.equal(readSleep({ counter: 1, data: { sleeping: true, start: 's', loop: 'l', end: '' } }), null);
+    assert.equal(readSleep({ counter: 1, data: { sleeping: 'yes' } }), null);
+    assert.equal(readSleep({ counter: 1, data: 'sleeping' }), null);
+  });
+});
+
+describe('readEnv —— 环境叶子解析', () => {
+  /** 一份合法的 env 叶子内容（/environment 带 pet 写入的形状）。 */
+  const DATA = {
+    region: '江西省',
+    city: '南昌市',
+    weather: {
+      city: '南昌',
+      summary: '阴',
+      temperatureC: 12.7,
+      apparentC: 12.5,
+      humidityPercent: 90,
+      windKph: 2.9,
+      code: 3,
+      observedAt: '2026-11-11T21:45',
+    },
+    petId: 'main',
+    ts: 1700000000000,
+  };
+
+  test('完整形态：省市、天气、petId 与时刻原样解析', () => {
+    assert.deepEqual(readEnv({ counter: 1, data: DATA }), DATA);
+  });
+
+  test('没有天气（查不到）：省市仍可用，weather 键不出现', () => {
+    const got = readEnv({ counter: 1, data: { region: '江西省', city: '南昌市', petId: 'main', ts: 1 } });
+    assert.deepEqual(got, { region: '江西省', city: '南昌市', petId: 'main', ts: 1 });
+  });
+
+  test('空串省市被丢弃，不写成空字段', () => {
+    const got = readEnv({ counter: 1, data: { region: '', city: '', petId: 'main', ts: 1 } });
+    assert.deepEqual(got, { petId: 'main', ts: 1 });
+  });
+
+  test('形状非法一律丢弃：缺 petId / petId 空 / ts 非数 / data 为空', () => {
+    assert.equal(readEnv({ counter: 1, data: { ts: 1 } }), null);
+    assert.equal(readEnv({ counter: 1, data: { petId: '', ts: 1 } }), null);
+    assert.equal(readEnv({ counter: 1, data: { petId: 'main', ts: 'now' } }), null);
+    assert.equal(readEnv({ counter: 0, data: null }), null);
+  });
+
+  test('weather 形状坏 → 整拍丢弃，不让半个天气渲染成 0°C', () => {
+    assert.equal(readEnv({ counter: 1, data: { petId: 'main', ts: 1, weather: { city: '南昌' } } }), null);
+    assert.equal(
+      readEnv({ counter: 1, data: { petId: 'main', ts: 1, weather: { ...DATA.weather, temperatureC: '冷' } } }),
+      null,
+    );
   });
 });

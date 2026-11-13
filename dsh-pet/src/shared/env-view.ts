@@ -5,8 +5,8 @@
  * 网页端映射成 React 节点、桌面端映射成 DOM 节点，两份渲染共用这里，文案不会漂。
  * @module dsh-pet/src/shared/env-view
  */
-import { envIconShapes, type EnvIconShape } from './env-icon';
-import type { EnvState } from './state';
+import { envIconShapes, type EnvIconShape } from './env-icon.ts';
+import type { EnvState } from './state.ts';
 
 /** 一行键值：左标签右数值。 */
 export interface EnvBubbleRow {

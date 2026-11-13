@@ -3,7 +3,7 @@
  * 浏览器设置页与独立模式设置页共用同一份规则，避免两边各算一遍。
  * @module dsh-pet/src/shared/weights
  */
-import type { Weights } from './types';
+import type { Weights } from './types.ts';
 
 /** 三个可编辑的权重字段；随机动作是余量，不单独存配置。 */
 export const WEIGHT_KEYS = ['idle', 'turn', 'move'] as const;

@@ -4,11 +4,11 @@
  * 依赖 ./api 的 HTTP、./render 的骨架与 ./styles 的样式；清理只摘自己的节点与监听，不碰容器。
  * @module dsh-pet/src/shared/todo/panel
  */
-import { TODOS_PATH, addTodo, loadTodos, patchTodo, removeTodo, type TodoResult } from './api';
-import { parseDateTimeLocal } from './format';
-import { createTodoPanelParts, renderTodoList, setTodoBusy, setTodoError, type TodoListHandlers } from './render';
-import { injectTodoCss } from './styles';
-import type { TodoItem } from './types';
+import { TODOS_PATH, addTodo, loadTodos, patchTodo, removeTodo, type TodoResult } from './api.ts';
+import { parseDateTimeLocal } from './format.ts';
+import { createTodoPanelParts, renderTodoList, setTodoBusy, setTodoError, type TodoListHandlers } from './render.ts';
+import { injectTodoCss } from './styles.ts';
+import type { TodoItem } from './types.ts';
 
 /** 面板挂载参数。 */
 export interface TodoPanelOptions {

@@ -17,12 +17,14 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import {
   balanceBubbleView,
   balanceDetailView,
+  balancePageCount,
+  balancePageView,
   balancePercent,
   decideBalanceNotice,
   toBalanceState,
@@ -202,10 +204,27 @@ describe('decideBalanceNotice —— 弹不弹文字说明（两端共用同一�
   });
 });
 
-describe('桌面端源码守卫 —— 不可用状态不得再被静默丢掉', () => {
+describe('源码守卫 —— 不可用状态不得再被静默丢掉', () => {
+  test('浏览器 overlay：渲染处不许再要求 balance.ok，且由 noticeTick 驱动气泡、判定来自 shared', () => {
+    // 渲染入口与指令处理分处两个文件：气泡在 pet.ts，按 tick 弹的判定在 card/cue-effects.ts。
+    const clientPet = readSource('../client/pet.ts') + '\n' + readSource('../client/pet/card/cue-effects.ts');
+    assert.ok(
+      !/balance\.ok\s*&&\s*cfg\.balanceEnabled/.test(clientPet),
+      '余额气泡不得再要求 balance.ok：那是「未登记服务商完全没反应」的根因，文字说明走同一个气泡',
+    );
+    assert.ok(/balanceNoticeTick/.test(clientPet), '容器必须把「该提示不可用原因」传给各宠物');
+    assert.ok(/decideBalanceNotice/.test(clientPet), '弹窗判定必须来自 src/shared（两端同一份），不得各写一份');
+  });
+
   test('桌面外壳：同一条判定 + 不可用也走气泡渲染（不再只写 console）', () => {
     const events = readSource('../../runtime/electron-helper/events.js');
-    const sprite = readSource('../../runtime/electron-helper/sprite.js');
+    // 宠物本体已按职责拆成 sprite.js 与 sprite-*.js：守卫要读全份，否则文件一搬就误报
+    const sprite = [
+      readSource('../../runtime/electron-helper/sprite.js'),
+      ...readdirSync(fileURLToPath(new URL('../../runtime/electron-helper/sprite/', import.meta.url))).map((name) =>
+        readSource('../../runtime/electron-helper/sprite/' + name),
+      ),
+    ].join('\n');
     assert.ok(
       /S\.decideBalanceNotice/.test(events),
       '桌面轮询必须调用同一份判定（shared-core 的 S.decideBalanceNotice）',
@@ -311,6 +330,96 @@ describe('commandcode —— 三窗口用量走与 opencode 同一套展示口�
       balancePercent({ provider: 'commandcode', shape: 'windows', ok: true, rolling: 10, weekly: 75, monthly: 20 }),
       75,
     );
+  });
+
+  test('区间用量：五个数齐全 → usage 进入视图（页数随之变三页）', () => {
+    const usage = {
+      totalTokens: 95967948,
+      inputTokens: 95489675,
+      outputTokens: 478273,
+      requests: 745,
+      spentUsd: 1.5968,
+    };
+    const s = toBalanceState({
+      ok: true,
+      provider: 'commandcode',
+      shape: 'windows',
+      data: { monthly: 2, usage },
+    });
+    assert.ok(s && s.ok, '带用量的叶子仍然必须是可用视图');
+    if (!s || !s.ok) throw new Error('unreachable');
+    assert.deepEqual(s.usage, usage);
+    assert.equal(balancePageCount(s), 3, '有用量就多一页');
+  });
+
+  test('区间用量：缺字段或非法 → 整拍跳过（不拼半份用量页）', () => {
+    const leaf = (usage: unknown) => ({
+      ok: true,
+      provider: 'commandcode',
+      shape: 'windows',
+      data: { monthly: 50, usage },
+    });
+    assert.equal(
+      toBalanceState(leaf({ totalTokens: 1, inputTokens: 1, outputTokens: 0, requests: 1 })),
+      null,
+      '缺 spentUsd = 字段不全',
+    );
+    assert.equal(
+      toBalanceState(leaf({ totalTokens: 'x', inputTokens: 1, outputTokens: 0, requests: 1, spentUsd: 0 })),
+      null,
+      '出现但非法',
+    );
+    assert.equal(toBalanceState(leaf('nope')), null, '不是对象');
+    const noUsage = toBalanceState({ ok: true, provider: 'opencode-go', shape: 'windows', data: { monthly: 5 } });
+    assert.ok(noUsage && noUsage.ok);
+    if (!noUsage || !noUsage.ok) throw new Error('unreachable');
+    assert.equal(noUsage.usage, undefined, '没这项数据的服务商不带 usage');
+    assert.equal(balancePageCount(noUsage), 2);
+  });
+
+  test('第三页：一行 usage 承载整张卡（三行两列 + 进出比例），紧凑数字固定一位小数', () => {
+    const rows = balancePageView(
+      {
+        provider: 'commandcode',
+        shape: 'windows',
+        ok: true,
+        monthly: 2,
+        usage: {
+          totalTokens: 95967948,
+          inputTokens: 95489675,
+          outputTokens: 478273,
+          requests: 745,
+          spentUsd: 1.5968,
+        },
+      },
+      2,
+    );
+    const [row] = rows;
+    assert.equal(row?.role, 'usage', '第三页只出这一行');
+    if (!row || row.role !== 'usage') throw new Error('unreachable');
+    assert.equal(row.total, '96.0M');
+    assert.equal(row.input, '95.5M 入');
+    assert.equal(row.output, '478.3K 出');
+    assert.equal(row.period, '本期 745 次');
+    assert.equal(row.spend, '$1.60');
+    assert.equal(row.inputPercent, (95489675 / (95489675 + 478273)) * 100, '比例条用真实占比，不做最小宽度放大');
+    // 比例条之外仍有纯文本兜底，不认识 usage 的消费方也能读。
+    assert.equal(row.text, 'Token 96.0M · 95.5M 入 / 478.3K 出 · 本期 745 次 · $1.60');
+  });
+
+  test('第一页仍是收起态、第二页仍是窗口明细（新增页不挤掉原有两页）', () => {
+    const view: BalanceView = {
+      provider: 'commandcode',
+      shape: 'windows',
+      ok: true,
+      rolling: 10,
+      rollingCapUsd: 14,
+      monthly: 20,
+      monthlyCapUsd: 70,
+      usage: { totalTokens: 1, inputTokens: 1, outputTokens: 0, requests: 1, spentUsd: 0.1 },
+    };
+    assert.equal(balancePageView(view, 0)[0]?.text, '5h额度已用 10%');
+    assert.equal(balancePageView(view, 1)[0]?.role, 'quota');
   });
 });
 

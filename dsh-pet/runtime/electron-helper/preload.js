@@ -15,26 +15,13 @@ const { contextBridge, ipcRenderer } = require('electron');
 const { MOVE_TARGETS_CHANNELS } = require('./move-ipc.js');
 
 contextBridge.exposeInMainWorld('petBridge', {
-  setBounds(
-    petId,
-    x,
-    y,
-    width,
-    height,
-    boxX,
-    boxY,
-    size,
-    bottomPad,
-    vx,
-    vy,
-    marginL,
-    marginT,
-    marginR,
-    freeMotion,
-    positionClaim,
-  ) {
+  // 宠物窗口逐帧跟随：x/y/width/height 是窗口内容区坐标（用于移动窗口），
+  // boxX/boxY 是宠物包围盒左上角的工作区坐标——碰撞站场必须用包围盒，窗口坐标差半只宠物宽。
+  // size/bottomPad 让静止宠物也登记进碰撞站场，vx/vy 是当前速度（静止/拖拽为 0）。
+  // marginL/marginT 是窗口原点到本体原点的距离：上边距按气泡最大高度加高后四边不相等，
+  // 窗口被系统钳回工作区后还会变大，主进程不能按「窗口宽/4」反推命中区，所以必须上报。
+  setBounds(x, y, width, height, boxX, boxY, size, bottomPad, vx, vy, marginL, marginT, freeMotion, positionClaim) {
     ipcRenderer.send('pet:set-bounds', {
-      petId,
       x,
       y,
       width,
@@ -47,9 +34,8 @@ contextBridge.exposeInMainWorld('petBridge', {
       vy,
       marginL,
       marginT,
-      marginR,
-      freeMotion,
-      positionClaim,
+      freeMotion: freeMotion === true,
+      positionClaim: positionClaim === true,
     });
   },
   workStatusDiagnostic(record) {
@@ -87,6 +73,7 @@ contextBridge.exposeInMainWorld('petBridge', {
         if (Array.isArray(targets)) cb(targets);
       };
       ipcRenderer.on(MOVE_TARGETS_CHANNELS.snapshot, listener);
+      ipcRenderer.send(MOVE_TARGETS_CHANNELS.requestSnapshot);
       return () => ipcRenderer.removeListener(MOVE_TARGETS_CHANNELS.snapshot, listener);
     },
     forget(petId) {
@@ -102,23 +89,26 @@ contextBridge.exposeInMainWorld('petBridge', {
   setInputRegions(input) {
     ipcRenderer.send('pet:input-regions', input);
   },
+  // 文本输入拿到 DOM 焦点时向主进程要一次系统键盘焦点：X11 上 DOM 焦点不等于 X 键盘焦点，
+  // 窗口又是 showInactive 显示的，不要就一直打不了字（处理在 main/ipc.js）。
   requestKeyboardFocus() {
     ipcRenderer.send('pet:request-keyboard-focus');
   },
-  // 右键菜单「打开网站」：主进程按宿主形态打开——桌面应用宿主唤起桌面窗口（dsh://open），否则系统默认浏览器打开 DSH 网站（等效网页 Ctrl+点击链接）
+  // 右键菜单「打开网站」：去向由主进程按宿主形态决定——桌面应用宿主唤起主窗口，否则用系统浏览器打开站点。
   openDshSite(url) {
     ipcRenderer.send('pet:open-site', { url });
   },
-  openDshApp(app, url) {
-    ipcRenderer.send('pet:open-app', { app, url });
+  // 只把 DSH 主窗口提到前台：走应用自注册的 dsh:// 协议（单实例锁会让它聚焦），被别的窗口挡住也有效。
+  // 主进程按宿主形态门控：只有桌面应用宿主才真发，web 形态下发它会把桌面版拉起来。
+  focusDshHost() {
+    ipcRenderer.send('pet:focus-host');
   },
-  openSettings() {
-    ipcRenderer.send('pet:open-settings');
+  // 截一帧桌面（宠物所在那块屏）：一次性读取，不建流、不留存。
+  // 返回 { mediaType, data, width, height, bytes } 或 null（取不到画面）。
+  captureScreen() {
+    return ipcRenderer.invoke('pet:capture-screen');
   },
-  quitApp() {
-    ipcRenderer.send('pet:quit-app');
-  },
-  // ---- 宠物间碰撞（跨窗 broker）----
+  // 宠物间碰撞（跨窗 broker）：位置与速度随 setBounds 捎带，主进程汇聚后广播；被撞方收 pet:hit 后按新初速抛出。
   onFlightStates(cb) {
     ipcRenderer.on('pet:flight-states', (e, states) => cb(states));
   },
@@ -133,9 +123,9 @@ contextBridge.exposeInMainWorld('petBridge', {
   onDisplays(cb) {
     ipcRenderer.on('pet:displays', (e, geo) => cb(geo));
   },
+  // 主进程兜底：宠物自己走开、或窗口被别的窗口接走时，渲染端收不到 mousemove，悬浮提示会一直亮着；
+  // 主进程按光标轮询判定「刚离开身体」后通知这里收起。
   onPointerLeft(cb) {
-    const listener = () => cb();
-    ipcRenderer.on('pet:pointer-left', listener);
-    return () => ipcRenderer.removeListener('pet:pointer-left', listener);
+    ipcRenderer.on('pet:pointer-left', () => cb());
   },
 });
