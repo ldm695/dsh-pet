@@ -76,6 +76,8 @@ tags:
     description: 配置的读取、保存与元信息
   - name: Assets
     description: 字体、通知图标、表情包、动画素材
+  - name: Voice
+    description: 语音合成与音色列表
 
 paths:
   /dsh-pet-7340/state:
@@ -288,6 +290,58 @@ paths:
         "405":
           $ref: "#/components/responses/MethodNotAllowed"
 
+  /dsh-pet-7340/environment:
+    post:
+      tags: [Action]
+      operationId: showEnvironment
+      summary: 查询当前城市与天气
+      description: |
+        使用出口 IP 粗略定位城市，再查询 Open-Meteo 当前天气；不需要 API Key。
+        AI 生成请求或用户手动查询时才获取，不会后台持续定位。查询结果写入指定宠物的独立环境气泡，不覆盖说话、余额或工作状态气泡。
+        `fresh=1` 跳过城市与天气缓存；否则城市缓存 6 小时、天气缓存 1 小时。
+      parameters:
+        - $ref: "#/components/parameters/PetIdQuery"
+        - $ref: "#/components/parameters/SurfaceQuery"
+        - name: fresh
+          in: query
+          required: false
+          description: 设为 1 时跳过缓存，重新查询定位与天气。
+          schema:
+            type: string
+            enum: ["1"]
+      responses:
+        "200":
+          description: 查询完成；数据写入指定宠物的独立环境气泡状态。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, petId]
+                properties:
+                  ok:
+                    type: boolean
+                    const: true
+                  petId:
+                    type: string
+                  region:
+                    type: string
+                  city:
+                    type: string
+                  weather:
+                    type: object
+                    required: [city, temperatureC, apparentC, humidityPercent, windKph, code, summary, observedAt]
+                    properties:
+                      city: { type: string }
+                      temperatureC: { type: number }
+                      apparentC: { type: number }
+                      humidityPercent: { type: number }
+                      windKph: { type: number }
+                      code: { type: number }
+                      summary: { type: string }
+                      observedAt: { type: string }
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
   /dsh-pet-7340/whisper:
     post:
       tags: [Action]
@@ -407,6 +461,10 @@ paths:
                     是否联动一次 `events.whisper` 动画。缺省 `true`（老行为）。
                     **只有严格 `false` 才关闭**——其余值（含 `"false"` 字符串）一律按"要联动"处理。
                   example: false
+                speak:
+                  type: boolean
+                  default: false
+                  description: 请求语音播报；只有全局语音播报已启用时生效。
             examples:
               textOnly:
                 summary: 只说一句（缺省 10 秒 + 联动动画）
@@ -484,6 +542,61 @@ paths:
                 oneOf:
                   - $ref: "#/components/schemas/OkResponse"
                   - $ref: "#/components/schemas/FailureResponse"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /dsh-pet-7340/sleep:
+    post:
+      tags: [Action]
+      operationId: sleepPet
+      summary: 让桌宠进入睡眠
+      description: |
+        从目标桌宠所属配置的 `animations.sleep` 中随机选择一套入睡、循环、起身动画，写入
+        `pets.<id>.sleep` 状态叶子。桌面端按 start → loop 顺序播放。睡眠期间自动动画、余额播报、
+        碎碎念、对话和常规动作请求会被抑制；用户仍可唤醒或调整桌宠位置。未配置睡眠动画时返回
+        `ok: false` 和 `reason: no-sleep-animations`。重复调用幂等，不会重播入睡过渡。
+      parameters:
+        - $ref: "#/components/parameters/PetIdQuery"
+        - $ref: "#/components/parameters/SurfaceQuery"
+      responses:
+        "200":
+          description: 业务结果
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/OkResponse"
+                  - $ref: "#/components/schemas/FailureResponse"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /dsh-pet-7340/wake:
+    post:
+      tags: [Action]
+      operationId: wakePet
+      summary: 唤醒桌宠
+      description: |
+        清除睡眠状态并让桌面端播放本次睡眠组的起身动画。桌宠未睡时幂等成功。唤醒不受占用锁阻止。
+      parameters:
+        - $ref: "#/components/parameters/PetIdQuery"
+        - $ref: "#/components/parameters/SurfaceQuery"
+      responses:
+        "200":
+          description: '`ok: true`，包含是否发生状态变化的 `changed` 字段'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, sleeping, changed]
+                properties:
+                  ok:
+                    type: boolean
+                    const: true
+                  sleeping:
+                    type: boolean
+                    const: false
+                  changed:
+                    type: boolean
         "405":
           $ref: "#/components/responses/MethodNotAllowed"
 
@@ -1685,6 +1798,74 @@ paths:
         "405":
           $ref: "#/components/responses/MethodNotAllowed"
 
+  "/dsh-pet-7340/pet-avatar":
+    get:
+      tags: [Assets]
+      operationId: getPetAvatar
+      summary: 获取宠物素材根头像
+      description: |-
+        读取 `pet/<素材根>-avatar.<ext>`。未设置时返回 404；设置页可自行显示默认图标。
+        素材根是配置标识符，不是路径片段。所有使用同一素材根的桌宠共用头像；文件保存在用户数据目录，不覆盖程序包资源。
+      parameters:
+        - name: root
+          in: query
+          required: true
+          description: 宠物素材根标识符（可含中文，不能含路径分隔符或保留字符）
+          schema:
+            type: string
+            maxLength: 64
+      responses:
+        "200":
+          description: 宠物头像
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+            image/jpeg:
+              schema: { type: string, format: binary }
+            image/webp:
+              schema: { type: string, format: binary }
+            image/gif:
+              schema: { type: string, format: binary }
+        "400":
+          description: 素材根不合法
+        "404":
+          description: 尚未设置头像
+    post:
+      tags: [Assets]
+      operationId: uploadPetAvatar
+      summary: 上传宠物素材根头像
+      description: 上传规范 base64 图片，最多 768 KiB；格式由文件头验证。每个素材根共享一张头像。
+      parameters:
+        - name: root
+          in: query
+          required: true
+          schema:
+            type: string
+            maxLength: 64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [base64]
+              properties:
+                base64:
+                  type: string
+                  maxLength: 1048580
+                  description: 不含 data URL 前缀的标准 base64
+      responses:
+        "200":
+          description: 上传成功
+        "400":
+          description: 请求格式或素材根无效
+        "413":
+          description: 图片超过 768 KiB
+        "415":
+          description: 不支持的图片格式
+        "500":
+          description: 本机素材目录写入失败
+
   "/dsh-pet-7340/thumb/{petId}/{file}":
     get:
       tags: [Assets]
@@ -1771,7 +1952,8 @@ paths:
       description: |
         静态图，两种形式：
 
-        - `/dsh-pet-7340/pic/<名>.png` → **包内** `assets/pic/`（方形 png，系统通知图标用）。
+        - `/dsh-pet-7340/pic/<名>.png` → 用户目录 `$DSH_HOME/dsh-pet/pic/` 优先，包内 `assets/pic/` 兜底
+          （方形 png，系统通知图标用；用户自定义文件不会因插件升级被覆盖）。
         - `/dsh-pet-7340/pic/memes/<素材根>/<名>.png` → 表情包（碎碎念/对话配图用的图），
           按素材根决定**素材归属**，与动画（`/thumb`）同一套语义：
           1. `pet/<素材根>-memes/` 存在（种类自带表情包）：**只查该目录**，查不到即 `404` 显式报错，
@@ -1819,6 +2001,79 @@ paths:
             text/plain:
               schema:
                 type: string
+
+  "/dsh-pet-7340/voice/voices":
+    get:
+      tags: [Voice]
+      operationId: listVoiceVoices
+      summary: 列出内置语音音色
+      responses:
+        "200":
+          description: 可用音色
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, voices]
+                properties:
+                  ok:
+                    type: boolean
+                    const: true
+                  voices:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, tag, default]
+                      properties:
+                        id: { type: string }
+                        name: { type: string }
+                        tag: { type: string }
+                        default: { type: boolean }
+
+  "/dsh-pet-7340/voice/speak":
+    post:
+      tags: [Voice]
+      operationId: synthesizeVoice
+      summary: 将文本合成为语音
+      description: >-
+        文本最多 500 个字符；请求串行处理并缓存 MP3，缓存写入用户数据目录 `voice-cache/`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, minLength: 1, maxLength: 500 }
+                voice: { type: string, description: 内置音色 ID；省略时使用默认音色 }
+                rate: { type: string, pattern: '^[+-]\\d{1,3}%$', description: 语速，范围 -50% 至 +100%，缺省 +0% }
+      responses:
+        "200":
+          description: >-
+            合成的 MP3 音频；业务失败时返回 JSON `{ ok: false, reason, message }`。
+          content:
+            audio/mpeg:
+              schema: { type: string, format: binary }
+            application/json:
+              schema:
+                type: object
+                required: [ok, reason, message]
+                properties:
+                  ok: { type: boolean, const: false }
+                  reason: { type: string, enum: [bad-request, voice-busy, generate-error] }
+                  message: { type: string }
+        "400":
+          description: 请求 JSON 无效
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, reason, message]
+                properties:
+                  ok: { type: boolean, const: false }
+                  reason: { type: string, const: bad-request }
+                  message: { type: string }
 
   /dsh-pet-7340/menu/item:
     post:
@@ -2138,8 +2393,9 @@ components:
             失败原因分类。`bad-request` 参数不合法（空文本/超长）、`provider-missing` 没有可用
             的对话服务商、`generate-error` 生成或 IO 失败、`unknown-pet` 指定的桌宠不存在、
             `unknown-image` 配图不在包内表情包池内、`pet-not-displayed` 显示端不匹配，
-            `lock-required` / `lock-lost` / `locked` 独占锁状态不允许当前操作。
-          enum: [bad-request, provider-missing, generate-error, pet-required, unknown-pet, unknown-image, unknown-animation, pet-not-displayed, lock-required, lock-lost, locked]
+            `lock-required` / `lock-lost` / `locked` 独占锁状态不允许当前操作；
+            `sleeping` 桌宠正在睡眠，`no-sleep-animations` 未配置完整睡眠动画组。
+          enum: [bad-request, provider-missing, generate-error, pet-required, unknown-pet, unknown-image, unknown-animation, pet-not-displayed, lock-required, lock-lost, locked, sleeping, no-sleep-animations]
         message:
           type: string
           description: 人类可读的补充说明（可选）
@@ -2185,7 +2441,7 @@ components:
           description: 每只宠物各自一份；键是宠物 id（**可含点号，勿切分**）
           additionalProperties:
             type: object
-            required: [say, anim, position, throw, lock]
+            required: [say, anim, position, throw, lock, sleep]
             properties:
               say:
                 $ref: "#/components/schemas/SayLeaf"
@@ -2197,6 +2453,8 @@ components:
                 $ref: "#/components/schemas/ThrowLeaf"
               lock:
                 $ref: "#/components/schemas/LockLeaf"
+              sleep:
+                $ref: "#/components/schemas/SleepLeaf"
       examples:
         typical:
           summary: 一只有余额与碎碎念的宠物
@@ -2252,9 +2510,12 @@ components:
                 throw:
                   counter: 0
                   data: null
-                lock:
-                  counter: 0
-                  data: null
+              lock:
+                counter: 0
+                data: null
+              sleep:
+                counter: 0
+                data: null
 
     BalanceLeaf:
       type: object
@@ -2324,6 +2585,9 @@ components:
         monthlyCapUsd:
           type: number
           description: commandcode：月窗口满额度（USD）= 当期消耗 + 剩余额度；无额度也无消耗时缺省
+        usage:
+          $ref: "#/components/schemas/BalanceUsage"
+          description: Command Code 本期用量摘要；仅当 API 返回的五项累计字段都有效时提供
         currency:
           type: string
           description: deepseek：币种
@@ -2362,6 +2626,22 @@ components:
                 type: string
               fullBalance:
                 type: string
+
+    BalanceUsage:
+      type: object
+      required: [totalTokens, inputTokens, outputTokens, requests, spentUsd]
+      description: Command Code 当前计费周期累计用量
+      properties:
+        totalTokens:
+          type: number
+        inputTokens:
+          type: number
+        outputTokens:
+          type: number
+        requests:
+          type: number
+        spentUsd:
+          type: number
 
     BalanceUnavailable:
       type: object
@@ -2704,6 +2984,39 @@ components:
             显式 `false` = 只弹气泡，不查动画池、不换源。
             同样只有 `POST /broadcast` 会写；碎碎念与对话回复不写。
           example: true
+        kind:
+          type: string
+          enum: [whisper, chat, sleep]
+          description: 消息来源标记；睡眠文案在睡眠状态下仍可显示，其余普通说话叶子会被抑制。
+
+    SleepLeaf:
+      type: object
+      required: [counter, data]
+      properties:
+        counter:
+          $ref: "#/components/schemas/Counter"
+        data:
+          description: '`null` 表示当前未处于睡眠状态；睡眠时包含宿主选定的三段动画名。'
+          oneOf:
+            - type: object
+              required: [sleeping, start, loop, end]
+              properties:
+                sleeping:
+                  type: boolean
+                  const: true
+                start:
+                  type: string
+                loop:
+                  type: string
+                end:
+                  type: string
+            - type: object
+              required: [sleeping]
+              properties:
+                sleeping:
+                  type: boolean
+                  const: false
+            - type: "null"
 
     LockLeaf:
       type: object

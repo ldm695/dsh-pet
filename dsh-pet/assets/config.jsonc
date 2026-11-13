@@ -11,7 +11,7 @@
 //     chatMemoryRounds / whisperModel / chatModel / eventsRefreshSec
 //   · 条目级（每个条目一份：main 一份、每个种类各一份；种类文件顶层可覆盖）：
 //     whisperPrompt / memes / workStatusTexts / animations / animationWeights
-//   · 应用级偏好（仅 main 条目生效）：notificationsEnabled / uiTheme / trayEnabled / eventsRefreshSec.balance
+//   · 应用级偏好（仅 main 条目生效）：notificationsEnabled / uiTheme / trayEnabled / voiceEnabled / voiceName / voiceVolume / voiceWhisperEnabled / voiceTodoEnabled / voiceNotifyEnabled / eventsRefreshSec.balance
 // 合并口径：所有顶层字段都是**整段替换**——写了就整段用自己的，缺的子键不会从本文件补回来
 //   （消费端各自兜底：余额周期读不到按 1800、碎碎念按 300）。
 {
@@ -25,6 +25,10 @@
   // 只写正文：实际发给模型的 system = 这段 + 自动追加的「你的名字是“<宠物名>”。」+ 当前时间背景
   // （日期/星期/时刻/时段/工作日或周末/节日）——所以别在这里再写名字和日期。人设**没有长度上限**。
   "whisperPrompt": "你是主人桌面上的Q版蓝发小女仆，会时不时碎碎念一句。说话要自然随意、短短一句（20字以内），温柔乖巧带点俏皮，说人话不啰嗦，不要解释你自己，不要提你是AI。",
+  // 睡眠状态文案（条目级；文件宠物可覆盖）。入睡、醒来、被打扰时各随机显示一句。
+  "sleepStartTexts": ["好困……我先睡一会儿。", "那我去睡啦，晚安。"],
+  "sleepEndTexts": ["唔……我醒了。", "睡饱啦，主人！"],
+  "sleepRefuseTexts": ["我在睡觉，别烦我……", "唔……让我再睡一会儿。", "等我睡醒再说嘛。"],
   // ===================== 对话记忆轮数（全局默认；种类文件 pet/<名>-config.json 顶层可覆盖） =====================
   // 右键菜单「对话」弹窗与桌宠聊天时，每次请求携带的最近历史轮数（1 轮 = 1 问 1 答）。
   // memory.json 全存不删，此值只决定"每次请求截取多少进上下文"。非负数字；缺失默认 5，
@@ -98,6 +102,14 @@
   // 不需要时改为 false（修改后刷新或重启生效）。必填布尔值，缺失即配置错误；
   // 也可在用户配置（main-config.jsonc）顶层覆盖，设置页保存宠物时会保留该字段。
   "notificationsEnabled": true,
+  // ===================== 语音播报（全局默认，所有宠物共用） =====================
+  // 手动广播与对话回复可朗读；定时碎碎念和工作状态语音分别独立控制。默认全部关闭。
+  "voiceEnabled": false,
+  "voiceName": "zh-CN-XiaoyiNeural",
+  "voiceVolume": 1,
+  "voiceWhisperEnabled": false,
+  "voiceTodoEnabled": false,
+  "voiceNotifyEnabled": false,
   // 点击桌宠时播放内置音效；默认关闭，避免在既有安装中突然发声。
   "clickSoundEnabled": false,
   // ===================== 多屏移动：限制在当前屏幕（根字段，不属于 physics） =====================
@@ -325,7 +337,11 @@
         "工作状态-雀跃庆祝",      // index 4 success（turn/end completed 完成）
         "工作状态-垂头叹气冒汗"   // index 5 error（turn/end error/max-tokens 出错/达上限）
       ]
-    }
+    },
+    // 睡觉动画套：每只桌宠可在对应条目配置中覆盖；未配置时不显示睡觉菜单项。
+    "sleep": [
+      { "start": ["睡觉-开始"], "loop": ["睡觉-循环"], "end": ["睡觉-起来"] }
+    ]
   },
 
   // ===================== 事件触发周期（全局默认：用户层写一次对所有宠物生效，种类文件顶层可覆盖） =====================
@@ -333,10 +349,13 @@
   //   · whisper：碎碎念周期，按宠物所属条目读（种类可覆盖）；读不到按 300 兜底。
   //   · balance：余额数据刷新 + 余额动画触发的间隔，**消费端只读 main 条目**（余额数据一份、
   //     host 只有一个定时器，给不了每个种类一个周期）；读不到按 1800 兜底。启动时立即触发一次。
+  //   · sleepTalk：睡着时生成梦话的周期，按宠物所属条目读；读不到按 60 兜底。使用碎碎念模型与人设，
+  //     只显示气泡，不播动画或语音；每只睡着的宠物独立计时并排队生成。
   // 非法数值（非正数/非数字）即整段配置错误 → 告警并回退内置默认。
   "eventsRefreshSec": {
     "balance": 1800,
-    "whisper": 300
+    "whisper": 300,
+    "sleepTalk": 60
   },
 
   // ===================== 动画链顶层权重 =====================

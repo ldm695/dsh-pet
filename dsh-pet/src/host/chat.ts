@@ -27,6 +27,8 @@ export interface ChatMemoryMessage {
   role: 'user' | 'assistant';
   content: string;
   ts: number;
+  /** 本轮回复选中的表情包名称；历史回放只带名称，不重发图片本体。 */
+  meme?: string;
 }
 
 /** 单次生成超时（ms）：对话等 LLM 回复，60s 足够。 */
@@ -38,8 +40,16 @@ function imageInstruction(pool: MemeEntry[]): string {
   return (
     '\n\n[配图] 回复结尾可选附一张表情包给用户看，从下列清单里挑最贴合当前语境的：\n' +
     memeCatalog(pool) +
-    '\n挑中就在回复最后另起一行写 [图:名称]（名称原样照抄）；没有合适的就完全不要写这个标记。'
+    '\n历史中的 [图:名称] 表示之前回复用过的表情包；用户要求换一张时尽量避免重复。' +
+    '挑中就在回复最后另起一行写 [图:名称]（名称原样照抄）；没有合适的就完全不要写这个标记。'
   );
+}
+
+/** 给 assistant 历史补回图片名称，帮助模型理解「换一张」等指代；不携带图片数据。 */
+function historyMarkersOf(message: ChatMemoryMessage): string {
+  return message.role === 'assistant' && typeof message.meme === 'string' && message.meme !== ''
+    ? '\n[图:' + message.meme + ']'
+    : '';
 }
 
 /**
@@ -107,7 +117,7 @@ async function generateWith(
           source: { kind: 'user' },
         })
       : createAssistantMessage({
-          content: [{ type: 'text', text: m.content }],
+          content: [{ type: 'text', text: m.content + historyMarkersOf(m) }],
           source: { provider: sel.provider, model: sel.model },
         }),
   );

@@ -215,6 +215,22 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
           }
         },
       },
+      {
+        kind: 'exact',
+        path: '/standalone-ai/models',
+        handler: async (req, res) => {
+          if (req.method !== 'POST') {
+            sendAiJson(res, 405, { ok: false, code: 'input', message: '仅支持 POST' });
+            return;
+          }
+          try {
+            const input = JSON.parse(await readAiBody(req)) as Parameters<StandaloneAiService['discoverModels']>[0];
+            sendAiJson(res, 200, await ai.discoverModels(input));
+          } catch {
+            sendAiJson(res, 400, { ok: false, code: 'input', message: '请求格式无效' });
+          }
+        },
+      },
     );
   }
 

@@ -22,6 +22,7 @@ PetSprite.prototype.onWorkTick = function onWorkTick(snapshot, tick, animateWork
   this.workState = animateWorkStatus ? state : null;
   const stateChanged = this.prevWorkState !== state;
   this.prevWorkState = state;
+  if (this.sleeping) return;
   // 锁期间消费掉自动状态变化但不播放；解锁时 resumeWorkStatusAnim 会依据最新工作状态恢复。
   if (this.frozen) return;
   logWorkStatusDiagnostic('pet-input', {
@@ -132,10 +133,7 @@ PetSprite.prototype.onWorkTick = function onWorkTick(snapshot, tick, animateWork
   });
   if (terminal || rotating) this.playOnce(name);
   else {
-    // switchTo 只负责视频双缓冲，不会更新 sprite 的逻辑状态；保持 this.anim 与实际动画一致，
-    // 否则收到 idle 时会误判当前不是 workStatus 动画，导致正在循环的工作动画残留。
-    this.anim = name;
-    this.once = false;
+    // switchTo 统一更新当前动画状态，收到 idle 时可以准确识别并退出工作状态循环。
     this.switchTo(name, false); // 进行中循环播（单动画/单候选档位）
   }
 };
@@ -161,6 +159,7 @@ function selectBalancePet(targetPetId) {
 }
 
 PetSprite.prototype.onBalanceTick = function onBalanceTick(state, tick, manual, targetPetId) {
+  if (this.sleeping) return;
   if (!this.pet.balanceEnabled && !manual) return; // 自动轮询受开关门控；手动请求仍给答复
   if (targetPetId && this.pet.id !== targetPetId) return; // 手动菜单请求只播在被点击的桌宠上
   if (tick === 0 || tick === this.prevTick) return;
@@ -174,6 +173,7 @@ PetSprite.prototype.onBalanceTick = function onBalanceTick(state, tick, manual, 
 // 不 stopMove——本次没有动画要抢前台，宠物没必要停下漫游。
 // 门控：自动轮询要求 balanceEnabled；**手动请求无条件弹**（用户问了就该有答复，包括"服务商不支持"这件事）。
 PetSprite.prototype.showBalanceNotice = function showBalanceNotice(state, manual) {
+  if (this.sleeping) return;
   if (!this.pet.balanceEnabled && !manual) return; // 自动轮询受开关门控；手动无条件通过
   if (this.frozen && !manual) return; // 锁期间不让自动余额提示覆盖联动
   if (!state || state.ok) return;
@@ -201,6 +201,7 @@ PetSprite.prototype.showBalanceNotice = function showBalanceNotice(state, manual
 PetSprite.prototype.clearWhisper = function clearWhisper() {
   if (this.whisperTimer !== null) window.clearTimeout(this.whisperTimer);
   this.whisperTimer = null;
+  this.whisperHoldState = S.reduceBubbleHold(this.whisperHoldState || S.BUBBLE_HOLD_IDLE, { kind: 'clear' });
   this.whisperOn = false;
   this.whisperView = null;
   this.whisperImage = '';
@@ -217,6 +218,7 @@ PetSprite.prototype.clearWhisper = function clearWhisper() {
 //   - duration === 0 表示"这一条不显示"：**不动当前已在显示的气泡**
 //     （要收起它请用 POST /bubble/clear，两件事不重叠）。
 PetSprite.prototype.showWhisper = function showWhisper(text, image, url, duration, anim) {
+  if (this.sleeping) return;
   let name = null;
   if (anim !== false) {
     const pool = this.animations.events?.whisper;
@@ -250,11 +252,7 @@ PetSprite.prototype.showWhisper = function showWhisper(text, image, url, duratio
   this.whisperImageUrl = typeof url === 'string' ? url : '';
   this.renderBubble();
   // 气泡定时消失（与动画解耦，与余额同一语义；重复触发先清旧定时器）
-  if (this.whisperTimer !== null) window.clearTimeout(this.whisperTimer);
-  this.whisperTimer = window.setTimeout(() => {
-    this.whisperOn = false;
-    this.renderBubble();
-  }, duration ?? BUBBLE_DURATION_MS);
+  this.applyWhisperHold({ kind: 'show', durationMs: duration ?? BUBBLE_DURATION_MS });
 };
 
 // 余额展示（气泡 + 档位动画）：周期轮询与菜单点播共用同一展示路径，视觉/行为严格一致。
@@ -305,9 +303,7 @@ PetSprite.prototype.showBalanceNow = function showBalanceNow(state, manual) {
 // 余额气泡的内容与展开状态由 renderBubble 直接更新。
 PetSprite.prototype.toggleBalanceDetail = function toggleBalanceDetail() {
   if (!this.balanceClickable()) return;
-  const pageCount = this.balanceState?.shape === 'custom'
-    ? (S.customViews(this.balanceState)?.length ?? 1)
-    : 2;
+  const pageCount = this.balanceState ? S.balancePageCount(this.balanceState) : 1;
   this.balanceViewIndex = (this.balanceViewIndex + 1) % pageCount;
   this.bubble.classList.add('is-fading');
   if (this.balanceFadeTimer !== null) window.clearTimeout(this.balanceFadeTimer);
@@ -363,15 +359,49 @@ function applyBalanceLeaf(leaf) {
   }
 }
 
+/** 环境叶子只点亮目标宠物的独立环境气泡，不经 say 通道覆盖其他气泡内容。 */
+function applyEnvironmentLeaf(leaf) {
+  const state = S.readEnv(leaf);
+  if (!state) return;
+  for (const sprite of sprites) {
+    if (sprite.pet.id === state.petId && !sprite.sleeping) sprite.showEnvironment(state);
+  }
+}
+
 /** 说话叶子 → 对应宠物播说话动画 + 气泡（碎碎念/命令气泡/对话回复/清空四合一）。
  *  `kind: 'clear'`（POST /bubble/clear）= 收起气泡；其余 = 弹一个气泡。
  *  petId 由路径解析出来（pets.<id>.say）；本窗口只装一只宠物，按 id 命中即可。 */
+PetSprite.prototype.applyWhisperHold = function applyWhisperHold(event) {
+  const current = this.whisperHoldState || S.BUBBLE_HOLD_IDLE;
+  const next = S.reduceBubbleHold(current, event);
+  if (next === current) return;
+  if (this.whisperTimer !== null) window.clearTimeout(this.whisperTimer);
+  this.whisperTimer = null;
+  this.whisperHoldState = next;
+  if (!next.on) {
+    this.whisperOn = false;
+    this.renderBubble();
+    return;
+  }
+  if (next.delayMs !== null) {
+    this.whisperTimer = window.setTimeout(() => {
+      this.whisperTimer = null;
+      this.applyWhisperHold({ kind: 'hide' });
+    }, next.delayMs);
+  }
+};
+
 function applySayLeaf(petId, leaf) {
   const said = S.readSay(leaf);
   if (!said) return;
   for (const s of sprites) {
     if (s.pet.id !== petId) continue;
     const kind = leaf && leaf.data && leaf.data.kind;
+    if (kind === 'sleep' || said.origin === 'sleep') {
+      s.showSleepText(said.text);
+      continue;
+    }
+    if (s.sleeping) continue;
     if (
       kind === 'chat' &&
       config &&
@@ -392,12 +422,30 @@ function applySayLeaf(petId, leaf) {
       }
     }
     if (said.kind === 'clear') s.clearWhisper();
-    else s.showWhisper(said.text, said.image, said.url, said.duration, said.anim);
+    else {
+      s.showWhisper(said.text, said.image, said.url, said.duration, said.anim);
+      S.playSayVoice(said);
+    }
   }
 }
 
+PetSprite.prototype.showSleepText = function showSleepText(text) {
+  this.whisperOn = true;
+  this.whisperView = S.whisperBubbleView({ ok: true, text, ts: Date.now() });
+  this.whisperImage = '';
+  this.whisperImageUrl = '';
+  this.renderBubble();
+  if (this.bubbleTimer !== null) window.clearTimeout(this.bubbleTimer);
+  this.bubbleTimer = window.setTimeout(() => {
+    this.bubbleTimer = null;
+    this.whisperOn = false;
+    this.renderBubble();
+  }, BUBBLE_DURATION_MS);
+};
+
 // The desktop main process owns one assignment manager shared by all per-pet windows.
 const lastWorkStatusAssignmentRevisions = new Map();
+const lastWorkStatusStates = new Map();
 
 function logWorkStatusDiagnostic(event, details) {
   const record = { at: new Date().toISOString(), surface: 'desktop', event, ...details };
@@ -440,6 +488,7 @@ function applyWorkStatusAssignmentResult(result) {
 
   for (const owner of result.released) {
     lastWorkStatusAssignmentRevisions.delete(owner.agentKey);
+    lastWorkStatusStates.delete(owner.agentKey);
     const sprite = sprites.find((candidate) => candidate.pet.id === owner.petId);
     // If the same pet gets a new owner in this snapshot, transition directly to that owner's state.
     if (sprite && !assignmentByPetId.has(owner.petId)) {
@@ -477,6 +526,8 @@ function applyWorkStatusAssignmentResult(result) {
       revision: agent.revision,
       assignmentRevision,
     });
+    const previousAgentState = lastWorkStatusStates.get(agentKey);
+    lastWorkStatusStates.set(agentKey, agent.state);
     sprite.onWorkTick(
       {
         state: agent.state,
@@ -486,6 +537,12 @@ function applyWorkStatusAssignmentResult(result) {
       `${agentKey}:${agent.revision}:${assignmentRevision}`,
       true,
     );
+    if (previousAgentState && previousAgentState !== agent.state && config.voiceNotifyEnabled &&
+        ['success', 'error', 'waiting'].includes(agent.state) && (!document.hasFocus() || document.hidden)) {
+      const index = S.WORK_STATUS_INDEX[agent.state];
+      const group = Array.isArray(sprite.pet.workStatusTexts) ? sprite.pet.workStatusTexts[index] : undefined;
+      if (Array.isArray(group) && group.length > 0) S.speakNotice(group[Math.floor(Math.random() * group.length)]);
+    }
   }
 }
 
@@ -549,6 +606,14 @@ function applyLockLeaf(petId, leaf) {
   }
 }
 
+function applySleepLeaf(petId, leaf) {
+  const hit = S.readSleep(leaf);
+  if (!hit) return;
+  for (const sprite of sprites) {
+    if (sprite.pet.id === petId) sprite.setSleep(hit);
+  }
+}
+
 /** 位置指令叶子 → 对应宠物挪过去（其他插件经 POST /position 写进 S）。
  *  复用 sprite.moveToCenter（instant / spring / line 三条路都在那儿），与 /anim 同一族：只分发，
  *  不重写运动学。petId 由路径解析出来（pets.<id>.position）；本窗口只装一只宠物，按 id 命中即可。 */
@@ -592,14 +657,27 @@ async function pollStateOnce() {
       // 锁是持续租约而非一次性动作；Helper 单独重启时也要恢复宿主中仍有效的锁。
       for (const [petId, leaves] of Object.entries(s.pets || {})) {
         if (leaves && leaves.lock && S.readLock(leaves.lock)?.locked) applyLockLeaf(petId, leaves.lock);
+        if (leaves && leaves.sleep && S.readSleep(leaves.sleep)?.sleeping) applySleepLeaf(petId, leaves.sleep);
       }
       // 第三方菜单项是**当前状态**不是事件：首拉就要装上，否则 helper 重启后要等下次注册才出现
       applyMenuLeaf(s.sections ? s.sections.menu : null);
       return true;
     }
-    for (const change of S.takeChanged(s, stateBaseline)) {
+    const changes = S.takeChanged(s, stateBaseline);
+    // 同拍的睡眠状态先于说话叶子应用：睡觉气泡要在入睡清理之后显示，醒来文案也要在退出状态后显示。
+    changes.sort((left, right) => {
+      const leftSleep = left.path.startsWith('pets.') && left.path.endsWith('.sleep');
+      const rightSleep = right.path.startsWith('pets.') && right.path.endsWith('.sleep');
+      const leftSay = left.path.startsWith('pets.') && left.path.endsWith('.say');
+      const rightSay = right.path.startsWith('pets.') && right.path.endsWith('.say');
+      const leftPet = leftSleep || leftSay ? left.path.slice('pets.'.length, left.path.lastIndexOf('.')) : null;
+      const rightPet = rightSleep || rightSay ? right.path.slice('pets.'.length, right.path.lastIndexOf('.')) : null;
+      return leftPet !== null && leftPet === rightPet ? Number(rightSleep) - Number(leftSleep) : 0;
+    });
+    for (const change of changes) {
       if (change.leaf.data === null) continue;
       if (change.path === 'sections.balance') applyBalanceLeaf(change.leaf);
+      else if (change.path === 'sections.env') applyEnvironmentLeaf(change.leaf);
       else if (change.path === 'sections.workStatus') applyWorkStatusLeaf(change.leaf);
       else if (change.path === 'sections.notify') applyNotifyLeaf(change.leaf);
       else if (change.path === 'sections.menu') applyMenuLeaf(change.leaf);
@@ -617,6 +695,8 @@ async function pollStateOnce() {
         applyThrowLeaf(change.path.slice('pets.'.length, -'.throw'.length), change.leaf);
       } else if (change.path.startsWith('pets.') && change.path.endsWith('.lock')) {
         applyLockLeaf(change.path.slice('pets.'.length, -'.lock'.length), change.leaf);
+      } else if (change.path.startsWith('pets.') && change.path.endsWith('.sleep')) {
+        applySleepLeaf(change.path.slice('pets.'.length, -'.sleep'.length), change.leaf);
       }
     }
     return true;
@@ -629,6 +709,12 @@ async function pollStateOnce() {
 function startLoops() {
   if (loopsStarted) return;
   loopsStarted = true;
+  S.subscribeVoiceUtterance((event) => {
+    const hold = S.utteranceToHold(event);
+    for (const sprite of sprites) {
+      if (sprite.whisperView?.[0]?.text === event.text) sprite.applyWhisperHold(hold);
+    }
+  });
 
   // 统一轮询：**自调度长轮询**（请求 → 处理 → 立刻再请求）。宿主在版本没变时挂起，所以
   // 空闲时是 1 请求/秒（与改造前一致），叶子一变立刻收到——不需要"前端动作后叫醒一拍"了

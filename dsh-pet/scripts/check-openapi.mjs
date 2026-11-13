@@ -31,6 +31,8 @@ const HOST_ROUTE_SRCS = [
     'chat-route.ts',
     'pose-route.ts',
     'standalone-control-route.ts',
+    'voice-route.ts',
+    'pet-avatar.ts',
   ].map((file) => join(HERE, '..', 'src', 'host', file)),
 ];
 

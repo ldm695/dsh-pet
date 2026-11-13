@@ -81,19 +81,26 @@ import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
 import { writePrivateJsonAsync, writePrivateTextAsync } from '../standalone/ai-storage';
 import { createAssetRoute } from './asset-route';
+import { handlePetAvatarRoute } from './pet-avatar';
+import { createVoiceRoute } from './voice-route';
+import { createVoiceService } from './voice/speak';
 import { createReadonlyRoute, type ReadonlyRouteLlm } from './readonly-route';
 import { createConfigRoute, createHostConfigRouteDependencies } from './config-route';
 import { createActionRoute } from './action-route';
+import { currentEnvironment } from './environment';
 import { createLockRoute } from './lock-route';
 import { createStateRoute } from './state-route';
 import { createPlaybackRoute } from './playback-route';
 import { createChatRoute } from './chat-route';
 import { createPoseRoute } from './pose-route';
 import { PoseStore } from './pose';
+import { createTodoRoute } from './todo/route';
+import { TodoStore, TODO_FILE_NAME } from './todo/store';
+import { registerTodoReminders } from './todo/reminders';
 import { createStandaloneControlRoute } from './standalone-control-route';
 import type { RouteRequest, RouteResult } from './route-contract';
 import { listBalanceProviders, queryBalance, registerBalanceProvider } from './balance/index';
-import { generateWhisper } from './whisper';
+import { generateWhisper, SLEEP_TALK_INSTRUCTION } from './whisper';
 import { automaticWhisperSchedule, type StandaloneWhisperPolicy } from './whisper-policy';
 import { generateChat, type ChatMemoryMessage } from './chat';
 import { createFileLogger, isFileLogger, setDefaultLogger } from './log-file';
@@ -131,6 +138,7 @@ import {
 } from './notify-events';
 import { profileNameFrom, storageEntries } from './storage-paths';
 import { PollStateStore } from './state';
+import { SleepStore, pickSleepText } from './sleep';
 import type { WorkStatusSnapshotWire } from '../shared/work-status';
 import { composeSystemPrompt, petPersona } from './persona';
 import { createMenuRoute } from './menu-route';
@@ -192,23 +200,77 @@ function resolveExisting(root: string, rel: string): string | undefined {
  * 视频 loadeddata 永不触发且无 error）——正是 issue #62 现场"数据断供"的一种成因。同一个 fd 的
  * fstat 拿到的大小与随后读出的字节天然一致。
  */
-function sendFile(res: ServerResponse, file: string, contentType: string): void {
+type FileRange = { start: number; end: number };
+
+/** 仅接受单段 bytes Range；非法或多段请求退回完整 200，越界请求使用 416。 */
+function parseFileRange(header: string | undefined, totalBytes: number): FileRange | 'unsatisfiable' | null {
+  if (!header || totalBytes <= 0) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!match) return null;
+  const startText = match[1] ?? '';
+  const endText = match[2] ?? '';
+  if (startText === '' && endText === '') return null;
+  if (startText === '') {
+    const suffixLength = Number(endText);
+    if (!Number.isFinite(suffixLength) || suffixLength <= 0) return null;
+    return { start: Math.max(0, totalBytes - suffixLength), end: totalBytes - 1 };
+  }
+  const start = Number(startText);
+  const end = endText === '' ? totalBytes - 1 : Number(endText);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  if (start > end || start >= totalBytes) return 'unsatisfiable';
+  return { start, end: Math.min(end, totalBytes - 1) };
+}
+
+function sendFile(req: IncomingMessage, res: ServerResponse, file: string, contentType: string): void {
   const stream = createReadStream(file);
   stream.once('open', (fd) => {
     if (res.destroyed || res.writableEnded) {
       stream.destroy(); // 客户端在开流前就放弃了
       return;
     }
+    let totalBytes: number;
     try {
-      res.writeHead(200, {
-        'content-type': contentType,
-        'content-length': fstatSync(fd).size,
-        'cache-control': 'public, max-age=3600',
-      });
+      totalBytes = fstatSync(fd).size;
     } catch {
       // 极端情况下 fstat 拿不到：不发长度头，交给 Node 用 chunked 收尾（长度天然一致，只是没声明）
       res.writeHead(200, { 'content-type': contentType, 'cache-control': 'public, max-age=3600' });
+      stream.pipe(res);
+      return;
     }
+    const range = parseFileRange(req.headers.range, totalBytes);
+    if (range === 'unsatisfiable') {
+      stream.destroy();
+      res.writeHead(416, {
+        'content-type': contentType,
+        'content-range': `bytes */${totalBytes}`,
+        'accept-ranges': 'bytes',
+        'cache-control': 'public, max-age=3600',
+      });
+      res.end();
+      return;
+    }
+    if (range !== null) {
+      stream.destroy();
+      const ranged = createReadStream(file, { start: range.start, end: range.end });
+      res.writeHead(206, {
+        'content-type': contentType,
+        'content-length': range.end - range.start + 1,
+        'content-range': `bytes ${range.start}-${range.end}/${totalBytes}`,
+        'accept-ranges': 'bytes',
+        'cache-control': 'public, max-age=3600',
+      });
+      ranged.pipe(res);
+      ranged.on('error', () => res.destroy());
+      res.on('close', () => ranged.destroy());
+      return;
+    }
+    res.writeHead(200, {
+      'content-type': contentType,
+      'content-length': totalBytes,
+      'accept-ranges': 'bytes',
+      'cache-control': 'public, max-age=3600',
+    });
     stream.pipe(res);
   });
   // 读失败（文件被删/权限/被占用）：直接断连，让客户端立刻看到失败，而不是无限等待
@@ -240,12 +302,28 @@ function sendText(res: ServerResponse, status: number, body: string): void {
   res.end(body);
 }
 
-/** 收集请求体（文本） */
-function readBody(req: IncomingMessage): Promise<string> {
+class RequestBodyTooLargeError extends Error {}
+
+/** 收集请求体（文本）；头像上传单独限长，其它现有接口保持原请求预算。 */
+function readBody(req: IncomingMessage, maxBytes = Number.POSITIVE_INFINITY): Promise<string> {
   return new Promise((resolve2, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', (c: Buffer) => chunks.push(c));
-    req.on('end', () => resolve2(Buffer.concat(chunks).toString('utf8')));
+    let size = 0;
+    let exceeded = false;
+    req.on('data', (chunk: Buffer) => {
+      if (exceeded) return;
+      size += chunk.length;
+      if (size > maxBytes) {
+        exceeded = true;
+        chunks.length = 0;
+        reject(new RequestBodyTooLargeError('Request body exceeded its limit.'));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (!exceeded) resolve2(Buffer.concat(chunks).toString('utf8'));
+    });
     req.on('error', reject);
   });
 }
@@ -290,6 +368,7 @@ export function apply(ctx: any): void {
       'dsh-pet: log file',
     );
   }
+  const voice = createVoiceService({ userRoot, log });
 
   // DSH 的 ctx 对未注入的服务使用严格 getter；可选能力必须通过 get(name, false) 读取。
   const optionalService = (name: string): unknown => {
@@ -340,7 +419,33 @@ export function apply(ctx: any): void {
   // 轮询统一状态（S）：前端 1s 轮询的**唯一**数据源（余额 / 工作状态 / 通知 / 宠物说话）。
   // 所有写入走 state.writeSection / writePet（由它统一更新 counter），见 ./state 的说明。
   const state = new PollStateStore();
-  const locks = new LockStore({ onChange: (petId, data) => state.writePet(petId, 'lock', data) });
+  const sleep = new SleepStore((petId, data) => state.writePet(petId, 'sleep', data));
+  const locks = new LockStore({
+    onChange: (petId, data) => {
+      if (data.locked) sleep.wake(petId);
+      state.writePet(petId, 'lock', data);
+    },
+  });
+  const todos = new TodoStore({ file: join(userRoot, TODO_FILE_NAME), log });
+  const todoRoute = createTodoRoute({ todos, log });
+  ctx.effect(
+    () => registerTodoReminders({
+      todos,
+      state,
+      lock: locks,
+      isSleeping: (petId) => sleep.sleeping(petId),
+      pets: () => flattenPetList(readAllConfig(configPaths)).map((pet) => ({
+        id: String(pet.id ?? ''),
+        display: typeof pet.display === 'string' ? pet.display : undefined,
+      })),
+      voiceEnabled: () => {
+        const main = readAllConfig(configPaths).main;
+        return main?.voiceEnabled === true && main?.voiceTodoEnabled === true;
+      },
+      log,
+    }),
+    'dsh-pet: todo reminders',
+  );
   // 播放记录表（issue #122 第 3 项「播放与完成回执」）：**由渲染端上报驱动**的状态机 + 等待者。
   // 与 S 无关：播放记录是 per-caller 资源（只有发起那次点播的调用方关心、有生命周期、数量随
   // 第三方调用方增长），塞进 1s 全局广播会让每个窗口为每个功能付流量。见 ./playback 的说明。
@@ -656,7 +761,7 @@ export function apply(ctx: any): void {
    *  + 末尾追加一行**时间背景**（time-context.ts：日期/星期/时刻/时段/工作日或周末）：
    *    碎碎念与对话各自每次生成都会重新走这里，所以拿到的永远是**当前**时刻，不需要额外的刷新机制；
    *    非法 Date 时它为空串，此时整行不加（宁可没有时间信息，也不把 NaN 拼进提示词）。 */
-  const petSystemPrompt = (petId: string, cfg: Record<string, Record<string, unknown>>): string => {
+  const petSystemPrompt = async (petId: string, cfg: Record<string, Record<string, unknown>>): Promise<string> => {
     const found = findPetInstance(cfg, petId);
     const conf = found ? found.conf : (cfg.main ?? {});
     return composeSystemPrompt({
@@ -664,6 +769,7 @@ export function apply(ctx: any): void {
       name: String(found?.pet.name ?? ''),
       id: petId,
       now: new Date(),
+      env: await currentEnvironment(),
     });
   };
 
@@ -687,14 +793,17 @@ export function apply(ctx: any): void {
    *  配图（whisperImageEnabled 开启时）：从表情包池**随机抽 1 张**，把描述注入指令并随文本一起写。 */
   const publishWhisper = async (
     petId: string,
+    manual = false,
   ): Promise<
-    { ok: true; text: string; image?: string } | { ok: false; reason: 'generate-error'; message?: string }
+    | { ok: true; text: string; image?: string }
+    | { ok: false; reason: 'generate-error' | 'sleeping'; message?: string }
   > => {
+    if (sleep.sleeping(petId)) return { ok: false, reason: 'sleeping' };
     const cfg = readAllConfig(configPaths);
     const found = findPetInstance(cfg, petId);
     const conf = found ? found.conf : (cfg.main ?? {});
     const entry = found ? found.entry : 'main';
-    const system = petSystemPrompt(petId, cfg);
+    const system = await petSystemPrompt(petId, cfg);
     // 配图：全局开关关闭 / 池为空 / 池内图片全缺失 → 纯文本（不报错，退化为原行为）
     const meme = conf.whisperImageEnabled === true ? pickMeme(readMemePool(conf.memes, memeDirsFor(entry))) : undefined;
     // 独立模式统一使用独立 AI 设置页的模型；DSH 宿主模式仍允许条目级模型覆盖。
@@ -711,12 +820,17 @@ export function apply(ctx: any): void {
       );
       return { ok: false, reason: 'generate-error', ...(result.message ? { message: result.message } : {}) };
     }
+    const voiceOn = manual ? cfg.main?.voiceEnabled === true : cfg.main?.voiceWhisperEnabled === true;
+    const speak = voiceOn;
     state.writePet(
       petId,
       'say',
-      result.image
-        ? { text: result.text, image: result.image, kind: 'whisper' }
-        : { text: result.text, kind: 'whisper' },
+      {
+        text: result.text,
+        ...(result.image ? { image: result.image } : {}),
+        kind: 'whisper',
+        ...(speak ? { voiceTo: 'desktop' } : {}),
+      },
     );
     log.info(
       `[dsh-pet] 碎碎念生成成功 pet=${petId}，${result.text.length} 字${result.image ? `，配图=${result.image}` : ''}`,
@@ -732,15 +846,22 @@ export function apply(ctx: any): void {
     text: string,
   ): Promise<
     | { ok: true; text: string; image?: string }
-    | { ok: false; reason: 'provider-missing' | 'generate-error'; message?: string }
+    | { ok: false; reason: 'provider-missing' | 'generate-error' | 'sleeping'; message?: string }
   > =>
     withMemoryLock(async () => {
+      if (sleep.sleeping(petId)) {
+        const cfg = readAllConfig(configPaths);
+        const conf = findPetInstance(cfg, petId)?.conf ?? cfg.main ?? {};
+        const text = pickSleepText(conf.sleepRefuseTexts);
+        if (text) state.writePet(petId, 'say', { text, kind: 'sleep', anim: false });
+        return { ok: false, reason: 'sleeping' };
+      }
       const cfg = readAllConfig(configPaths);
       const rounds = memoryRounds(petId, cfg);
       const found = findPetInstance(cfg, petId);
       const conf = (found ?? { conf: cfg.main ?? {} }).conf;
       // 人设：所属条目的 whisperPrompt（合并器已填默认）+ 名字声明（与碎碎念同一拼装）
-      const system = petSystemPrompt(petId, cfg);
+      const system = await petSystemPrompt(petId, cfg);
       // 配图：开关关闭 → 空池（指令与解析都不介入，与旧行为逐字一致）；目录链按所属条目取。
       // 张数上限（chatImageLimit，0 = 不限制）：整张清单每条消息都要附，截断后费用上限可控。
       const standaloneAi = standaloneAiPolicy();
@@ -781,16 +902,24 @@ export function apply(ctx: any): void {
       if (!generated.ok) return generated;
       const now = Date.now();
       entry.messages.push({ role: 'user', content: text, ts: now });
-      // 记忆只存正文（配图属展示层，不进上下文——否则下次请求会把标记当历史读回去）
-      entry.messages.push({ role: 'assistant', content: generated.text, ts: now });
+      // 记忆存正文和所选配图名；图片本体不进历史上下文，配图名会以 [图:名称] 回填。
+      entry.messages.push({
+        role: 'assistant',
+        content: generated.text,
+        ts: now,
+        ...(generated.image ? { meme: generated.image } : {}),
+      });
       await writeMemory(mem);
       // 回复写进 S（与碎碎念同一个叶子：前端本来就是同一条展示链路）
       state.writePet(
         petId,
         'say',
-        generated.image
-          ? { text: generated.text, image: generated.image, kind: 'chat' }
-          : { text: generated.text, kind: 'chat' },
+        {
+          text: generated.text,
+          ...(generated.image ? { image: generated.image } : {}),
+          kind: 'chat',
+          ...(cfg.main?.voiceEnabled === true ? { voiceTo: 'desktop' } : {}),
+        },
       );
       return {
         ok: true as const,
@@ -833,6 +962,37 @@ export function apply(ctx: any): void {
     return Number.isFinite(n) && n > 0 ? n : 300;
   };
 
+  /** 梦话周期（秒）：睡眠宠物所属条目的 eventsRefreshSec.sleepTalk，非法或缺失时按 60 秒。 */
+  const sleepTalkPeriodSec = (conf: Record<string, unknown>): number => {
+    const ers = conf.eventsRefreshSec as Record<string, unknown> | undefined;
+    const n = Number(ers?.sleepTalk);
+    return Number.isFinite(n) && n > 0 ? n : 60;
+  };
+
+  /** 复用碎碎念的人设与模型，但写入睡眠专用 say 叶子，避免动画、语音或普通对话覆盖睡姿。 */
+  const publishSleepTalk = async (petId: string): Promise<void> => {
+    if (!sleep.sleeping(petId)) return;
+    const cfg = readAllConfig(configPaths);
+    const found = findPetInstance(cfg, petId);
+    if (!found) return;
+    const policy = standaloneAiPolicy();
+    if (policy && (!policy.isReady() || !policy.canWhisper())) return;
+    const system = await petSystemPrompt(petId, cfg);
+    const model = policy ? undefined : configuredModel(found.conf, 'whisperModel');
+    const result = await generateWhisper(ctx, system, undefined, model, SLEEP_TALK_INSTRUCTION);
+    if (!result.ok) {
+      log.warn(
+        `[dsh-pet] 梦话生成失败 pet=${petId} reason=${result.reason}` +
+          (result.message ? ` ${result.message}` : ''),
+      );
+      return;
+    }
+    // 等待模型期间宠物可能已被叫醒；不要把迟到的梦话再弹到醒着的宠物头上。
+    if (!sleep.sleeping(petId)) return;
+    state.writePet(petId, 'say', { text: result.text, kind: 'sleep', anim: false });
+    log.info(`[dsh-pet] 梦话生成成功 pet=${petId}，${result.text.length} 字`);
+  };
+
   /**
    * 刷新余额并写入 S —— host 侧**唯一**的余额查询点。
    *
@@ -867,6 +1027,11 @@ export function apply(ctx: any): void {
   };
 
   const refreshBalance = async (manual = false, targetPetId?: string): Promise<void> => {
+    const sleepTarget = targetPetId || (manual ? resolveActivePetId() : '');
+    if (sleepTarget && sleep.sleeping(sleepTarget)) {
+      log.info(`[dsh-pet] 余额查询跳过：桌宠正在睡眠 pet=${sleepTarget}`);
+      return;
+    }
     const mark = <T extends object>(v: T): T & { manual?: true; targetPetId?: string } => ({
       ...v,
       ...(manual ? { manual: true as const } : {}),
@@ -1194,6 +1359,7 @@ export function apply(ctx: any): void {
 
   const assetRoute = createAssetRoute({
     packageRoot: PACKAGE_ROOT,
+    userRoot,
     petConfigDir,
     thumbUserRoot,
     idForbidden: ID_FORBIDDEN,
@@ -1246,11 +1412,14 @@ export function apply(ctx: any): void {
   const actionRoute = createActionRoute({
     readConfig: () => readAllConfig(configPaths),
     refreshBalance,
+    queryEnvironment: (options) => currentEnvironment({ force: options?.fresh === true }),
+    writeEnvironment: (data) => state.writeSection('env', data),
     publishWhisper,
     memeDirs: memeDirsFor,
     writePet: (petId, leaf, data) => state.writePet(petId, leaf, data),
     createPlayback: (petId, animationName) => playback.create(petId, animationName),
     locks,
+    sleep,
   });
   const lockRoute = createLockRoute({ readConfig: () => readAllConfig(configPaths), locks });
   const isStandalone = (): boolean => process.env.DSH_PET_STANDALONE === '1';
@@ -1290,6 +1459,7 @@ export function apply(ctx: any): void {
     },
     chatWithPet,
   });
+  const voiceRoute = createVoiceRoute(voice);
   const standaloneControlRoute = createStandaloneControlRoute({
     isStandalone,
     sendControlLine: (action) => process.stdout.write(`DSH_PET_CONTROL:${action}\n`),
@@ -1332,6 +1502,12 @@ export function apply(ctx: any): void {
     if (poseResult !== undefined) return poseResult;
     const chatResult = await chatRoute(routeRequest);
     if (chatResult !== undefined) return chatResult;
+    const voiceResult = await voiceRoute(routeRequest);
+    if (voiceResult !== undefined) return voiceResult;
+    const todoResult = await todoRoute(routeRequest);
+    if (todoResult !== undefined) return todoResult;
+    const petAvatarResult = handlePetAvatarRoute(routeRequest, petConfigDir);
+    if (petAvatarResult !== undefined) return petAvatarResult;
     // The asset handler serves font/pic/thumb requests and returns the established response for unknown paths.
     return assetRoute(routeRequest);
   };
@@ -1346,21 +1522,27 @@ export function apply(ctx: any): void {
           // 否则那个等待者要一直留到超时才回收。'close' 在正常应答后也会触发，但那时监听已摘掉。
           const abort = new AbortController();
           const onClose = (): void => abort.abort();
+          const requestPath = decodeURIComponent(new URL(req.url ?? '/', 'http://localhost').pathname);
+          const todoRequest = requestPath === `${ROUTE_PREFIX}/todos` || requestPath.startsWith(`${ROUTE_PREFIX}/todos/`);
           res.on('close', onClose);
           try {
-            const body = req.method === 'PUT' || req.method === 'POST' ? await readBody(req) : undefined;
+            const avatarRequest = req.method === 'POST' && requestPath === `${ROUTE_PREFIX}/pet-avatar`;
+            const bodyLimit = avatarRequest ? 1_100_000 : todoRequest ? 16 * 1024 : undefined;
+            const body = req.method === 'PUT' || req.method === 'POST' || req.method === 'PATCH' ? await readBody(req, bodyLimit) : undefined;
             const result = await handlePetRoute(req.url ?? '/', req.method ?? 'GET', body, abort.signal);
             res.off('close', onClose);
             if (result.kind === 'json') sendJson(res, result.status, result.obj, result.headers);
             else if (result.kind === 'text') sendText(res, result.status, result.body);
             else if (result.kind === 'none') {
               /* 调用方已断开：不再写（写了会抛） */
-            } else sendFile(res, result.file, result.contentType); // 非 async：流在 open 后自己 pipe，错误内部收口
+            } else sendFile(req, res, result.file, result.contentType); // 非 async：流在 open 后自己 pipe，错误内部收口
           } catch (e) {
             res.off('close', onClose);
             // 连接已断（挂起等待被中止后也可能撞上）→ 不再写，避免二次抛错
             if (!res.destroyed && !res.writableEnded) {
-              sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
+              sendJson(res, e instanceof RequestBodyTooLargeError ? 413 : 500, {
+                error: e instanceof RequestBodyTooLargeError ? (todoRequest ? '待办请求体超过 16 KiB 限制。' : '请求体超过头像上传限制。') : e instanceof Error ? e.message : String(e),
+              });
             }
           }
         },
@@ -1555,7 +1737,7 @@ export function apply(ctx: any): void {
         const cfg = readAllConfig(configPaths);
         sec = balancePeriodSec(cfg);
         // 没有任何启用余额的宠物 → 不查（省外部调用）；配置改了下一拍自然跟上
-        const enabledPets = flattenPetList(cfg).filter((pet) => pet.balanceEnabled === true);
+        const enabledPets = flattenPetList(cfg).filter((pet) => pet.balanceEnabled === true && !sleep.sleeping(String(pet.id)));
         if (enabledPets.length > 0) {
           await refreshBalance(false, nextAutomaticBalancePetId(enabledPets));
         } else {
@@ -1585,6 +1767,34 @@ export function apply(ctx: any): void {
   ctx.effect(() => {
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let drainTimer: ReturnType<typeof setTimeout> | null = null;
+    let publishing = false;
+    const pending: string[] = [];
+    const maxPending = 6;
+    const staggerMs = 10_000;
+
+    async function pump(): Promise<void> {
+      if (disposed || publishing || drainTimer !== null) return;
+      const petId = pending.shift();
+      if (!petId) return;
+      publishing = true;
+      try {
+        await publishWhisper(petId);
+      } catch (error) {
+        log.warn(
+          `[dsh-pet] 自动碎碎念失败 pet=${petId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      } finally {
+        publishing = false;
+        if (!disposed && pending.length > 0) {
+          drainTimer = setTimeout(() => {
+            drainTimer = null;
+            void pump();
+          }, staggerMs);
+        }
+      }
+    }
+
     function arm(delayMs: number): void {
       if (disposed) return;
       timer = setTimeout(() => void tick(), Math.max(1000, delayMs));
@@ -1615,6 +1825,10 @@ export function apply(ctx: any): void {
             );
             continue;
           }
+          if (sleep.sleeping(petId)) {
+            skipped.push(petId + ': 睡眠中跳过');
+            continue;
+          }
           enabledIds.add(petId);
           const sec = schedule.periodSec;
           const periodMs = sec * 1000;
@@ -1629,17 +1843,14 @@ export function apply(ctx: any): void {
             if (dueAt <= now) dueAt = now + periodMs;
             nextWhisperAt.set(petId, dueAt);
             // 占用锁期间跳过自动碎碎念；显式菜单请求仍可执行。
-            // 不 await：生成要几秒，别把调度拍拖住（每只宠物独立生成，互不阻塞）
             if (locks.locked(petId)) {
               skipped.push(petId + ': 占用锁跳过');
+            } else if (pending.length >= maxPending) {
+              skipped.push(petId + ': 错峰队列已满');
             } else {
               due += 1;
-              log.info(`[dsh-pet] 碎碎念到点 pet=${petId}（周期 ${sec}s），开始生成`);
-              void publishWhisper(petId).catch((error: unknown) =>
-                log.warn(
-                  `[dsh-pet] 自动碎碎念失败 pet=${petId}: ${error instanceof Error ? error.message : String(error)}`,
-                ),
-              );
+              pending.push(petId);
+              log.info(`[dsh-pet] 碎碎念到点 pet=${petId}（周期 ${sec}s），加入错峰队列`);
             }
           } else {
             notDue += 1;
@@ -1658,6 +1869,7 @@ export function apply(ctx: any): void {
             (skipped.length > 0 ? `（${skipped.join('；')}）` : '') +
             `；下一拍 ${nextSec}s`,
         );
+        void pump();
       } catch (error) {
         // 读配置抛错 = 安装损坏（同余额定时器）：不再重排，别白占常驻句柄
         log.warn(`[dsh-pet] 碎碎念调度停止：${error instanceof Error ? error.message : String(error)}`);
@@ -1669,8 +1881,106 @@ export function apply(ctx: any): void {
     return () => {
       disposed = true;
       if (timer !== null) clearTimeout(timer);
+      if (drainTimer !== null) clearTimeout(drainTimer);
+      pending.length = 0;
     };
   }, 'dsh-pet: whisper poll');
+
+  // 梦话周期：仅睡着的宠物参与。复用碎碎念的模型与人设，但单独错峰排队，避免多只宠物同时生成。
+  ctx.effect(
+    () => {
+      let disposed = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      let drainTimer: ReturnType<typeof setTimeout> | null = null;
+      let publishing = false;
+      const lastTalkAt = new Map<string, number>();
+      const pending: string[] = [];
+      const maxPending = 6;
+      const staggerMs = 10_000;
+
+      async function pump(): Promise<void> {
+        if (disposed || publishing || drainTimer !== null) return;
+        const petId = pending.shift();
+        if (!petId) return;
+        publishing = true;
+        try {
+          if (sleep.sleeping(petId) && !locks.locked(petId)) await publishSleepTalk(petId);
+        } catch (error) {
+          log.warn(`[dsh-pet] 梦话生成异常 pet=${petId}: ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+          publishing = false;
+          if (!disposed && pending.length > 0) {
+            drainTimer = setTimeout(() => {
+              drainTimer = null;
+              void pump();
+            }, staggerMs);
+          }
+        }
+      }
+
+      function arm(delayMs: number): void {
+        if (disposed) return;
+        timer = setTimeout(() => void tick(), Math.max(1_000, delayMs));
+      }
+
+      function tick(): void {
+        let nextDelayMs = 60_000;
+        try {
+          const cfg = readAllConfig(configPaths);
+          const now = Date.now();
+          const policy = standaloneAiPolicy();
+          const livePetIds = new Set<string>();
+          for (const pet of flattenPetList(cfg)) {
+            const petId = String(pet.id ?? '');
+            if (!petId) continue;
+            livePetIds.add(petId);
+            if (!sleep.sleeping(petId)) continue;
+            const found = findPetInstance(cfg, petId);
+            if (!found) continue;
+            const schedule = automaticWhisperSchedule(policy, true, sleepTalkPeriodSec(found.conf));
+            if (!schedule.enabled) continue;
+            const periodMs = schedule.periodSec * 1000;
+            const lastAt = lastTalkAt.get(petId);
+            if (lastAt === undefined) {
+              lastTalkAt.set(petId, now);
+              nextDelayMs = Math.min(nextDelayMs, periodMs);
+              continue;
+            }
+            const remaining = periodMs - (now - lastAt);
+            if (remaining <= 0) {
+              lastTalkAt.set(petId, now);
+              if (locks.locked(petId)) continue;
+              if (pending.length >= maxPending) {
+                log.warn(`[dsh-pet] 梦话队列已满，跳过 pet=${petId}`);
+                continue;
+              }
+              pending.push(petId);
+              log.info(`[dsh-pet] 梦话到点 pet=${petId}（周期 ${schedule.periodSec}s），加入错峰队列`);
+            } else {
+              nextDelayMs = Math.min(nextDelayMs, remaining);
+            }
+          }
+          for (const petId of lastTalkAt.keys()) {
+            if (!livePetIds.has(petId)) lastTalkAt.delete(petId);
+          }
+          void pump();
+        } catch (error) {
+          log.warn(`[dsh-pet] 梦话调度停止：${error instanceof Error ? error.message : String(error)}`);
+          return;
+        }
+        arm(nextDelayMs);
+      }
+
+      void tick();
+      return () => {
+        disposed = true;
+        if (timer !== null) clearTimeout(timer);
+        if (drainTimer !== null) clearTimeout(drainTimer);
+        pending.length = 0;
+      };
+    },
+    'dsh-pet: sleep talk poll',
+  );
 
   // 宠物选择命令：选择「当前桌宠」（/chat 对话的目标）。
   // （裸输 /pet 回车或菜单点选时弹出，选中后提交 /pet <id> 走同一 handler）；手输参数认 id 或名字
@@ -1741,7 +2051,7 @@ export function apply(ctx: any): void {
           if (!petId) return { kind: 'error', text: '没有可交互的桌宠' };
           const text = rawInput.trim();
           if (!text) {
-            void publishWhisper(petId).catch((e: unknown) =>
+            void publishWhisper(petId, true).catch((e: unknown) =>
               log.warn('[dsh-pet] 碎碎念异常：' + (e instanceof Error ? e.message : String(e))),
             );
             return { kind: 'success', text: '已让桌宠碎碎念一句' };

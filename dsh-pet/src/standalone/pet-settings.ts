@@ -23,6 +23,7 @@ import { applySettingsTheme, SETTINGS_COMPONENT_CSS } from './settings-style';
 import { DEFAULT_FONT, FONT_PRESETS, FONT_SIZE_MAX, FONT_SIZE_MIN, fontStackOf } from '../shared/fonts';
 import { NOTIFY_ICONS as NOTIFY_ICON_NAMES } from '../shared/notify';
 import { DEFAULT_PHYSICS } from '../shared/physics';
+import { actionPercent, DEFAULT_WEIGHTS, withWeight } from '../shared/weights';
 import type {
   Corner,
   FontConfig,
@@ -32,6 +33,7 @@ import type {
   PetDisplayPriority,
   PhysicsParams,
   UiTheme,
+  Weights,
 } from '../shared/types';
 import type { ChangeEvent, Dispatch, FunctionComponent, SetStateAction } from 'react';
 import type * as ReactNS from 'react';
@@ -94,7 +96,21 @@ export const zh = {
   // 卡片标题 + 卡片级说明（说明都进问号，不再占一行小字）
   petCardHint:
     '每只宠物独立配置：名字 / 大小 / 显示位置 / 首次启动位置与偏移 / 功能与移动开关。修改后点击顶部的「保存设置」应用。',
+  avatarLabel: '桌宠头像',
+  avatarHint: '头像按素材根保存，同一素材根的桌宠共用一张；支持 PNG、JPEG、WebP、GIF，长边超过 512 像素会缩小。',
+  avatarUpload: '上传头像',
   globalControlsTitle: '通知与显示',
+  voiceTitle: '语音播报',
+  voiceEnabled: '启用语音播报',
+  voiceEnabledHint: '开启后，手动触发碎碎念、外部请求语音播报和 AI 对话回复可以朗读。',
+  voiceWhisperEnabled: '朗读定时碎碎念',
+  voiceWhisperEnabledHint: '开启后，定时自动生成的碎碎念会使用语音播报；独立于手动播报开关。',
+  voiceTodoEnabled: '朗读待办提醒',
+  voiceTodoEnabledHint: '开启后，桌宠会用语音播报到期的待办提醒。',
+  voiceNotifyEnabled: '朗读工作状态通知',
+  voiceNotifyEnabledHint: '开启后，工作流完成、出错或等待确认等状态通知会朗读。',
+  voiceNameLabel: '语音音色',
+  voiceVolumeLabel: '语音音量',
   petSettingsList: '桌宠设置',
   globalSettingsList: '全局设置',
   showMorePets: '显示更多桌宠（还有 {n} 只）',
@@ -204,8 +220,9 @@ export const zh = {
   chatImageToggle: '对话配图',
   chatImageToggleHint:
     '对话时由 AI 按当前语境从表情包池挑一张配图（可不挑；图片映射在配置文件顶层 memes）。token：每条消息都要把整张清单附进请求，当前约 1.1k 字符（≈650 token，约碎碎念配图的 11 倍），并随图片数量线性增长；关掉则一个字符都不附。',
-  confineToggle: '抛掷锁定在当前屏幕',
-  confineToggleHint: '多屏用户：甩出去的宠物只在松手时所在那块屏幕内弹（屏缝当墙，不飞到隔壁屏）；关掉则照常跨屏飞行。',
+  confineToggle: '仅在当前屏幕内活动',
+  confineToggleHint:
+    '开启后，自主漫游、菜单移动和抛掷都限制在桌宠当前所在的屏幕；关闭后可跨屏移动。桌宠靠近屏幕接缝或空隙时，会播放移动动作退回当前屏幕内。',
   trayToggle: '系统托盘',
   trayToggleHint:
     '关闭后隐藏系统托盘图标。桌面仍有宠物时，可从桌宠右键菜单打开设置或退出；没有桌面宠物时会自动打开设置页，关闭设置页将退出应用。保存后生效。',
@@ -217,6 +234,12 @@ export const zh = {
   'displayPriority.hide-on-fullscreen-or-maximized': '全屏或最大化时自动隐藏',
   'displayPriority.normal': '不置顶',
   physicsTitle: '物理（拖拽抛掷手感）',
+  motionWeightsTitle: '动作频率',
+  motionWeightsHint: '调整桌宠自动动画中待机、转向与移动的概率；随机小动作自动占用剩余比例。固定桌宠时，转向和移动会被跳过。保存后重载桌宠窗口生效。',
+  'weight.idle': '待机',
+  'weight.turn': '转向',
+  'weight.move': '移动',
+  'weight.action': '随机小动作（剩余）',
   physicsHint: '全局默认，所有宠物共用（pet pack 可在自己种类文件里单独覆盖）；点击「保存」后写入配置并重载桌宠窗口。',
   'physics.gravity': '重力 gravity',
   'physics.gravityHint': 'px/s²，越大落得越快；0 = 无重力（抛出去匀速直线飞）',
@@ -279,7 +302,21 @@ export const en = {
   // Card titles + card-level help (all hints move into the "?" bubble)
   petCardHint:
     'Per-pet settings: name / size / display / first-launch position and offsets / feature and movement switches. Click “Save Settings” in the page header to apply changes.',
+  avatarLabel: 'Pet avatar',
+  avatarHint: 'Stored per asset root and shared by pets using the same root. PNG, JPEG, WebP, and GIF are supported; images over 512 px are resized.',
+  avatarUpload: 'Upload avatar',
   globalControlsTitle: 'Notifications & display',
+  voiceTitle: 'Voice',
+  voiceEnabled: 'Enable voice playback',
+  voiceEnabledHint: 'When enabled, manually triggered whispers, requested broadcast speech, and AI chat replies can be spoken.',
+  voiceWhisperEnabled: 'Speak scheduled whispers',
+  voiceWhisperEnabledHint: 'When enabled, automatically generated scheduled whispers are spoken, independently of manual speech.',
+  voiceTodoEnabled: 'Speak todo reminders',
+  voiceTodoEnabledHint: 'When enabled, pets speak reminders for due todo items.',
+  voiceNotifyEnabled: 'Speak work status notifications',
+  voiceNotifyEnabledHint: 'Speak events such as task completion, errors, or approval requests.',
+  voiceNameLabel: 'Voice',
+  voiceVolumeLabel: 'Volume',
   petSettingsList: 'Pet settings',
   globalSettingsList: 'Global settings',
   showMorePets: 'Show more pets ({n} remaining)',
@@ -383,9 +420,9 @@ export const en = {
   chatImageToggle: 'Chat images',
   chatImageToggleHint:
     'Let the AI pick one meme from the pool that fits the current context (optional; mapping lives in the top-level `memes` config field). Tokens: every message carries the whole catalog — currently ~1.1k chars (~650 tokens, about 11x the whisper case) and growing with the number of images; turning this off appends nothing at all.',
-  confineToggle: 'Lock throws to the current screen',
+  confineToggle: 'Stay on the current screen',
   confineToggleHint:
-    'Multi-monitor: a thrown pet bounces only inside the screen it was released on (screen seams act as walls, so it never flies to the neighbouring monitor); turn this off to let it cross screens as usual.',
+    'When enabled, autonomous wandering, menu movement, and throws stay on the screen the pet is currently on. When disabled, the pet can move between screens. Near a bezel seam or gap, it plays a movement animation to return inside the current screen.',
   trayToggle: 'System tray',
   trayToggleHint:
     'Hides the system tray icon when turned off. If a desktop pet is visible, open settings or quit from its right-click menu. If no desktop pets are visible, the settings page opens automatically; closing it exits the app. Applies after saving.',
@@ -397,6 +434,12 @@ export const en = {
   'displayPriority.hide-on-fullscreen-or-maximized': 'Hide during fullscreen or maximized windows',
   'displayPriority.normal': 'Normal window level',
   physicsTitle: 'Physics (drag & throw feel)',
+  motionWeightsTitle: 'Animation frequency',
+  motionWeightsHint: 'Adjust the chances of idle, turning, and moving in the pet’s automatic animation cycle. Random actions use the remainder. Pinned pets skip turning and moving. Saving reloads the pet windows.',
+  'weight.idle': 'Idle',
+  'weight.turn': 'Turn',
+  'weight.move': 'Move',
+  'weight.action': 'Random actions (remaining)',
   physicsHint:
     'Global default, shared by every pet (a pet pack may override it in its own kind file); clicking “Save” writes it and reloads the pet windows.',
   'physics.gravity': 'Gravity',
@@ -752,6 +795,9 @@ export function makePetConfigSection(rt: {
     const extraCount = petBridge.current.filter((p) => p.extra).length;
     const [entryPrompt, setEntryPrompt] = useState('');
     const [pets, setPets] = useState<Pet[]>(initPets.map((p) => ({ ...p, position: { ...p.position } })));
+    const [avatarUrls, setAvatarUrls] = useState<Record<string, string>>({});
+    const [avatarStatus, setAvatarStatus] = useState<Record<string, string>>({});
+    const [avatarUploading, setAvatarUploading] = useState<Record<string, boolean>>({});
     const [selId, setSelId] = useState<string>(initPets[0]?.id ?? '');
     const [saving, setBusy] = useState(false);
     const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -776,6 +822,28 @@ export function makePetConfigSection(rt: {
       | { kind: 'corrupt'; path: string }
       | { kind: 'restoreMigration' }
     >(null);
+
+    const avatarRootsKey = JSON.stringify([...new Set(pets.map((pet) => pet.assetRoot || 'main'))]);
+    useEffect(() => {
+      if (loadState !== 'ready') return;
+      let alive = true;
+      const objectUrls: string[] = [];
+      const roots = JSON.parse(avatarRootsKey) as string[];
+      void Promise.all(roots.map(async (root): Promise<[string, string] | undefined> => {
+        try {
+          const response = await fetch('/dsh-pet-7340/pet-avatar?root=' + encodeURIComponent(root), { cache: 'no-store' });
+          if (!response.ok) return undefined;
+          const url = URL.createObjectURL(await response.blob());
+          objectUrls.push(url);
+          return [root, url];
+        } catch { return undefined; }
+      })).then((entries) => {
+        if (alive) setAvatarUrls(Object.fromEntries(entries.filter((entry): entry is [string, string] => entry !== undefined)));
+        else objectUrls.forEach((url) => URL.revokeObjectURL(url));
+      });
+      return () => { alive = false; objectUrls.forEach((url) => URL.revokeObjectURL(url)); };
+    }, [avatarRootsKey, loadState]);
+    useEffect(() => () => { Object.values(avatarUrls).forEach((url) => URL.revokeObjectURL(url)); }, [avatarUrls]);
 
     useEffect(() => {
       let active = true;
@@ -893,6 +961,12 @@ export function makePetConfigSection(rt: {
     // 通知配置由桌面宿主处理。
     const [notifyEnabled, setNotifyEnabled] = useState(true);
     const [clickSoundEnabled, setClickSoundEnabled] = useState(false);
+    const [voiceEnabled, setVoiceEnabled] = useState(false);
+    const [voiceWhisperEnabled, setVoiceWhisperEnabled] = useState(false);
+    const [voiceTodoEnabled, setVoiceTodoEnabled] = useState(false);
+    const [voiceNotifyEnabled, setVoiceNotifyEnabled] = useState(false);
+    const [voiceName, setVoiceName] = useState('zh-CN-XiaoyiNeural');
+    const [voiceVolume, setVoiceVolume] = useState(1);
     // 表情包配图开关（全局：写用户级配置；与「保存」一起提交，不做即时写入）
     const [whisperImage, setWhisperImage] = useState(false);
     const [chatImage, setChatImage] = useState(false);
@@ -906,6 +980,7 @@ export function makePetConfigSection(rt: {
     // 与四个开关同一套语义：只改本地状态，随「保存」整包写入（不做即时写入）。
     // 初值仅作占位；成品配置加载成功后才允许编辑和保存。
     const [physics, setPhysics] = useState<PhysicsParams>({ ...DEFAULT_PHYSICS });
+    const [animationWeights, setAnimationWeights] = useState<Weights>({ ...DEFAULT_WEIGHTS });
     // 字体（全局默认：字体种类 / 字号 / 是否随宠物大小缩放，写用户级配置的 font 段）。
     // 与四个全局开关 / physics 同一套语义：只改本地状态，随「保存」整包写入（不做即时写入）。
     // 初值仅作占位；成品配置加载成功后才允许编辑和保存。
@@ -930,6 +1005,12 @@ export function makePetConfigSection(rt: {
       }
       if (typeof m.notificationsEnabled === 'boolean') setNotifyEnabled(m.notificationsEnabled);
       if (typeof m.clickSoundEnabled === 'boolean') setClickSoundEnabled(m.clickSoundEnabled);
+      if (typeof m.voiceEnabled === 'boolean') setVoiceEnabled(m.voiceEnabled);
+      if (typeof m.voiceWhisperEnabled === 'boolean') setVoiceWhisperEnabled(m.voiceWhisperEnabled);
+      if (typeof m.voiceTodoEnabled === 'boolean') setVoiceTodoEnabled(m.voiceTodoEnabled);
+      if (typeof m.voiceNotifyEnabled === 'boolean') setVoiceNotifyEnabled(m.voiceNotifyEnabled);
+      if (typeof m.voiceName === 'string') setVoiceName(m.voiceName);
+      if (typeof m.voiceVolume === 'number' && Number.isFinite(m.voiceVolume)) setVoiceVolume(Math.max(0, Math.min(1, m.voiceVolume)));
       if (typeof m.whisperImageEnabled === 'boolean') setWhisperImage(m.whisperImageEnabled);
       if (typeof m.chatImageEnabled === 'boolean') setChatImage(m.chatImageEnabled);
       if (typeof m.confineToScreen === 'boolean') setConfineScreen(m.confineToScreen);
@@ -951,6 +1032,12 @@ export function makePetConfigSection(rt: {
         const loadedFont = { ...DEFAULT_FONT, ...(m.font as FontConfig) };
         setFont(loadedFont);
         setAppliedFontFamily(fontStackOf(loadedFont.family));
+      }
+      if (m.animationWeights && typeof m.animationWeights === 'object') {
+        const w = m.animationWeights as Partial<Weights>;
+        if ([w.idle, w.turn, w.move].every((value) => typeof value === 'number' && Number.isFinite(value) && value >= 0)) {
+          setAnimationWeights({ idle: w.idle!, turn: w.turn!, move: w.move! });
+        }
       }
     }, []);
 
@@ -1059,6 +1146,15 @@ export function makePetConfigSection(rt: {
         setMsg({ kind: 'err', text: t('invalidPhysics') });
         return false;
       }
+      if (
+        ![animationWeights.idle, animationWeights.turn, animationWeights.move].every(
+          (value) => Number.isFinite(value) && value >= 0,
+        ) ||
+        animationWeights.idle + animationWeights.turn + animationWeights.move > 100
+      ) {
+        setMsg({ kind: 'err', text: '动作频率之和不能超过 100%。' });
+        return false;
+      }
       // 字体：与宿主 fontValid 同一套规则（family 必须在预设白名单内、size 4~200、followPet 为布尔）
       if (
         !FONT_PRESETS.some((p) => p.id === font.family) ||
@@ -1088,6 +1184,12 @@ export function makePetConfigSection(rt: {
           pets: petsToSave,
           notificationsEnabled: notifyEnabled,
           clickSoundEnabled,
+          voiceEnabled,
+          voiceName,
+          voiceVolume,
+          voiceWhisperEnabled,
+          voiceTodoEnabled,
+          voiceNotifyEnabled,
           whisperImageEnabled: whisperImage,
           chatImageEnabled: chatImage,
           confineToScreen: confineScreen,
@@ -1099,6 +1201,7 @@ export function makePetConfigSection(rt: {
           // followPet 布尔）；传了就整段写进用户层，没传则透传保留磁盘旧值
           font: font,
           uiTheme,
+          animationWeights,
         };
         // force === true（用户在损坏弹窗里点了确认）：带 ?force=1 才允许按白名单重建损坏文件
         const res = await fetch('/dsh-pet-7340/config' + (force === true ? '?force=1' : ''), {
@@ -1242,9 +1345,115 @@ export function makePetConfigSection(rt: {
         end,
       );
 
+    const weightField = (key: keyof Weights): ReturnType<typeof h> =>
+      field(
+        t('weight.' + key),
+        h('input', {
+          type: 'number',
+          className: inputClass,
+          step: '1',
+          min: '0',
+          max: String(100 - animationWeights.idle - animationWeights.turn - animationWeights.move + animationWeights[key]),
+          value: String(animationWeights[key]),
+          disabled: busy,
+          onChange: (e: ChangeEvent<HTMLInputElement>) =>
+            setAnimationWeights((weights) => withWeight(weights, key, Number(e.target.value))),
+        }),
+      );
+
+    const uploadAvatar = async (root: string, file: File): Promise<void> => {
+      const supported = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+      if (!supported.includes(file.type)) {
+        setAvatarStatus((current) => ({ ...current, [root]: '请选择 PNG、JPEG、WebP 或 GIF 图片。' }));
+        return;
+      }
+      if (file.size > 12 * 1024 * 1024) {
+        setAvatarStatus((current) => ({ ...current, [root]: '原始图片不能超过 12 MiB。' }));
+        return;
+      }
+      setAvatarUploading((current) => ({ ...current, [root]: true }));
+      setAvatarStatus((current) => ({ ...current, [root]: '正在处理并上传头像…' }));
+      try {
+        const bitmap = await createImageBitmap(file);
+        let bytes: Uint8Array;
+        if (Math.max(bitmap.width, bitmap.height) <= 512) {
+          bytes = new Uint8Array(await file.arrayBuffer());
+        } else {
+          const scale = 512 / Math.max(bitmap.width, bitmap.height);
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+          canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+          const context = canvas.getContext('2d');
+          if (!context) throw new Error('浏览器不支持缩放这张图片。');
+          context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+          const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((result) => result ? resolve(result) : reject(new Error('图片处理失败。')), 'image/png'));
+          bytes = new Uint8Array(await blob.arrayBuffer());
+        }
+        bitmap.close();
+        let binary = '';
+        for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+          binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
+        }
+        const base64 = btoa(binary);
+        if (bytes.byteLength > 768 * 1024) throw new Error('处理后的头像仍超过 768 KiB，请选择更简单或更小的图片。');
+        const response = await fetch('/dsh-pet-7340/pet-avatar?root=' + encodeURIComponent(root), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base64 }),
+        });
+        const result = await response.json().catch(() => null) as { ok?: unknown; message?: unknown } | null;
+        if (!response.ok || result?.ok !== true) throw new Error(typeof result?.message === 'string' ? result.message : `上传失败（HTTP ${response.status}）。`);
+        const imageResponse = await fetch('/dsh-pet-7340/pet-avatar?root=' + encodeURIComponent(root), { cache: 'no-store' });
+        if (!imageResponse.ok) throw new Error('头像已保存，但预览加载失败。');
+        const nextUrl = URL.createObjectURL(await imageResponse.blob());
+        setAvatarUrls((current) => {
+          return { ...current, [root]: nextUrl };
+        });
+        setAvatarStatus((current) => ({ ...current, [root]: '头像已更新。' }));
+      } catch (error) {
+        setAvatarStatus((current) => ({ ...current, [root]: error instanceof Error ? error.message : '头像上传失败。' }));
+      } finally {
+        setAvatarUploading((current) => ({ ...current, [root]: false }));
+      }
+    };
+
     const renderPetCard = (pet: Pet, isDraft = false): ReturnType<typeof h> => {
       const update = (patch: Partial<Omit<Pet, 'position'>> & { position?: Partial<Pet['position']> }) =>
         updatePet(pet.id, patch);
+      const assetRoot = pet.assetRoot || 'main';
+      const avatar = h('div', {
+        className: 'dsh-pet-cfg__avatarRow',
+        style: { display: 'flex', alignItems: 'center', gap: '12px', padding: '4px 0' },
+        children: [
+          avatarUrls[assetRoot]
+            ? h('img', { src: avatarUrls[assetRoot], alt: '', style: { width: '56px', height: '56px', objectFit: 'cover', borderRadius: '12px', border: '1px solid var(--dsw-alias-border-l2)' } })
+            : h('div', { 'aria-hidden': true, style: { display: 'grid', placeItems: 'center', flex: 'none', width: '56px', height: '56px', borderRadius: '12px', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-secondary)', fontSize: '20px' }, children: (pet.name || pet.id).slice(0, 1) }),
+          h('div', {
+            style: { display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '4px', minWidth: 0 },
+            children: [
+              h('strong', { children: t('avatarLabel') }),
+              h('span', { className: 'dsh-pet-cfg__note', children: t('avatarHint') }),
+              h('div', {
+                    style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' },
+                    children: [
+                      h('button', {
+                        type: 'button', disabled: busy || avatarUploading[assetRoot], className: 'dsh-pet-cfg__btn is-sm',
+                        onClick: (event: ReactNS.MouseEvent<HTMLButtonElement>) => event.currentTarget.parentElement?.querySelector<HTMLInputElement>('input[type=file]')?.click(),
+                        children: avatarUploading[assetRoot] ? '…' : t('avatarUpload'),
+                      }),
+                      h('input', {
+                        type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif', hidden: true, disabled: busy || avatarUploading[assetRoot],
+                        onChange: (event: ChangeEvent<HTMLInputElement>) => {
+                          const file = event.target.files?.[0];
+                          event.target.value = '';
+                          if (file) void uploadAvatar(assetRoot, file);
+                        },
+                      }),
+                      avatarStatus[assetRoot] ? h('span', { className: 'dsh-pet-cfg__note', role: 'status', children: avatarStatus[assetRoot] }) : null,
+                    ],
+                  }),
+            ],
+          }),
+        ],
+      });
       return h('article', {
         key: pet.id,
         className: 'dsh-pet-cfg__card dsh-pet-cfg__petDetailCard',
@@ -1282,6 +1491,7 @@ export function makePetConfigSection(rt: {
                   children: t('remove'),
                 }),
           }),
+          avatar,
           h('div', {
             className: 'dsh-pet-cfg__grid3',
             children: [
@@ -1540,6 +1750,34 @@ export function makePetConfigSection(rt: {
                   ],
                 }),
                 h('div', {
+                  className: 'dsh-pet-cfg__subsection',
+                  children: [
+                    cardHead(t('voiceTitle'), undefined, false, t('allPetsScope')),
+                    h('div', { className: 'dsh-pet-cfg__globalToggles', children: [
+                      toggleCell('voiceEnabled', voiceEnabled, busy, setVoiceEnabled),
+                      toggleCell('voiceWhisperEnabled', voiceWhisperEnabled, busy, setVoiceWhisperEnabled),
+                      toggleCell('voiceTodoEnabled', voiceTodoEnabled, busy, setVoiceTodoEnabled),
+                      toggleCell('voiceNotifyEnabled', voiceNotifyEnabled, busy, setVoiceNotifyEnabled),
+                    ] }),
+                    h('div', { className: 'dsh-pet-cfg__grid2', children: [
+                      field(t('voiceNameLabel'), h(ConfigSelect, {
+                        label: t('voiceNameLabel'), value: voiceName, fontFamily: appliedFontFamily, disabled: busy,
+                        options: [
+                          { value: 'zh-CN-XiaoxiaoNeural', label: '晓晓 · 女声' },
+                          { value: 'zh-CN-XiaoyiNeural', label: '晓伊 · 女声' },
+                          { value: 'zh-CN-YunxiNeural', label: '云希 · 男声' },
+                          { value: 'zh-CN-YunjianNeural', label: '云健 · 男声' },
+                        ],
+                        onChange: (value: string) => setVoiceName(value),
+                      })),
+                      field(t('voiceVolumeLabel'), h('input', {
+                        type: 'range', min: 0, max: 1, step: 0.05, value: voiceVolume, disabled: busy,
+                        onChange: (e: ChangeEvent<HTMLInputElement>) => setVoiceVolume(Number(e.target.value)),
+                      })),
+                    ] }),
+                  ],
+                }),
+                h('div', {
                   className: 'dsh-pet-cfg__grid2',
                   children: [
                     field(
@@ -1677,6 +1915,31 @@ export function makePetConfigSection(rt: {
                       busy,
                       (v) => setPhysics((p) => ({ ...p, petCollision: v })),
                       true,
+                    ),
+                  ],
+                }),
+              ],
+            }),
+
+            h('div', {
+              className: 'dsh-pet-cfg__card',
+              children: [
+                cardHead(t('motionWeightsTitle'), t('motionWeightsHint'), false, t('globalDefaultScope')),
+                h('div', {
+                  className: 'dsh-pet-cfg__grid4',
+                  children: [
+                    weightField('idle'),
+                    weightField('turn'),
+                    weightField('move'),
+                    field(
+                      t('weight.action'),
+                      h('input', {
+                        type: 'number',
+                        className: inputClass,
+                        value: String(actionPercent(animationWeights)),
+                        disabled: true,
+                        readOnly: true,
+                      }),
                     ),
                   ],
                 }),

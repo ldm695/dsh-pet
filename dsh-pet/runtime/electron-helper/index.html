@@ -44,9 +44,10 @@
         font-family: inherit;
       }
       #root {
-        position: relative;
-        width: 100%;
-        height: 100%;
+        /* Pin the pet canvas to the Electron window's content box. This keeps the renderer's
+           geometry aligned with main-process hit testing even if body-level UI is added later. */
+        position: absolute;
+        inset: 0;
       }
       /* 宠物 sprite：绝对定位在画布内，由 renderer 按角落/边距或拖拽位置计算 left/top */
       .pet-sprite {
@@ -161,6 +162,34 @@
         justify-content: space-between;
         gap: calc(var(--f) * 0.6593);
       }
+      .pet-bub-title {
+        font-size: calc(var(--f) * 0.7692);
+        color: rgba(43, 43, 43, 0.6);
+        margin-bottom: calc(var(--f) * 0.24);
+      }
+      .pet-bub-val {
+        font-size: calc(var(--f) * 0.7692);
+        font-weight: 650;
+        font-variant-numeric: tabular-nums;
+        color: #1f1f1f;
+      }
+      .pet-bub-row .pet-bub-val { white-space: nowrap; }
+      .pet-env-main { display: flex; align-items: center; gap: calc(var(--f) * 0.4); }
+      .pet-env-icon { color: #5f7f9e; display: block; }
+      .pet-env-icon svg { width: calc(var(--f) * 1.55); height: calc(var(--f) * 1.55); display: block; }
+      .pet-env-temp {
+        font-size: calc(var(--f) * 1.75); line-height: 1.1; font-weight: 700; letter-spacing: -0.02em;
+        font-variant-numeric: tabular-nums; color: #1f1f1f;
+      }
+      .pet-env-summary {
+        font-size: calc(var(--f) * 0.95); color: rgba(43, 43, 43, 0.68);
+        align-self: flex-end; padding-bottom: calc(var(--f) * 0.22);
+      }
+      .pet-env-foot {
+        margin-top: calc(var(--f) * 0.3); padding-top: calc(var(--f) * 0.18);
+        border-top: 1px solid rgba(43, 43, 43, 0.1); font-size: calc(var(--f) * 0.6);
+        color: rgba(43, 43, 43, 0.45);
+      }
       .pet-bub-sub {
         font-size: calc(var(--f) * 0.7692);
         color: rgba(43, 43, 43, 0.6);
@@ -242,6 +271,59 @@
         font-size: calc(var(--f) * 0.7692);
         color: rgba(43, 43, 43, 0.6);
       }
+      .pet-bub-usage {
+        display: flex;
+        flex-direction: column;
+        gap: calc(var(--f) * 0.22);
+        margin: calc(var(--f) * 0.1) 0;
+      }
+      .pet-bub-usage-line {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: calc(var(--f) * 0.8);
+        line-height: 1.45;
+      }
+      .pet-bub-usage-title,
+      .pet-bub-usage-period {
+        font-size: calc(var(--f) * 0.7692);
+        color: rgba(43, 43, 43, 0.62);
+      }
+      .pet-bub-usage-total {
+        font-size: calc(var(--f) * 1.45);
+        line-height: 1.2;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.02em;
+        color: #1f1f1f;
+      }
+      .pet-bub-usage-in,
+      .pet-bub-usage-out,
+      .pet-bub-usage-spend {
+        font-size: calc(var(--f) * 0.7692);
+        font-variant-numeric: tabular-nums;
+      }
+      .pet-bub-usage-in { color: #3f6ea8; }
+      .pet-bub-usage-out { color: #b4703c; }
+      .pet-bub-usage-spend {
+        font-weight: 650;
+        color: #1f1f1f;
+      }
+      .pet-bub-usage-bar {
+        display: flex;
+        height: calc(var(--f) * 0.3);
+        border-radius: calc(var(--f) * 0.15);
+        overflow: hidden;
+        background: rgba(43, 43, 43, 0.1);
+        margin: calc(var(--f) * 0.05) 0;
+      }
+      .pet-bub-usage-bar-in,
+      .pet-bub-usage-bar-out {
+        display: block;
+        height: 100%;
+      }
+      .pet-bub-usage-bar-in { background: #3f6ea8; }
+      .pet-bub-usage-bar-out { background: #b4703c; }
       /* 配置错误提示（大声报错，不做静默兜底）：配置缺失/非法时显示，每 5s 自动重试 */
       .pet-error {
         position: fixed;

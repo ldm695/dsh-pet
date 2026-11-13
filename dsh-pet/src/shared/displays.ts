@@ -99,6 +99,91 @@ export const rebaseCenter = (
 ): { x: number; y: number } =>
   clampPointToRegion(areas, center.x + fromView.x - toView.x, center.y + fromView.y - toView.y);
 
+/** Rebase a pet box when the virtual desktop origin changes; coordinates remain view-local. */
+export const rebaseRect = (
+  rect: Rect,
+  fromView: { x: number; y: number },
+  toView: { x: number; y: number },
+  areas: Rect[],
+): Rect => {
+  const center = rebaseCenter({ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }, fromView, toView, areas);
+  return { ...rect, x: center.x - rect.width / 2, y: center.y - rect.height / 2 };
+};
+
+const rectContainsRect = (outer: Rect, inner: Rect): boolean =>
+  inner.x >= outer.x &&
+  inner.y >= outer.y &&
+  rectRight(inner) <= rectRight(outer) &&
+  rectBottom(inner) <= rectBottom(outer);
+
+const rectsIntersect = (a: Rect, b: Rect): boolean =>
+  a.x < rectRight(b) && rectRight(a) > b.x && a.y < rectBottom(b) && rectBottom(a) > b.y;
+
+/**
+ * If a pet box straddles displays or occupies a real gap inside the virtual desktop, return the
+ * nearest position where the entire box fits on one display. Boxes clipped only by the outside
+ * edge of the whole desktop are left alone.
+ */
+export const relocateRectFromDisplayGap = (areas: Rect[], rect: Rect): Rect | null => {
+  const displays = areas.filter((area) => area.width > 0 && area.height > 0);
+  if (displays.length < 2 || displays.some((area) => rectContainsRect(area, rect))) return null;
+
+  const overlappingDisplays = displays.filter((area) => rectsIntersect(area, rect));
+  let occupiesGap = overlappingDisplays.length > 1;
+  if (!occupiesGap) {
+    const hull = boundingRect(displays);
+    const clipped = {
+      x: Math.max(rect.x, hull.x),
+      y: Math.max(rect.y, hull.y),
+      width: Math.min(rectRight(rect), rectRight(hull)) - Math.max(rect.x, hull.x),
+      height: Math.min(rectBottom(rect), rectBottom(hull)) - Math.max(rect.y, hull.y),
+    };
+    if (clipped.width > 0 && clipped.height > 0) {
+      const xEdges = [clipped.x, rectRight(clipped)];
+      const yEdges = [clipped.y, rectBottom(clipped)];
+      for (const area of displays) {
+        for (const edge of [area.x, rectRight(area)]) {
+          if (edge > clipped.x && edge < rectRight(clipped)) xEdges.push(edge);
+        }
+        for (const edge of [area.y, rectBottom(area)]) {
+          if (edge > clipped.y && edge < rectBottom(clipped)) yEdges.push(edge);
+        }
+      }
+      xEdges.sort((a, b) => a - b);
+      yEdges.sort((a, b) => a - b);
+      for (let xi = 0; xi < xEdges.length - 1 && !occupiesGap; xi++) {
+        for (let yi = 0; yi < yEdges.length - 1; yi++) {
+          const x = (xEdges[xi] + xEdges[xi + 1]) / 2;
+          const y = (yEdges[yi] + yEdges[yi + 1]) / 2;
+          if (!rectAtPoint(displays, x, y)) {
+            occupiesGap = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+  if (!occupiesGap) return null;
+
+  const centerX = rect.x + rect.width / 2;
+  const centerY = rect.y + rect.height / 2;
+  const centerDisplay = rectAtPoint(displays, centerX, centerY);
+  const candidates = centerDisplay ? [centerDisplay, ...displays.filter((area) => area !== centerDisplay)] : displays;
+  let best: Rect | null = null;
+  let bestDistance = Infinity;
+  for (const area of candidates) {
+    if (area.width < rect.width || area.height < rect.height) continue;
+    const x = Math.max(area.x, Math.min(rectRight(area) - rect.width, centerX - rect.width / 2));
+    const y = Math.max(area.y, Math.min(rectBottom(area) - rect.height, centerY - rect.height / 2));
+    const distance = (x + rect.width / 2 - centerX) ** 2 + (y + rect.height / 2 - centerY) ** 2;
+    if (distance < bestDistance) {
+      best = { ...rect, x, y };
+      bestDistance = distance;
+    }
+  }
+  return best;
+};
+
 export const regionArea = (rects: Rect[]): number => rects.reduce((s, r) => s + r.width * r.height, 0);
 
 /** 外接矩形中不属于任何显示器的面积占比 0~1（诊断/日志用；矩形不重叠时精确） */

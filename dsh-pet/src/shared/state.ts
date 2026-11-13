@@ -13,6 +13,80 @@ import type { StateLeaf } from './state-contract';
 
 export type { PetLeafName, StateLeaf, StateSectionName, StateSnapshot, StateStoreSnapshot } from './state-contract';
 
+/** WMO 天气数据，供环境气泡展示。 */
+export interface EnvWeather {
+  readonly city: string;
+  readonly summary: string;
+  readonly temperatureC: number;
+  readonly apparentC: number;
+  readonly humidityPercent: number;
+  readonly windKph: number;
+  readonly code: number;
+  readonly observedAt: string;
+}
+
+/** /environment 写入 sections.env 的内容。 */
+export interface EnvState {
+  readonly region?: string;
+  readonly city?: string;
+  readonly weather?: EnvWeather;
+  readonly petId: string;
+  readonly ts: number;
+}
+
+/** 校验环境状态叶子，脏数据不进入渲染层。 */
+export function readEnv(leaf: StateLeaf): EnvState | null {
+  if (!leaf.data || typeof leaf.data !== 'object') return null;
+  const d = leaf.data as { region?: unknown; city?: unknown; weather?: unknown; petId?: unknown; ts?: unknown };
+  if (typeof d.petId !== 'string' || !d.petId || typeof d.ts !== 'number' || !Number.isFinite(d.ts)) return null;
+  const weather = d.weather === undefined ? undefined : envWeatherOf(d.weather);
+  if (d.weather !== undefined && weather === undefined) return null;
+  return {
+    ...(typeof d.region === 'string' && d.region ? { region: d.region } : {}),
+    ...(typeof d.city === 'string' && d.city ? { city: d.city } : {}),
+    ...(weather === undefined ? {} : { weather }),
+    petId: d.petId,
+    ts: d.ts,
+  };
+}
+
+/** 宠物睡眠状态；三段动画名由宿主一次写定，渲染端按 start→loop→end 执行。 */
+export type SleepState =
+  | { readonly sleeping: true; readonly start: string; readonly loop: string; readonly end: string }
+  | { readonly sleeping: false };
+
+/** 校验睡眠状态叶子；缺少任一动画名时跳过，避免卡在没有可播放动作的睡眠状态。 */
+export function readSleep(leaf: StateLeaf): SleepState | null {
+  if (!leaf.data || typeof leaf.data !== 'object' || Array.isArray(leaf.data)) return null;
+  const data = leaf.data as Record<string, unknown>;
+  if (data.sleeping === false) return { sleeping: false };
+  if (
+    data.sleeping !== true ||
+    typeof data.start !== 'string' || !data.start ||
+    typeof data.loop !== 'string' || !data.loop ||
+    typeof data.end !== 'string' || !data.end
+  ) return null;
+  return { sleeping: true, start: data.start, loop: data.loop, end: data.end };
+}
+
+function envWeatherOf(value: unknown): EnvWeather | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const w = value as Record<string, unknown>;
+  const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+  const city = typeof w.city === 'string' ? w.city : undefined;
+  const summary = typeof w.summary === 'string' ? w.summary : undefined;
+  const observedAt = typeof w.observedAt === 'string' ? w.observedAt : undefined;
+  const temperatureC = num(w.temperatureC);
+  const apparentC = num(w.apparentC);
+  const humidityPercent = num(w.humidityPercent);
+  const windKph = num(w.windKph);
+  const code = num(w.code);
+  if ([city, summary, observedAt, temperatureC, apparentC, humidityPercent, windKph, code].includes(undefined)) {
+    return undefined;
+  }
+  return { city: city!, summary: summary!, observedAt: observedAt!, temperatureC: temperatureC!, apparentC: apparentC!, humidityPercent: humidityPercent!, windKph: windKph!, code: code! };
+}
+
 /**
  * 当前宿主的客户端视图（叶子与整份状态都带递增 counter）。
  * 精确的 HTTP 响应契约见 `StateSnapshot`；开放键集合保留给后续新增叶子。
@@ -153,8 +227,11 @@ export function readBalance(leaf: StateLeaf): { state: BalanceState; manual: boo
  * （消费端直接用它）。**不做「一个中性字段装两种值」**——消费端必须知道该不该拼路径，字段名
  * 本身就是那个判别位，靠 `startsWith('http')` 嗅探会在名字恰好长得像 URL 时出错。
  */
+export type VoiceTarget = 'web' | 'desktop';
+
 export type SayCue =
-  { kind: 'say'; text: string; image?: string; url?: string; duration?: number; anim?: boolean } | { kind: 'clear' };
+  | { kind: 'say'; text: string; image?: string; url?: string; duration?: number; anim?: boolean; voiceTo?: VoiceTarget; origin?: 'sleep' }
+  | { kind: 'clear' };
 
 /**
  * 类型收窄：宠物说话叶子 → SayCue（形状非法 / 空文本 → null，消费端跳过这一拍）。
@@ -170,6 +247,8 @@ export function readSay(leaf: StateLeaf): SayCue | null {
     url?: unknown;
     duration?: unknown;
     anim?: unknown;
+    voiceTo?: unknown;
+    kind?: unknown;
     clear?: unknown;
   };
   // 清空指令优先：它不带 text，所以必须排在文本校验**前面**
@@ -178,6 +257,7 @@ export function readSay(leaf: StateLeaf): SayCue | null {
   return {
     kind: 'say',
     text: d.text,
+    origin: d.kind === 'sleep' ? 'sleep' : undefined,
     image: typeof d.image === 'string' ? d.image : undefined,
     // 第三方给的配图地址（完整 URL，scheme 已由宿主卡在 http/https）。与 image 并列、互斥，
     // 消费端"有 url 就用 url，否则拼表情包路径"——判别位在字段名上，见 SayCue 的说明。
@@ -185,6 +265,7 @@ export function readSay(leaf: StateLeaf): SayCue | null {
     // 只认 ≥0 的有限数：非法值当"没给"（写端已校验，这里只是防御，不让脏数据毁掉整拍）
     duration: typeof d.duration === 'number' && Number.isFinite(d.duration) && d.duration >= 0 ? d.duration : undefined,
     anim: typeof d.anim === 'boolean' ? d.anim : undefined,
+    ...(d.voiceTo === 'web' || d.voiceTo === 'desktop' ? { voiceTo: d.voiceTo } : {}),
   };
 }
 

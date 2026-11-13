@@ -5,6 +5,7 @@ import { SettingsCardHeader, SettingsHelp, SettingsPageHeader, SettingsPageTab, 
 import { AI_SETTINGS_LAYOUT_CSS, SETTINGS_COMPONENT_CSS } from './settings-style';
 
 type Protocol = 'openai-compatible' | 'anthropic' | 'deepseek-official';
+interface DiscoveredModel { id: string; name: string }
 interface AiForm {
   protocol: Protocol;
   baseUrl: string;
@@ -42,12 +43,94 @@ function installStyles(): void {
 .ai-settings__status{margin:0;min-height:20px;color:var(--dsw-alias-label-secondary)}
 .ai-settings__status.is-error{color:var(--dsw-alias-state-error-primary)}
 .ai-settings__footer{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ai-settings__modelControl{display:grid;gap:6px;min-width:0}
+.ai-settings__modelInputRow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;min-width:0}
+.ai-settings__fetchModels{white-space:nowrap}
+.ai-settings__modelPicker{width:100%}
 `;
   document.head.appendChild(style);
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function ModelOptionsPicker(props: {
+  options: DiscoveredModel[];
+  value: string;
+  disabled: boolean;
+  onSelect: (id: string) => void;
+}): ReturnType<typeof jsx> {
+  const [open, setOpen] = useState(false);
+  const [rect, setRect] = useState<{ left: number; top: number; width: number; maxHeight: number } | null>(null);
+  const root = useRef<HTMLSpanElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const place = (): void => {
+      const bounds = trigger.current?.getBoundingClientRect();
+      if (!bounds) return;
+      const width = Math.min(Math.max(bounds.width, 260), window.innerWidth - 16);
+      const left = Math.max(8, Math.min(bounds.left, window.innerWidth - width - 8));
+      const below = window.innerHeight - bounds.bottom - 12;
+      const above = bounds.top - 12;
+      const useAbove = below < 120 && above > below;
+      const maxHeight = Math.max(96, Math.min(320, useAbove ? above : below));
+      setRect({ left, top: useAbove ? Math.max(8, bounds.top - maxHeight - 4) : bounds.bottom + 4, width, maxHeight });
+    };
+    const outside = (event: PointerEvent): void => {
+      const target = event.target as Node | null;
+      if (target && !root.current?.contains(target) && !document.querySelector('.ai-settings__modelPanel')?.contains(target)) setOpen(false);
+    };
+    const escape = (event: KeyboardEvent): void => { if (event.key === 'Escape') setOpen(false); };
+    place();
+    document.addEventListener('pointerdown', outside, true);
+    document.addEventListener('keydown', escape, true);
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      document.removeEventListener('pointerdown', outside, true);
+      document.removeEventListener('keydown', escape, true);
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [open]);
+
+  return jsx('span', {
+    ref: root,
+    className: 'dsh-pet-mp ai-settings__modelPicker',
+    children: [
+      jsx('button', {
+        ref: trigger,
+        className: 'dsh-pet-mp__trigger dsh-pet-cfg__select',
+        type: 'button',
+        disabled: props.disabled,
+        'aria-haspopup': 'listbox',
+        'aria-expanded': open,
+        onClick: () => setOpen((value) => !value),
+        children: [jsx('span', { className: 'dsh-pet-mp__label', children: `选择模型（${props.options.length}）` }), jsx('span', { className: 'dsh-pet-mp__chevron' + (open ? ' is-open' : ''), 'aria-hidden': true, children: '▾' })],
+      }),
+      open && rect
+        ? createPortal(jsx('div', {
+            className: 'dsh-pet-mp__panel ai-settings__modelPanel',
+            role: 'listbox',
+            'aria-label': '可用模型',
+            style: { left: rect.left, top: rect.top, width: rect.width, maxHeight: rect.maxHeight, overflowY: 'auto' },
+            children: props.options.map((option) => jsx('button', {
+              type: 'button',
+              role: 'option',
+              'aria-selected': option.id === props.value,
+              className: 'dsh-pet-mp__item' + (option.id === props.value ? ' is-active' : ''),
+              onClick: () => { props.onSelect(option.id); setOpen(false); },
+              children: [
+                jsx('span', { className: 'dsh-pet-mp__name', children: option.name === option.id ? option.id : `${option.name}（${option.id}）` }),
+                jsx('span', { className: 'dsh-pet-mp__check', children: option.id === props.value ? '✓' : '' }),
+              ],
+            }, option.id)),
+          }), document.body)
+        : null,
+    ],
+  });
 }
 
 function ProtocolPicker(props: { value: Protocol; disabled: boolean; onChange: (value: Protocol) => void }): ReturnType<typeof jsx> {
@@ -120,6 +203,8 @@ export function AiSettingsPage(): ReturnType<typeof jsx> {
   const [message, setMessage] = useState('正在读取本机设置…');
   const [messageError, setMessageError] = useState(false);
   const [test, setTest] = useState<TestResult | null>(null);
+  const [modelOptions, setModelOptions] = useState<DiscoveredModel[]>([]);
+  const [modelStatus, setModelStatus] = useState('');
 
   useEffect(() => {
     installStyles();
@@ -176,6 +261,10 @@ export function AiSettingsPage(): ReturnType<typeof jsx> {
   const update = <K extends keyof AiForm>(key: K, value: AiForm[K]): void => {
     setForm((current) => ({ ...current, [key]: value }));
     setTest(null);
+    if (key === 'protocol' || key === 'baseUrl' || key === 'apiKey') {
+      setModelOptions([]);
+      setModelStatus('');
+    }
   };
 
   const updateProtocol = (protocol: Protocol): void => {
@@ -186,6 +275,8 @@ export function AiSettingsPage(): ReturnType<typeof jsx> {
       ...(protocol === 'deepseek-official' ? { baseUrl: 'https://api.deepseek.com' } : {}),
     }));
     setTest(null);
+    setModelOptions([]);
+    setModelStatus('');
   };
 
   const save = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
@@ -239,6 +330,33 @@ export function AiSettingsPage(): ReturnType<typeof jsx> {
     } finally { setBusy(false); }
   };
 
+  const fetchModels = async (): Promise<void> => {
+    setBusy(true);
+    setModelStatus('正在向接口拉取模型列表…');
+    try {
+      const response = await fetch('/standalone-ai/models', {
+        method: 'POST', credentials: 'omit', cache: 'no-store', redirect: 'error',
+        headers: { 'X-DSH-Pet-Token': tokenRef.current, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ protocol: form.protocol, baseUrl: form.baseUrl.trim(), apiKey: form.apiKey.trim() }),
+      });
+      if (response.status === 403) throw new Error('打开凭据已失效。请从桌宠菜单重新打开设置。');
+      const data = (await response.json()) as { ok?: unknown; models?: unknown; message?: unknown };
+      if (!response.ok || data.ok !== true || !Array.isArray(data.models)) {
+        throw new Error(typeof data.message === 'string' ? data.message : '拉取失败，请检查接口地址与密钥。');
+      }
+      const options = data.models.flatMap((item): DiscoveredModel[] => {
+        if (!item || typeof item !== 'object') return [];
+        const model = item as Record<string, unknown>;
+        return typeof model.id === 'string' && typeof model.name === 'string' ? [{ id: model.id, name: model.name }] : [];
+      });
+      setModelOptions(options);
+      setModelStatus(options.length ? `已拉取 ${options.length} 个模型；选择后仍需点击“保存设置”。` : '接口未返回模型，请手动填写模型名称。');
+    } catch (error) {
+      setModelOptions([]);
+      setModelStatus(errorMessage(error));
+    } finally { setBusy(false); }
+  };
+
   const labelField = (label: string, control: ReturnType<typeof jsx>, note?: string, wide = false): ReturnType<typeof jsx> =>
     jsx('label', {
       className: 'dsh-pet-cfg__field' + (wide ? ' is-wide' : ''),
@@ -271,6 +389,22 @@ export function AiSettingsPage(): ReturnType<typeof jsx> {
       onChange: (event: ChangeEvent<HTMLInputElement>) => update(key, Number(event.target.value)),
       'aria-describedby': hint,
     });
+
+  const modelControl = jsx('div', {
+    className: 'ai-settings__modelControl',
+    children: [
+      jsx('div', {
+        className: 'ai-settings__modelInputRow',
+        children: [
+          textInput('model', { type: 'text', maxLength: 200, placeholder: '填写服务商的模型 ID，例如 deepseek-chat', spellCheck: false }),
+          jsx('button', { className: 'dsh-pet-cfg__btn ai-settings__fetchModels', type: 'button', disabled: !ready || busy, onClick: () => void fetchModels(), children: '拉取模型' }),
+        ],
+      }),
+      modelOptions.length
+        ? jsx(ModelOptionsPicker, { options: modelOptions, value: form.model, disabled: busy, onSelect: (id: string) => { update('model', id); setModelStatus('已填入模型名称，记得保存设置。'); } })
+        : null,
+    ],
+  });
 
   return jsx('div', {
     className: 'dsh-pet-cfg ai-settings', 'aria-live': 'polite',
@@ -318,7 +452,7 @@ export function AiSettingsPage(): ReturnType<typeof jsx> {
                   form.protocol !== 'deepseek-official'
                     ? jsx('p', { className: 'ai-settings__notice is-wide', role: 'status', children: '当前接口协议不支持余额查询。选择“DeepSeek”后，可使用桌宠右键菜单查询余额。' })
                     : null,
-                  labelField('模型名称', textInput('model', { type: 'text', maxLength: 200, placeholder: '填写服务商的模型 ID，例如 deepseek-chat', spellCheck: false })),
+                  labelField('模型名称', modelControl, modelStatus || '可手动填写模型 ID，或从服务商拉取可用模型。'),
                   jsx('label', {
                     className: 'dsh-pet-cfg__field',
                     children: [

@@ -8,7 +8,7 @@
  * @module dsh-pet/src/host/balance/providers/commandcode
  */
 import { fetchWithRetry, looseNum, num, obj, queryString, readWindow } from '../internal';
-import type { BalanceProvider, BalanceSuccess, WindowsUsage } from '../types';
+import type { BalanceProvider, BalanceSuccess, BalanceUsage, WindowsUsage } from '../types';
 
 /** 控制面基址（/alpha/* 固定在根域名）。 */
 const API_BASE = 'https://api.commandcode.ai';
@@ -21,6 +21,25 @@ async function fetchJson(url: string, key: string, label: string): Promise<unkno
   const res = await fetchWithRetry(url, key);
   if (!res.ok) throw new Error('commandcode ' + label + ' HTTP ' + res.status);
   return (await res.json()) as unknown;
+}
+
+/** 五个本期汇总字段齐全才显示用量页；缺字段时不拿 0 拼出不完整的数据。 */
+function readUsage(summary: Record<string, unknown> | undefined): BalanceUsage | undefined {
+  const totalTokens = looseNum(summary?.totalTokens);
+  const inputTokens = looseNum(summary?.totalTokensIn);
+  const outputTokens = looseNum(summary?.totalTokensOut);
+  const requests = looseNum(summary?.totalCount);
+  const spentUsd = looseNum(summary?.totalCost);
+  if (
+    totalTokens === undefined ||
+    inputTokens === undefined ||
+    outputTokens === undefined ||
+    requests === undefined ||
+    spentUsd === undefined
+  ) {
+    return undefined;
+  }
+  return { totalTokens, inputTokens, outputTokens, requests, spentUsd };
 }
 
 /**
@@ -54,6 +73,8 @@ export function parseCommandCode(
   const pool = spent + remaining;
   const data: WindowsUsage = { monthly: pool > 0 ? (spent / pool) * 100 : 0 };
   if (pool > 0) data.monthlyCapUsd = pool;
+  const usage = readUsage(summary);
+  if (usage) data.usage = usage;
 
   const subscription = obj(obj(subscriptionBody)?.data);
   const periodEnd = subscription?.currentPeriodEnd;
@@ -110,12 +131,9 @@ export const commandCode: BalanceProvider = {
       subscription = undefined;
     }
 
-    // since 仅在拿得到当期起始时间时带；默认区间由服务端决定，插件不猜。
-    const periodStart = obj(obj(subscription)?.data)?.currentPeriodStart;
+    // 不带 since：服务端默认区间就是计费周期；带 since 会漏算本期部分请求与花费。
     const summary = await fetchJson(
-      API_BASE +
-        '/alpha/usage/summary' +
-        queryString({ since: typeof periodStart === 'string' ? periodStart : undefined, orgId }),
+      API_BASE + '/alpha/usage/summary' + queryString({ orgId }),
       key,
       '/alpha/usage/summary',
     );

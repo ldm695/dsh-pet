@@ -7,6 +7,8 @@ export const FEET_Y = 330;
 export const HIT_BOX = { x0: 200, y0: 50, x1: 440, y1: 335 };
 /** 拖拽判定阈值（px） */
 export const DRAG_THRESHOLD = 5;
+/** 桌面窗口越过工作区边界时，身体命中区至少保留的可点击像素。 */
+export const MIN_REACHABLE_PX = 24;
 /** 弹弓窗口（ms）：**两次按下**之间的间隔小于它就按弹弓算（不是「松手」到「下次按下」）。
  *  按下即记、按下即比，所以这次拖了多久、什么时候松手都不影响判定。
  *  只认左键；没有模式、没有待拉状态（见 physics.ts 的弹弓换算）。 */

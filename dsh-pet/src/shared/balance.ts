@@ -27,6 +27,8 @@ export interface RawBalanceResult {
     weeklyCapUsd?: unknown;
     monthlyCapUsd?: unknown;
     rollingLabel?: unknown;
+    /** windows：本期累计用量（可选页）；字段不全时视为没有用量页。 */
+    usage?: unknown;
     /** money 余额统一使用钱包数组，单币种和多币种共用同一契约。 */
     wallets?: unknown;
     tier?: unknown;
@@ -43,6 +45,15 @@ export interface RawBalanceResult {
 
 /** 计价档位装饰（气泡上的「峰/谷」）：由服务商算好后随数据带出，展示层原样渲染 */
 export type PricingTier = 'peak' | 'idle';
+
+/** 本期累计用量；Command Code 汇总接口缺任一字段时，整个对象缺省。 */
+export interface BalanceUsage {
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  requests: number;
+  spentUsd: number;
+}
 
 /** 已解析的余额视图（展示 + 档位计算用） */
 export interface CustomNode {
@@ -76,6 +87,8 @@ export interface BalanceView {
   monthlyCapUsd?: number;
   /** 滚动窗展示名（服务商自报，如 `5h`）；缺省回落 DEFAULT_ROLLING_LABEL */
   rollingLabel?: string;
+  /** windows：区间累计用量；缺省表示没有可用的第三页。 */
+  usage?: BalanceUsage;
   /** money：每个币种一条钱包；无论单币种还是多币种均使用此数组。 */
   wallets?: MoneyWalletView[];
   /** money：计价档位装饰；缺省 = 渲染成不带峰谷的「余额 ¥x.xx」 */
@@ -117,6 +130,17 @@ function optNum(value: unknown): number | undefined | null {
   if (value === undefined || value === null) return undefined;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+/** 五个汇总值必须完整且为有限数字；缺省与非法分开，避免用 0 冒充缺失数据。 */
+function parseUsage(raw: unknown): BalanceUsage | undefined | null {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
+  const fields = [value.totalTokens, value.inputTokens, value.outputTokens, value.requests, value.spentUsd].map(optNum);
+  if (fields.some((item) => typeof item !== 'number')) return null;
+  const [totalTokens, inputTokens, outputTokens, requests, spentUsd] = fields as number[];
+  return { totalTokens, inputTokens, outputTokens, requests, spentUsd };
 }
 
 const CUSTOM_TAGS = new Set(['div', 'span', 'i', 'b', 'strong', 'em', 'img']);
@@ -214,6 +238,7 @@ export function toBalanceState(raw: unknown): BalanceState | null {
     const rollingCapUsd = optNum(d.rollingCapUsd);
     const weeklyCapUsd = optNum(d.weeklyCapUsd);
     const monthlyCapUsd = optNum(d.monthlyCapUsd);
+    const usage = parseUsage(d.usage);
     // 月度窗口是这份数据的底线：缺了/非法 = 认不出响应（滚动窗与周窗口、各窗口额度都是可选）
     if (monthly === undefined || monthly === null) return null;
     // 出现但非法（optNum 返回 null）→ 整拍跳过，不把坏数字送进展示层
@@ -222,7 +247,8 @@ export function toBalanceState(raw: unknown): BalanceState | null {
       weekly === null ||
       rollingCapUsd === null ||
       weeklyCapUsd === null ||
-      monthlyCapUsd === null
+      monthlyCapUsd === null ||
+      usage === null
     ) {
       return null;
     }
@@ -236,6 +262,7 @@ export function toBalanceState(raw: unknown): BalanceState | null {
       rollingCapUsd,
       weeklyCapUsd,
       monthlyCapUsd,
+      ...(usage ? { usage } : {}),
       rollingLabel: typeof d.rollingLabel === 'string' && d.rollingLabel.length > 0 ? d.rollingLabel : undefined,
       rollingResetsAt: typeof d.rollingResetsAt === 'string' ? d.rollingResetsAt : undefined,
       weeklyResetsAt: typeof d.weeklyResetsAt === 'string' ? d.weeklyResetsAt : undefined,
@@ -489,6 +516,18 @@ export type BalanceBubbleRow =
       tone: QuotaTone;
       usedText: string;
       resetText: string;
+    }
+  | {
+      /** 本期累计用量卡；两端只负责布局与着色。 */
+      role: 'usage';
+      text: string;
+      title: string;
+      total: string;
+      input: string;
+      output: string;
+      period: string;
+      spend: string;
+      inputPercent?: number;
     };
 
 /** 不可用状态的气泡行（显式说明原因，绝不伪造数字）：
@@ -606,6 +645,49 @@ export function balanceDetailView(state: BalanceState): BalanceBubbleRow[] {
     });
   }
   return rows.length > 0 ? rows : balanceBubbleView(state);
+}
+
+/** 余额气泡页数：windows 有窗口明细页，用量齐全时再增加本期用量页；custom 按节点页数。 */
+export function balancePageCount(state: BalanceState): number {
+  if (!state.ok) return 1;
+  if (state.shape === 'custom') return Math.max(1, customViews(state)?.length ?? 1);
+  if (state.shape !== 'windows') return 1;
+  return state.usage ? 3 : 2;
+}
+
+function compactCount(value: number): string {
+  if (value >= 1e9) return (value / 1e9).toFixed(1) + 'B';
+  if (value >= 1e6) return (value / 1e6).toFixed(1) + 'M';
+  if (value >= 1e3) return (value / 1e3).toFixed(1) + 'K';
+  return String(Math.round(value));
+}
+
+/** 按页返回窗口摘要、窗口明细或本期累计用量；越界时回落到最后一页有效内容。 */
+export function balancePageView(state: BalanceState, page: number): BalanceBubbleRow[] {
+  if (!state.ok) return unavailableRows(state);
+  if (state.shape !== 'windows' || page <= 0) return balanceBubbleView(state);
+  if (page === 1 || !state.usage) return balanceDetailView(state);
+  const usage = state.usage;
+  const total = compactCount(usage.totalTokens);
+  const input = compactCount(usage.inputTokens) + ' 入';
+  const output = compactCount(usage.outputTokens) + ' 出';
+  const period = '本期 ' + Math.round(usage.requests) + ' 次';
+  const spend = '$' + usage.spentUsd.toFixed(2);
+  const sum = usage.inputTokens + usage.outputTokens;
+  const inputPercent = sum > 0 ? (usage.inputTokens / sum) * 100 : undefined;
+  return [
+    {
+      role: 'usage',
+      text: 'Token ' + total + ' · ' + input + ' / ' + output + ' · ' + period + ' · ' + spend,
+      title: 'Token',
+      total,
+      input,
+      output,
+      period,
+      spend,
+      inputPercent,
+    },
+  ];
 }
 
 /** 非 ok 状态「弹不弹文字说明气泡」的判定结果 */

@@ -89,6 +89,15 @@ export interface CustomBalance {
 /** 计价档位装饰（气泡上的「峰/谷」）：由服务商按自己的计价规则算好后随数据带出 */
 export type PricingTier = 'peak' | 'idle';
 
+/** Command Code 可选回报的本期累计用量；五个字段必须齐全才显示用量页。 */
+export interface BalanceUsage {
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  requests: number;
+  spentUsd: number;
+}
+
 // ---------- 两种形态的数据 ----------
 
 /**
@@ -116,6 +125,8 @@ export interface WindowsUsage {
   rollingResetsAt?: string;
   weeklyResetsAt?: string;
   monthlyResetsAt?: string;
+  /** 缺省表示服务商没有本期累计用量数据。 */
+  usage?: BalanceUsage;
 }
 
 /**

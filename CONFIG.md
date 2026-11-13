@@ -40,10 +40,15 @@ DSH 设置 → 「桌宠配置」：
 | 字段                   | 作用                                                                                    | 格式与默认一致即可         |
 | ---------------------- | --------------------------------------------------------------------------------------- | -------------------------- |
 | `pets`                 | 宠物列表（大小/位置/多开/余额开关）                                                     | 数组，每项同 `pets[]` 结构 |
-| `animations`           | **动画池**：idle / turn / drag / clicks / moves / categories / events（余额等事件动画） | 同 `animations` 结构       |
+| `animations`           | **动画池**：idle / turn / drag / clicks / moves / categories / events；`events.sleep` 可定义睡觉动画套（start / loop / end） | 同 `animations` 结构       |
 | `animationWeights`     | 动画链播放权重（idle / turn / move）                                                    | 同 `animationWeights` 结构 |
-| `eventsRefreshSec`     | 事件刷新周期（秒）                                                                      | 同 `eventsRefreshSec` 结构 |
+| `eventsRefreshSec`     | 事件刷新周期（秒）；`sleepTalk` 控制睡着时生成梦话的间隔，默认 60 秒                     | 同 `eventsRefreshSec` 结构 |
+| `sleepStartTexts`      | 入睡时随机显示的文案（条目级）                                                          | 非空字符串数组             |
+| `sleepEndTexts`        | 醒来时随机显示的文案（条目级）                                                          | 非空字符串数组             |
+| `sleepRefuseTexts`     | 睡着时拒绝对话或打扰时随机显示的文案（条目级）                                          | 非空字符串数组             |
 | `notificationsEnabled` | 系统通知总开关（布尔）                                                                  | 同 `notificationsEnabled`  |
+
+`eventsRefreshSec.sleepTalk` 到点后会用该桌宠所属条目的碎碎念人设与模型生成一句梦话，只显示气泡，不播放动画或语音；多只睡着的宠物会排队错峰生成。每次生成会产生一次模型请求费用。该设置目前通过配置文件调整。
 
 > 覆盖语义：用户层给出即**整体替换**该字段（如写了 `animations` 就用你的整份动画池，替代默认），没写的字段回落包内默认。校验在插件加载时执行——格式错误会在 DSH 控制台显式报错，不会静默运行残缺配置。
 

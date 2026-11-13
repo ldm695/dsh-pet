@@ -19,10 +19,18 @@ export * from './fonts'; // 字体预设（id → CSS 字体栈）+ 字号换算
 export * from './notify';
 export * from './menu'; // 统一右键菜单（本目录唯一的 DOM 例外：树=纯函数，渲染=两端共用同一份）
 export * from './chat'; // 对话弹窗（menu 之后第二个 DOM 例外：数据=纯函数，弹窗=两端共用同一份）
+export * from './chat-enter';
 export * from './physics'; // 拖拽抛掷物理（弹簧跟手 + 甩抛 + 重力反弹）
 export * from './score'; // 点击积分（速度/大小 → 分数，纯逻辑）
 export * from './score-popup'; // 点击积分弹窗 + 粒子爆发（menu/chat 之后第三个 DOM 例外：渲染=两端共用同一份）
 export * from './work-status'; // 工作状态联动（DSH 会话事件 → 档位动画/气泡：档位常量 + reducer + 文案，浏览器消费）
 export * from './work-status-assignment'; // Agent→桌宠占用分配器（Electron 共享逻辑）
 export * from './state'; // 轮询统一状态 S 的客户端侧纯逻辑（拉取 / 拍平 / 比对；两端共用）
+export * from './env-icon';
+export * from './env-view';
+export * from './weights';
 export * from './tooltip'; // 悬浮提示（替代原生 title 属性：class + 样式 + 翻转判据，两端共用同一份）
+export * from './voice';
+export * from './bubble-hold';
+export * from './todo';
+export * from './hotkey';

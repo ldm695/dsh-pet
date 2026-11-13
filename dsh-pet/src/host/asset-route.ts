@@ -4,6 +4,7 @@ import type { RouteRequest, RouteResult } from './route-contract';
 
 export interface AssetRouteDependencies {
   packageRoot: string;
+  userRoot: string;
   petConfigDir: string;
   thumbUserRoot: string;
   idForbidden: RegExp;
@@ -76,8 +77,10 @@ function handleAssetRoute(rest: string, deps: AssetRouteDependencies): RouteResu
       return { kind: 'file', file: picFile, contentType: contentTypeOf(picFile) };
     }
 
-    const picRoot = join(deps.packageRoot, 'assets', 'pic');
-    const picFile = deps.resolveExisting(picRoot, restParts.join('/'));
+    const picRel = restParts.join('/');
+    const picFile =
+      deps.resolveExisting(join(deps.userRoot, 'pic'), picRel) ??
+      deps.resolveExisting(join(deps.packageRoot, 'assets', 'pic'), picRel);
     if (picFile === undefined) return { kind: 'text', status: 404, body: 'dsh-pet: pic not found' };
     return { kind: 'file', file: picFile, contentType: contentTypeOf(picFile) };
   }

@@ -23,6 +23,8 @@ const CONFIG = {
   petIndex: Number(params.get('petIndex') || '0'),
   petLayouts,
   topInsetRatio: Number(params.get('topInsetRatio') || '0'),
+  // X11 窗口管理器会把越界窗口钳回工作区；只在该平台把宠物本体偏移到窗口可视位置。
+  isWindowClampedToWorkArea: params.get('isWindowClampedToWorkArea') === '1',
 };
 
 // 坐标系约定：主进程对窗口 setZoomFactor(CONFIG.scale) 后，DOM 度量、事件坐标、桌面几何与全部
@@ -144,6 +146,7 @@ const ORIGIN = new URL(CONFIG.configUrl).origin;
 const BASE = BRIDGE ? 'dsh-pet-bridge://dsh-pet/dsh-pet-7340' : ORIGIN + '/dsh-pet-7340';
 const STATE_URL = BASE + '/state'; // 轮询统一状态 S：前端 1s 轮询的唯一数据源（余额/工作状态/通知/说话）
 const BALANCE_URL = BASE + '/balance'; // 余额刷新动作（POST，写 S；数据本身从 /state 读）
+const ENVIRONMENT_URL = BASE + '/environment'; // 天气查询动作（POST，结果写入该宠物的说话气泡）
 const WHISPER_URL = BASE + '/whisper';
 // 实况上报（渲染端 → 宿主，内部通道）：第三方用 GET /pose 读宿主存下的这份快照
 const POSE_REPORT_URL = BASE + '/pose/report';
@@ -182,5 +185,6 @@ window.__dshPetDebug = {
   bootAt: Date.now(),
 };
 window.addEventListener('error', (event) => {
-  window.__dshPetDebug.errors.push(String(event.message || event.error));
+  const detail = event.error?.stack || event.message || event.error;
+  window.__dshPetDebug.errors.push(String(detail));
 });

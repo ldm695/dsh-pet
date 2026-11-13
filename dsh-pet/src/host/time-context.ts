@@ -11,6 +11,19 @@
 /** 时段文案：一天分 9 档（划分见 SLOTS）。 */
 export type TimeSlot = '凌晨' | '清晨' | '早上' | '上午' | '中午' | '下午' | '傍晚' | '晚上' | '深夜';
 
+/** 由宿主出站查询获得的粗略位置与天气，全部可选；不传时保持现有纯时间提示词。 */
+export interface TimeContextEnv {
+  readonly region?: string;
+  readonly city?: string;
+  readonly weather?: {
+    readonly summary: string;
+    readonly temperatureC: number;
+    readonly apparentC: number;
+    readonly humidityPercent: number;
+    readonly windKph: number;
+  };
+}
+
 /**
  * 时段划分表：[起始小时, 时段]，按起始小时从晚到早排列——匹配时取第一个不超过当前小时的档。
  * 口径含起始小时（0–23 全覆盖、不重叠）：凌晨 0–4、清晨 5–6、早上 7–8、上午 9–10、中午 11–12、
@@ -333,21 +346,38 @@ function holidayClauseOf(date: Date): string {
   return best ? best.clause : '';
 }
 
-/**
- * 生成注入 system 末尾的时间背景（一行）。
- * @param date - 当前时刻（生产调用方传 new Date()；测试传固定日期）。
- * @returns 形如
- *   `【当下】现在是2026年10月8日星期四 21:32，晚上，工作日，国庆节刚过完。这只是背景，不必刻意报时，也别句句都提节日。`
- *   无节日时中间那一段省略；非法 Date → 空串（调用方据此不加这一行）。
- */
-export function timeContextOf(date: Date): string {
+function numText(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function placeTextOf(region?: string, city?: string): string | undefined {
+  if (!city) return undefined;
+  if (!region || region === city) return city;
+  if (region.includes(city)) return region;
+  if (city.includes(region)) return city;
+  return /[\u4e00-\u9fa5]$/u.test(region) ? region + city : region + ' ' + city;
+}
+
+function weatherClauseOf(weather: TimeContextEnv['weather']): string {
+  if (!weather) return '外面的天气这次没查到，主人问起就说不知道、别编';
+  return (
+    '外面' + weather.summary +
+    '，气温 ' + numText(weather.temperatureC) + '°C，体感 ' + numText(weather.apparentC) +
+    '°C，湿度 ' + numText(weather.humidityPercent) + '%，风速 ' + numText(weather.windKph) + ' km/h'
+  );
+}
+
+export function timeContextOf(date: Date, env?: TimeContextEnv): string {
   // 非法 Date 的 getFullYear()/getDay() 都返回 NaN，直接拼会产出「NaN年NaN月」——显式挡掉
   if (Number.isNaN(date.getTime())) return '';
   const day = date.getDay();
   const hour = date.getHours();
   const holiday = holidayClauseOf(date);
+  const placeName = placeTextOf(env?.region, env?.city);
+  const place = placeName === undefined ? '' : '你在' + placeName + '（按网络粗估，不一定准），';
+  const weather = env === undefined ? '' : '，' + weatherClauseOf(env.weather);
   return (
-    '【当下】现在是' +
+    '【当下】' + place + '现在是' +
     date.getFullYear() +
     '年' +
     (date.getMonth() + 1) +
@@ -364,6 +394,9 @@ export function timeContextOf(date: Date): string {
     '，' +
     dayKindOf(day) +
     (holiday ? '，' + holiday : '') +
-    '。这只是背景，不必刻意报时，也别句句都提节日——多数时候正常说话就好，真贴切时才顺口带一句。'
+    weather +
+    '。这只是背景，不必刻意报时，也别句句都提节日' +
+    (env === undefined ? '' : '或天气') +
+    '——多数时候正常说话就好，真贴切时才顺口带一句。'
   );
 }

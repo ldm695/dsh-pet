@@ -90,6 +90,7 @@ function createFullscreenWindowProbe() {
 
   function enumerateLosslessScalingWindows(displayBounds = []) {
     const windows = [];
+    const handles = [];
     const processNameCache = new Map();
     const matchesDisplayBounds = (rect, bounds) => {
       const tolerance = Math.max(10, Math.round(Math.min(bounds.width, bounds.height) * 0.02));
@@ -100,15 +101,26 @@ function createFullscreenWindowProbe() {
         Math.abs(rect.bottom - (bounds.y + bounds.height)) <= tolerance
       );
     };
+    // Keep the native EnumWindows callback deliberately trivial. Calling other
+    // user32/kernel32 functions from inside a Koffi callback can stall Electron's
+    // browser thread on some Windows window stacks. Snapshot handles first, then
+    // inspect them after EnumWindows has returned.
     const callback = (hWnd) => {
+      if (hWnd) handles.push(hWnd);
+      return 1;
+    };
+
+    if (!enumWindows(callback, null)) throw new Error('EnumWindows failed while checking Lossless Scaling windows.');
+
+    for (const hWnd of handles) {
       try {
-        if (!hWnd || !isWindowVisible(hWnd) || isIconic(hWnd)) return 1;
+        if (!isWindowVisible(hWnd) || isIconic(hWnd)) continue;
         const rect = {};
-        if (!getWindowRect(hWnd, rect)) return 1;
-        if (!displayBounds.some((bounds) => matchesDisplayBounds(rect, bounds))) return 1;
+        if (!getWindowRect(hWnd, rect)) continue;
+        if (!displayBounds.some((bounds) => matchesDisplayBounds(rect, bounds))) continue;
 
         const className = readClassName(hWnd);
-        if (desktopShellClasses.has(className)) return 1;
+        if (desktopShellClasses.has(className)) continue;
         let processName = '';
         const matchesClass = className.toLowerCase().includes('losslessscaling');
         if (!matchesClass) {
@@ -126,10 +138,7 @@ function createFullscreenWindowProbe() {
       } catch {
         // A transient window or an inaccessible process must not affect other windows.
       }
-      return 1;
-    };
-
-    if (!enumWindows(callback, null)) throw new Error('EnumWindows failed while checking Lossless Scaling windows.');
+    }
     return windows;
   }
 

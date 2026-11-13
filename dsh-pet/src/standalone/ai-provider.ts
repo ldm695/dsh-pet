@@ -4,6 +4,8 @@ import { createAiConfig, validateSettings } from './ai-config';
 import type { StandaloneAiPublicSettings, StandaloneAiSettings } from './ai-config';
 import { isAuthenticationFailure, isRateLimitFailure, sdkTextStream } from './ai-transport';
 import type { AiFetch, AiRequest, AiTransportEvent } from './ai-transport';
+import { discoverModels as discoverModelIds } from './ai-models';
+import type { ModelDiscoveryInput, ModelDiscoveryResult } from './ai-models';
 import { deepseekPricingTier } from '../host/balance/deepseek-common';
 
 const PROVIDER = 'standalone';
@@ -53,6 +55,7 @@ export interface StandaloneAiService {
     model?: string;
     apiKey?: string;
   }): Promise<{ ok: boolean; message: string; reply?: string }>;
+  discoverModels(input: ModelDiscoveryInput, signal?: AbortSignal): Promise<ModelDiscoveryResult>;
   isReady(): boolean;
   supportsBalance(): boolean;
   canWhisper(): boolean;
@@ -158,6 +161,8 @@ export function createStandaloneAi(
   let active: AbortController | undefined;
   let testing = false;
   let testController: AbortController | undefined;
+  let discovering = false;
+  let discoveryController: AbortController | undefined;
   const reserveRequestSlot = (): boolean => {
     const recent = requests.filter((time) => now() - time < RATE_WINDOW_MS);
     if (recent.length >= REQUESTS_PER_MINUTE) return false;
@@ -273,6 +278,7 @@ export function createStandaloneAi(
       saving = true;
       active?.abort();
       testController?.abort();
+      discoveryController?.abort();
       try {
         const result = await store.save(input);
         if (!disposed) paused = false;
@@ -286,6 +292,28 @@ export function createStandaloneAi(
     },
     isReady: ready,
     supportsBalance: () => store.current().protocol === 'deepseek-official',
+    async discoverModels(input, signal) {
+      if (disposed) return { ok: false, code: 'input', message: '服务已关闭。' };
+      if (saving || testing || discovering) {
+        return { ok: false, code: 'busy', message: 'AI 正在处理其他请求，请稍后重试。' };
+      }
+      if (!reserveRequestSlot()) return { ok: false, code: 'rate-limit', message: '请求过于频繁，请稍后重试。' };
+      discovering = true;
+      const controller = new AbortController();
+      discoveryController = controller;
+      const abort = (): void => controller.abort();
+      signal?.addEventListener('abort', abort, { once: true });
+      try {
+        return await discoverModelIds(fetcher, store.current(), input, controller.signal);
+      } catch {
+        return { ok: false, code: 'network', message: '无法连接到目标服务器，请检查地址与端口。' };
+      } finally {
+        signal?.removeEventListener('abort', abort);
+        controller.abort();
+        if (discoveryController === controller) discoveryController = undefined;
+        discovering = false;
+      }
+    },
     async testConnection(input: { protocol?: string; baseUrl?: string; model?: string; apiKey?: string }) {
       if (disposed) return { ok: false, message: '服务已关闭' };
       const current = store.current();
@@ -323,7 +351,7 @@ export function createStandaloneAi(
         return { ok: false, message: '请先填写 API 密钥' };
       }
 
-      if (saving || active || testing) {
+      if (saving || active || testing || discovering) {
         return { ok: false, message: 'AI 正在处理其他请求，请稍后重试。' };
       }
       if (!reserveRequestSlot()) {
@@ -416,6 +444,7 @@ export function createStandaloneAi(
       disposed = true;
       active?.abort();
       testController?.abort();
+      discoveryController?.abort();
     },
   };
   function settingsModel(): string {

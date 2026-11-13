@@ -18,17 +18,18 @@ const FEET_Y = 330;
 /**
  * 窗口矩形 → 宠物身体命中区的屏幕矩形（DIP）。
  *
- * 窗口 = 宠物包围盒 + 四周余量，而余量不再四边相等（上边距按气泡最大高度加高），所以不能按
- * 「窗口宽/4」反推，否则命中区整体偏移。余量由渲染端随 setBounds 上报，缺失时回退旧口径。
+ * 窗口 = 宠物包围盒 + 四周余量，而余量不再四边相等（上边距按气泡最大高度加高；窗口被系统
+ * 钳回工作区后左右边距也可能不同），所以不能按「窗口宽/4」反推。余量由渲染端随 setBounds 上报。
  *
  * @param bounds - 窗口矩形（DIP）。
- * @param margins - 渲染端上报的窗口余量（DIP）。
+ * @param margins - 渲染端上报的窗口余量（DIP），缺少右边距时沿用左边距。
  */
 function spriteHitRect(bounds, margins) {
   const legacy = Math.round(bounds.width / 4);
   const ml = Number.isFinite(margins?.l) ? margins.l : legacy;
   const mt = Number.isFinite(margins?.t) ? margins.t : legacy;
-  const stageW = bounds.width - ml * 2;
+  const mr = Number.isFinite(margins?.r) ? margins.r : ml;
+  const stageW = Math.max(0, bounds.width - ml - mr);
   const stageH = (stageW * CANVAS_H) / STAGE_W;
   const bottomPad = (stageH * (CANVAS_H - FEET_Y)) / CANVAS_H;
   return {
@@ -97,6 +98,11 @@ function decideWindowIgnore(bounds, point, ignoring, busy, offBodyMs = 0, input,
   return ignoring; // 余量区：保持（菜单/弹窗由 busy 覆盖）
 }
 
+/** Whether the pointer moved from the pet hit area to its margin or outside the window. */
+function leavesBody(previous, next) {
+  return previous === 'body' && next !== 'body';
+}
+
 module.exports = {
   HIT_BOX,
   CANVAS_H,
@@ -107,4 +113,5 @@ module.exports = {
   spriteHitRect,
   pointerZone,
   decideWindowIgnore,
+  leavesBody,
 };

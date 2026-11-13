@@ -29,6 +29,8 @@ export default defineConfig([
       /^@deepseek-ai\/(?:dsh-home-paths|dsh-credentials|dsh-llm)$/,
       /^openai$/,
       /^@anthropic-ai\/sdk$/,
+      // 语音合成按需加载；独立应用产物没有 node_modules，需连依赖一起内联。
+      /^@andresaya\/edge-tts$/,
     ],
     external: [/^@electron\//, /^node:/, /^@deepseek-ai\/(?!dsh-home-paths$|dsh-credentials$|dsh-llm$)/],
     alias: {

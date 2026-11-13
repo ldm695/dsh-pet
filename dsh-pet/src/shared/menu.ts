@@ -192,9 +192,15 @@ export function buildMenuTree(animations: Animations): MenuNode[] {
   for (const key of Object.keys(events)) {
     const pool = events[key] ?? [];
     const names: string[] = [];
-    for (const slot of pool) {
+    // User and migrated configs can contain stale event data that no longer matches
+    // EventSlot. A malformed slot must not prevent the entire context menu opening.
+    for (const slot of Array.isArray(pool) ? pool : []) {
       if (typeof slot === 'string') names.push(slot);
-      else names.push(...slot);
+      else if (Array.isArray(slot)) {
+        for (const name of slot) {
+          if (typeof name === 'string' && name.length > 0) names.push(name);
+        }
+      }
     }
     if (names.length) groups.push({ label: EVENT_LABELS[key] ?? key, children: names.map(leaf) });
   }

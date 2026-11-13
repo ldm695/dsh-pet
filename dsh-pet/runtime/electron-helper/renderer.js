@@ -100,6 +100,11 @@ async function loadConfig() {
     // 抛掷锁定在当前屏幕（根字段；合并器已填内置默认 false）
     confineToScreen: (merged && merged.main && merged.main.confineToScreen) === true,
     clickSoundEnabled: (merged && merged.main && merged.main.clickSoundEnabled) === true,
+    voiceName: (merged && merged.main && merged.main.voiceName) || 'zh-CN-XiaoyiNeural',
+    voiceVolume: (merged && merged.main && Number.isFinite(merged.main.voiceVolume)) ? merged.main.voiceVolume : 1,
+    voiceEnabled: (merged && merged.main && merged.main.voiceEnabled) === true,
+    voiceWhisperEnabled: (merged && merged.main && merged.main.voiceWhisperEnabled) === true,
+    voiceNotifyEnabled: (merged && merged.main && merged.main.voiceNotifyEnabled) === true,
     // 字体（全局一份，合并器已填内置默认）：字体族在此取一次、注入全局变量；字号由每只宠物
     // 按自己的尺寸算（见 PetSprite 注入的 --dsh-pet-font-bubble / --dsh-pet-font-tip）
     font: (merged && merged.main && merged.main.font) || S.DEFAULT_FONT,
@@ -118,6 +123,10 @@ async function boot() {
   try {
     const cfg = await loadConfig();
     config = cfg;
+    S.setVoiceBase(BASE);
+    S.setSurface('desktop');
+    S.setVoiceConfig(cfg.voiceName, cfg.voiceVolume);
+    S.setVoiceNotifyEnabled(cfg.voiceNotifyEnabled);
     bootFailures = 0;
     hideError();
     // 字体族（全局配置 font.family）→ documentElement：对话窗/得分弹窗挂在 body 下、继承不到

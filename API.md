@@ -26,6 +26,8 @@ DSH Pet Windows 应用在本机 HTTP 服务上提供统一的 `/dsh-pet-7340` �
 | `POST /dsh-pet-7340/broadcast?pet=&surface=desktop` | **第三方投喂**：把文本及可选远程配图写进气泡（不生成，只搬运） |
 | `POST /dsh-pet-7340/bubble/clear?pet=&surface=desktop` | **清空气泡**：提前收起说话气泡（只动气泡，不动动画） |
 | `POST /dsh-pet-7340/anim?pet=&surface=desktop` | **点播动画**：播放池内动画或远程视频，可选指定朝向；回 `playbackId` |
+| `POST /dsh-pet-7340/sleep?pet=&surface=desktop` | 让桌宠按配置播放入睡过渡并进入循环睡眠；睡眠期间忽略自动动画与常规事件 |
+| `POST /dsh-pet-7340/wake?pet=&surface=desktop` | 唤醒桌宠并播放睡眠配置中的起身动画；未睡时幂等成功 |
 | `GET /dsh-pet-7340/playback/{id}` | **播放回执**：查那次点播的真实状态；带 `?wait=&timeout=` 可挂起等待 |
 | `POST /dsh-pet-7340/playback/{id}/report` | 渲染端上报播放状态（**内部通道**，第三方不用调） |
 | `POST /dsh-pet-7340/chat?pet=&surface=desktop` | 对桌宠说一句话并生成回复，同时写入对话记忆；成功响应含 `text` 和可选 `image` |
@@ -35,6 +37,14 @@ DSH Pet Windows 应用在本机 HTTP 服务上提供统一的 `/dsh-pet-7340` �
 | `POST /dsh-pet-7340/lock?pet=&surface=desktop` | 申请或续期单只桌宠的独占控制租约 |
 | `POST /dsh-pet-7340/lock/release?pet=` | 释放租约；用户接管时可强制释放 |
 | `POST /dsh-pet-7340/balance` | 立即刷新一次余额 |
+| `POST /dsh-pet-7340/environment?pet=&surface=desktop&fresh=1` | 查询 IP 粗略定位的城市与天气，并在指定桌宠的独立环境气泡显示结果 |
+| `GET /dsh-pet-7340/todos` | 读取本机待办清单 |
+| `POST /dsh-pet-7340/todos` | 新建待办：`{ text, dueAt }`，`dueAt` 可为毫秒时间戳或 `null` |
+| `PATCH /dsh-pet-7340/todos/{id}` | 修改待办正文、期限或完成状态 |
+| `DELETE /dsh-pet-7340/todos/{id}` | 删除待办 |
+| `GET /dsh-pet-7340/voice/voices` | 列出内置语音音色 |
+| `POST /dsh-pet-7340/voice/speak` | 将不超过 500 字的文本合成为 MP3；合成结果缓存在本机 |
+| `POST /dsh-pet-7340/broadcast?pet=&surface=desktop` | 向气泡投递文本；可传 `speak: true` 请求语音播报（需在全局设置中启用） |
 | `POST /dsh-pet-7340/reload` | 重载桌面端（重启桌面宠物进程，按最新配置重建窗口） |
 
 ## 配置管理
@@ -62,7 +72,7 @@ DSH Pet Windows 应用在本机 HTTP 服务上提供统一的 `/dsh-pet-7340` �
 | --- | --- |
 | `GET /dsh-pet-7340/thumb/{petId}/{file}` | 动画素材（`.webm` / `.mov`，按宠物归属） |
 | `GET /dsh-pet-7340/font/{file}` | 字体文件 |
-| `GET /dsh-pet-7340/pic/{file}` | 通知图标（`pic/`）与表情包（`pic/memes/{素材根}/`，按宠物归属） |
+| `GET /dsh-pet-7340/pic/{file}` | 通知图标（用户目录 `dsh-pet/pic/` 优先，包内素材兜底）与表情包（`pic/memes/{素材根}/`，按宠物归属） |
 
 ## 八、工作状态（外部写入）
 
@@ -84,6 +94,8 @@ DSH Pet Windows 应用在本机 HTTP 服务上提供统一的 `/dsh-pet-7340` �
    `{ counter, data }`。`POST /whisper` 与 `POST /chat` 也会回传同一份生成文本，方便立即使用。
    DeepSeek 多币种余额的新格式使用 `data.wallets` 数组；`currency`、`total`、`granted`、`toppedUp`
    等单钱包字段仍保留为主钱包兼容别名，旧客户端可以继续读取。
+   Command Code 若接口返回完整的本期累计数据，会额外提供 `data.usage`（Token 总量、输入/输出量、请求数和花费）；
+   用量数据缺项时不提供此字段，余额气泡也不会显示用量页。
 4. **动作端点不返回数据**：大多数 `POST` 只回 `{ ok: true }`；结果写进状态，
    长轮询那一拍会立刻把它送到（调用方不必主动补拉）。
    **其他例外**会额外返回对应结果：

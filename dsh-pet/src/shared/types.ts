@@ -68,6 +68,8 @@ export interface Animations {
   moves: MovesConfig;
   categories: Category[];
   events: Events;
+  /** 可选睡眠动画套：一套包含入睡、循环、醒来三个阶段。 */
+  sleep?: Array<{ start: string[]; loop: string[]; end: string[] }>;
 }
 
 /** 一只宠物（与 jsonc pets[i] 同形，position 嵌套）。

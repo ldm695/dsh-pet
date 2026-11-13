@@ -7,7 +7,7 @@
  * 必须始终成立：拼装点唯一——不给名字与时间开占位符配置，否则等于出现第二个拼装点。
  * @module dsh-pet/src/host/persona
  */
-import { timeContextOf } from './time-context';
+import { timeContextOf, type TimeContextEnv } from './time-context';
 
 /**
  * 某宠物最终生效的人设正文（不含名字与时间）：实例 whisperPrompt → 条目 whisperPrompt → 空串。
@@ -32,6 +32,8 @@ export interface SystemPromptParts {
   id: string;
   /** 生成这一刻（生产传 new Date()，测试传固定日期） */
   now: Date;
+  /** 当前地点和天气；缺省时只提供现有时间背景。 */
+  env?: TimeContextEnv;
 }
 
 /**
@@ -44,7 +46,7 @@ export function composeSystemPrompt(parts: SystemPromptParts): string {
   const name = String(parts.name || parts.id);
   const nameLine = name ? '你的名字是“' + name + '”。' : '';
   const lines = [parts.prompt, nameLine].filter((line) => line !== '');
-  const time = timeContextOf(parts.now);
+  const time = timeContextOf(parts.now, parts.env);
   if (time) lines.push(time);
   return lines.join('\n');
 }

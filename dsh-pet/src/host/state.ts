@@ -136,6 +136,8 @@ export class PollStateStore {
       // 第三方右键菜单项（src/host/menu 的注册表快照）：第三方菜单注册/覆盖时写它，
       // 浏览器与桌面两端据此在右键菜单里拼出「更多」。data 形状见 shared/menu 的 readMenuItems。
       menu: emptyLeaf(),
+      // 天气/位置查询结果：独立气泡状态，不覆盖 say、余额或工作状态气泡。
+      env: emptyLeaf(),
     };
     this.pets = new Map();
     this.waiters = new Set();
@@ -160,7 +162,14 @@ export class PollStateStore {
   writePet(petId: string, leaf: PetLeafName, data: unknown): void {
     let entry = this.pets.get(petId);
     if (!entry) {
-      entry = { say: emptyLeaf(), anim: emptyLeaf(), position: emptyLeaf(), throw: emptyLeaf(), lock: emptyLeaf() };
+      entry = {
+        say: emptyLeaf(),
+        anim: emptyLeaf(),
+        position: emptyLeaf(),
+        throw: emptyLeaf(),
+        lock: emptyLeaf(),
+        sleep: emptyLeaf(),
+      };
       this.pets.set(petId, entry);
     }
     entry[leaf] = { counter: this.next(), data };

@@ -38,11 +38,13 @@ try {
 const { app, BrowserWindow, ipcMain, screen, shell, protocol, Notification, powerMonitor } = electronApi;
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { execFileSync, spawn } = require('node:child_process');
+const { execFile, execFileSync, spawn } = require('node:child_process');
 const { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } = require('node:fs');
 const fsPromises = require('node:fs/promises');
+const { dshHomeDir, resolveUserDataDir } = require('./user-data.js');
+const { parseRange } = require('./range.js');
 // 点击穿透兜底通道的纯判定（不依赖 Electron 的 forward 鼠标钩子；见文件头注释）
-const { decideWindowIgnore, pointerZone, POINTER_POLL_MS } = require('./pointer-target.js');
+const { decideWindowIgnore, pointerZone, leavesBody, POINTER_POLL_MS } = require('./pointer-target.js');
 const { createLinuxPointer } = require('./x11-pointer.js');
 // 置顶看门狗：WS_EX_TOPMOST 只是样式位，不等于窗口真的在置顶带（见 topmost-watchdog.js 头部）
 const {
@@ -51,6 +53,11 @@ const {
   shouldReassertTopmost,
   topmostLevel,
 } = require('./topmost-watchdog.js');
+const {
+  TASKBAR_WATCHDOG_TICK_MS,
+  shouldRunTaskbarWatchdog,
+  taskbarWatchdogEnabledFromEnv,
+} = require('./taskbar-watchdog.js');
 // 宿主存活判定（issue #56：宿主退出 → 管道断开 → 自己退，绝不弹框、绝不留僵尸）
 const { HOST_POLL_MS, hostIsGone, isBrokenPipeError, parseHostPid } = require('./host-liveness.js');
 // 全局 DPI 线性化的纯判定与换算（含平台例外：macOS 的 DIP 已是「点」，无需补偿；见该文件头）
@@ -134,6 +141,24 @@ for (const stream of [process.stdout, process.stderr]) {
   });
 }
 
+// Electron profile 目录可能因 ACL 或受限令牌不可写；实际写探针验证后回退到 DSH 私有目录。
+// 这里只迁移 Electron profile / 位置缓存路径，不移动独立 AI 配置、密钥或对话记忆。
+const userDataDecision = resolveUserDataDir({
+  currentDir: app.getPath('userData'),
+  dshHome: dshHomeDir(),
+  standalone: process.env.DSH_PET_STANDALONE === '1',
+  edition: APP_EDITION,
+});
+if (userDataDecision.fallback) {
+  app.setPath('userData', userDataDecision.dir);
+  console.error('[dsh-pet-desktop-helper] userData 不可写，回退到', userDataDecision.dir);
+} else if (userDataDecision.error) {
+  console.error(
+    '[dsh-pet-desktop-helper] userData 回退失败:',
+    String(userDataDecision.error.message || userDataDecision.error),
+  );
+}
+
 // ② 宿主探测：DSH_PET_HOST_PID 由宿主 spawn 时注入；未注入/非法 → parseHostPid 给 0 → 不探测（不误退）。
 // DPI 探测实例是一次性短命进程（它的父进程是 helper 而不是宿主），不参与这套机制。
 const HOST_PID = parseHostPid(process.env.DSH_PET_HOST_PID);
@@ -211,6 +236,11 @@ function parseProbeOutput(text) {
   return Number.isFinite(v) && v > 0 ? v : 0;
 }
 
+/** DPI 探针是 Helper 的短命子进程；若当前 Helper 已因沙箱问题降级，也沿用相同启动参数。 */
+function dpiProbeArgs() {
+  return [...(process.argv.includes('--no-sandbox') ? ['--no-sandbox'] : []), __filename, '--dsh-pet-dpi-probe'];
+}
+
 /** 拉起探测子进程读主屏 scaleFactor（同一个 electron + 同一个 main.js，走 DPI_PROBE 分支） */
 function probePrimaryScale() {
   const opts = {
@@ -222,7 +252,7 @@ function probePrimaryScale() {
   };
   let out = '';
   try {
-    out = execFileSync(process.execPath, [__filename, '--dsh-pet-dpi-probe'], opts);
+    out = execFileSync(process.execPath, dpiProbeArgs(), opts);
   } catch (e) {
     // 只认 stdout，不认退出码：一个不开窗口的 Electron 进程调 app.exit() 在 Windows 上
     // 偶发 0xC0000005（退出期访问违例），但那时值早就写出来了，丢掉它纯属浪费一次冷启动。
@@ -245,6 +275,36 @@ function probePrimaryScale() {
   const v = parseProbeOutput(out);
   if (v > 0) writeCachedPrimaryScale(v);
   return v;
+}
+
+/** 异步复查真实主屏缩放：缓存可能因系统缩放变化或未到达的显示器事件而过期。 */
+function probePrimaryScaleAsync() {
+  const opts = {
+    env: { ...process.env, DSH_PET_DPI_PROBE: '1', DSH_PET_BRIDGE: '0', DSH_PET_SMOKE: '0' },
+    timeout: 20000,
+    encoding: 'utf8',
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  };
+  return new Promise((resolve) => {
+    execFile(process.execPath, dpiProbeArgs(), opts, (error, stdout, stderr) => {
+      const value = parseProbeOutput(stdout);
+      if (value > 0) {
+        writeCachedPrimaryScale(value);
+        resolve(value);
+        return;
+      }
+      if (error) {
+        const detail = String(stderr || '').trim().slice(0, 300);
+        console.error(
+          '[dsh-pet-desktop-helper] async dpi probe failed:',
+          String(error.message || error).split('\n')[0],
+          detail,
+        );
+      }
+      resolve(0);
+    });
+  });
 }
 
 /** 真实主屏 scaleFactor（探测所得；0 = 未知）。开启线性化后 screen API 只会报 1，只能靠它。 */
@@ -280,6 +340,10 @@ const BRIDGE = process.env.DSH_PET_BRIDGE === '1';
  *  'desktop' = DSH Desktop 环境 → 唤起桌面应用主窗口；
  *  'site'    = Node 命令行或手动 Helper → 默认浏览器打开配置的站点。 */
 const OPEN_TARGET = process.env.DSH_PET_OPEN_TARGET === 'desktop' ? 'desktop' : 'site';
+const IS_X11_SESSION = process.platform === 'linux' && (
+  String(process.env.XDG_SESSION_TYPE || '').toLowerCase() === 'x11' ||
+  (!process.env.WAYLAND_DISPLAY && !!process.env.DISPLAY)
+);
 /** 协议行前缀（与 helper-process.ts 的 BRIDGE_PREFIX 一致） */
 const BRIDGE_PREFIX = 'dsh-pet-bridge:';
 
@@ -541,11 +605,31 @@ function showPetWindow(win) {
 }
 
 function keepOffTaskbar(win) {
+  reassertTaskbar(win);
+  setTimeout(() => reassertTaskbar(win), 0);
+}
+
+function reassertTaskbar(win) {
   if (!win || win.isDestroyed()) return;
   win.setSkipTaskbar(true);
-  setTimeout(() => {
-    if (!win.isDestroyed()) win.setSkipTaskbar(true);
-  }, 0);
+}
+
+/** 任务栏看门狗定时器：重申 Electron 的 skipTaskbar 标志，处理 Shell 重建后的任务栏按钮。 */
+let taskbarWatchdogTimer = null;
+
+function startTaskbarWatchdog() {
+  const enabled = taskbarWatchdogEnabledFromEnv(process.env.DSH_PET_TASKBAR_WATCHDOG);
+  if (taskbarWatchdogTimer || !shouldRunTaskbarWatchdog(process.platform, enabled)) return;
+  taskbarWatchdogTimer = setInterval(() => {
+    for (const win of windows.values()) reassertTaskbar(win);
+  }, TASKBAR_WATCHDOG_TICK_MS);
+  taskbarWatchdogTimer.unref?.();
+}
+
+function stopTaskbarWatchdog() {
+  if (!taskbarWatchdogTimer) return;
+  clearInterval(taskbarWatchdogTimer);
+  taskbarWatchdogTimer = null;
 }
 
 function applyFullscreenVisibility() {
@@ -688,13 +772,13 @@ const winMargins = new Map();
 const inputBusy = new Map();
 const inputRegions = new Map();
 const offBodyMs = new Map();
+const lastPointerZone = new Map();
 let pointerFallbackPaused = false;
 
 /**
  * 宠物间碰撞 broker 状态：petId -> { x, y, vx, vy, size, bottomPad }。
- * 来源：pet:set-bounds（位置+尺寸+速度，随漫游/拖拽/静止保真上报，每帧一次）+
- *       pet:report-flight（飞行中每 ~30ms 高频补充速度）。
- * 任何更新都广播全量给所有窗口——每窗飞行方用它做跨窗碰撞检测（滞后 ≤ 1 帧，可接受）。
+ * 来源：pet:set-bounds（位置+尺寸+速度，随漫游/拖拽/飞行/静止统一上报）。
+ * 位置更新由主进程合并到最多每 16ms 一次，再广播全量状态，供飞行方做跨窗碰撞检测。
  */
 const petStates = new Map();
 const workStatusAssignments = new WorkStatusAssignmentManager();
@@ -866,10 +950,16 @@ function broadcastPetStates() {
 
 /** 记录/更新一只宠物的状态并广播 */
 function updatePetState(petId, partial, { newClaim = false } = {}) {
+  const existed = petStates.has(petId);
   const prev = petStates.get(petId) || { x: 0, y: 0, vx: 0, vy: 0, size: 0, bottomPad: 0 };
   const state = Object.assign({}, prev, partial, { updatedAt: Date.now() });
-  petStates.set(petId, state);
   const settledFreeMotion = prev.freeMotion === true && state.freeMotion !== true;
+  // set-bounds may repeat an identical rounded rectangle across adjacent frames. Do not rebroadcast it;
+  // a new claim or the end of free motion still needs to refresh target ownership even at the same point.
+  if (existed && !newClaim && !settledFreeMotion && Object.keys(partial).every((key) => Object.is(state[key], prev[key]))) {
+    return;
+  }
+  petStates.set(petId, state);
   const priorTarget = moveTargets.targets.get(petId);
   moveTargets.updateActual(
     petId,
@@ -988,6 +1078,7 @@ function createNotificationWorkerWindow({ geo, configUrl, scale, notificationIco
         bridge: BRIDGE ? '1' : '0',
         standalone: process.env.DSH_PET_STANDALONE === '1' ? '1' : '0',
         openTarget: OPEN_TARGET,
+        isWindowClampedToWorkArea: IS_X11_SESSION ? '1' : '0',
         scale: String(scale),
         petIndex: '0',
         petLayouts: '[]',
@@ -1096,6 +1187,9 @@ function createPetWindows() {
       const point = currentPointer();
       const margins = winMargins.get(win.id);
       const zone = pointerZone(bounds, point, margins);
+      const previousZone = lastPointerZone.get(win.id);
+      lastPointerZone.set(win.id, zone);
+      if (!busy && leavesBody(previousZone, zone)) win.webContents.send('pet:pointer-left');
       const offBodyDuration = !busy && zone === 'margin' ? (offBodyMs.get(win.id) ?? 0) + POINTER_POLL_MS : 0;
       offBodyMs.set(win.id, offBodyDuration);
       const next = decideWindowIgnore(
@@ -1152,6 +1246,7 @@ function createPetWindows() {
       inputBusy.delete(win.id);
       inputRegions.delete(win.id);
       offBodyMs.delete(win.id);
+      lastPointerZone.delete(win.id);
       windowIgnore.delete(win.id);
       reducedMotionByRenderer.delete(workStatusRendererId);
       fullscreenWindowTargets.delete(win.id);
@@ -1183,6 +1278,7 @@ function createPetWindows() {
           bridge: BRIDGE ? '1' : '0',
           standalone: process.env.DSH_PET_STANDALONE === '1' ? '1' : '0',
           openTarget: OPEN_TARGET,
+          isWindowClampedToWorkArea: IS_X11_SESSION ? '1' : '0',
           scale: String(scale),
           petIndex: String(pet.index),
           petLayouts,
@@ -1303,7 +1399,29 @@ async function handleBridgeRequest(request) {
     // 素材：直接读盘返回（宿主已解析好绝对路径；带 range 让视频能拖动进度条）
     try {
       const data = await fsPromises.readFile(resp.file);
-      return new Response(new Uint8Array(data), { status: resp.status || 200, headers });
+      const decision = parseRange(request.headers.get('range'), data.length);
+      if (decision === 'unsatisfiable') {
+        return new Response(null, {
+          status: 416,
+          headers: { ...headers, 'content-range': `bytes */${data.length}`, 'accept-ranges': 'bytes' },
+        });
+      }
+      if (decision !== null) {
+        const slice = data.subarray(decision.start, decision.end + 1);
+        return new Response(new Uint8Array(slice), {
+          status: 206,
+          headers: {
+            ...headers,
+            'content-length': String(slice.length),
+            'content-range': `bytes ${decision.start}-${decision.end}/${data.length}`,
+            'accept-ranges': 'bytes',
+          },
+        });
+      }
+      return new Response(new Uint8Array(data), {
+        status: resp.status || 200,
+        headers: { ...headers, 'content-length': String(data.length), 'accept-ranges': 'bytes' },
+      });
     } catch (e) {
       console.error('[dsh-pet-desktop-helper] bridge file read failed:', resp.file, e);
       return new Response('dsh-pet: asset read failed', { status: 500, headers });
@@ -1363,6 +1481,25 @@ app.whenReady().then(async () => {
   startFullscreenWatcher();
   linuxPointer?.start();
   createPetWindows();
+  startTaskbarWatchdog();
+
+  // 缩放缓存只用于尽快建窗，不能当作永久事实。进程启动后复查一次；若主屏缩放已变，
+  // 先更新缓存，再让宿主监督器重启 Helper，使 force-device-scale-factor 在 ready 前以新值生效。
+  if (FORCED_SCALE > 0) {
+    setTimeout(() => {
+      void probePrimaryScaleAsync().then((real) => {
+        if (real <= 0 || Math.abs(real - PRIMARY_SCALE) <= 1e-6) return;
+        console.error(
+          '[dsh-pet-desktop-helper] primary scaleFactor changed ' +
+            PRIMARY_SCALE +
+            ' -> ' +
+            real +
+            '; restarting helper to rebuild windows with the current scale',
+        );
+        app.quit();
+      });
+    }, 1500).unref?.();
+  }
 
   const reassertTaskbar = () => {
     for (const win of windows.values()) keepOffTaskbar(win);
@@ -1395,7 +1532,13 @@ app.whenReady().then(async () => {
     lastRequestedBounds.set(win.id, rect);
     const marginL = Number(bounds?.marginL);
     const marginT = Number(bounds?.marginT);
-    if (Number.isFinite(marginL) && Number.isFinite(marginT)) winMargins.set(win.id, { l: marginL, t: marginT });
+    const marginR = Number(bounds?.marginR);
+    if (Number.isFinite(marginL) && Number.isFinite(marginT)) {
+      winMargins.set(
+        win.id,
+        Number.isFinite(marginR) ? { l: marginL, t: marginT, r: marginR } : { l: marginL, t: marginT },
+      );
+    }
     // 碰撞站场：位置必须用**包围盒左上角**（renderer 显式上报 boxX/boxY）——
     // 窗口坐标 = 包围盒 − margin（半只宠物宽），直接拿窗口坐标会让跨窗检测整体错位
     {
@@ -1433,22 +1576,6 @@ app.whenReady().then(async () => {
     broadcastMoveTargets,
   });
 
-  // 飞行状态上报（碰撞站场）：renderer 飞行中每 ~30ms 上报一次自己的位置/速度/尺寸
-  ipcMain.on('pet:report-flight', (event, state) => {
-    const win = BrowserWindow.fromWebContents(event.sender);
-    if (!win || win.isDestroyed()) return;
-    const petId = String(state?.petId || '');
-    if (!petId || windows.get(petId) !== win) return;
-    const s = state || {};
-    const x = Number(s.x);
-    const y = Number(s.y);
-    const vx = Number(s.vx);
-    const vy = Number(s.vy);
-    const size = Number(s.size);
-    const bottomPad = Number(s.bottomPad);
-    if (![x, y, vx, vy, size, bottomPad].every(Number.isFinite)) return;
-    updatePetState(petId, { x, y, vx, vy, size, bottomPad });
-  });
 
   // 碰撞结果转发：飞行方窗口检测到撞到 targetId → 把动量结果（目标新初速）转发给目标窗口
   ipcMain.on('pet:collide-result', (event, payload) => {
@@ -1496,6 +1623,15 @@ app.whenReady().then(async () => {
         rect && [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) && rect.width > 0 && rect.height > 0,
     );
     inputRegions.set(win.id, { dragging: input.dragging === true, rects });
+  });
+
+  // DOM 输入焦点不一定代表桌面窗口获得了系统键盘焦点（X11 上尤其明显）。只由渲染端在
+  // 文本框获得焦点时请求；窗口已激活或已销毁时跳过，避免无关时抢走其他应用焦点。
+  ipcMain.on('pet:request-keyboard-focus', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed() || win.isFocused()) return;
+    win.focus();
+    win.webContents.focus();
   });
 
   // 右键菜单「打开网站」：交给**系统默认浏览器**打开（等效于网页里 Ctrl+点击链接新标签页），
@@ -1694,16 +1830,17 @@ app.whenReady().then(async () => {
     // 真实值只能靠探测子进程拿；不一致就刷新缓存，下次启动自动用上。
     if (FORCED_SCALE > 0) {
       setTimeout(() => {
-        const real = probePrimaryScale();
-        if (real > 0 && Math.abs(real - PRIMARY_SCALE) > 1e-6) {
-          console.error(
-            '[dsh-pet-desktop-helper] primary scaleFactor changed ' +
-              PRIMARY_SCALE +
-              ' -> ' +
-              real +
-              '; restart the desktop pet to resize',
-          );
-        }
+        void probePrimaryScaleAsync().then((real) => {
+          if (real > 0 && Math.abs(real - PRIMARY_SCALE) > 1e-6) {
+            console.error(
+              '[dsh-pet-desktop-helper] primary scaleFactor changed ' +
+                PRIMARY_SCALE +
+                ' -> ' +
+                real +
+                '; restart the desktop pet to resize',
+            );
+          }
+        });
       }, 1000).unref?.();
     }
   };
@@ -1970,6 +2107,7 @@ app.whenReady().then(async () => {
 // TerminateProcess、拦不到，所以这条只覆盖优雅退出（窗口全关、宿主存活探测判定退出等）。
 app.on('before-quit', () => {
   stopFullscreenWatcher();
+  stopTaskbarWatchdog();
 });
 
 app.on('window-all-closed', () => {

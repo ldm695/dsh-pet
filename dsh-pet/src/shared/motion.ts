@@ -2,7 +2,7 @@
 // 坐标语义：移动规划归一化为视口比例（ratio），px 换算由调用方（rAF 驱动 / customPos）完成；
 // 角落定位返回宠物根节点左上角的像素坐标，桌面模式用它摆放 sprite。
 import { randomBetween } from './pickers';
-import { rectAtPoint } from './displays';
+import { rectAtPoint, rectBottom, rectRight } from './displays';
 import type { Corner, Rect } from './types';
 
 /** 一次移动的几何参数（比例坐标） */
@@ -12,6 +12,52 @@ export interface MovePlan {
   targetRatio: number;
   targetYRatio: number;
   totalRatio: number;
+}
+
+/** 窗口原点及本体在窗口内的实际偏移。 */
+export interface WindowFit {
+  readonly x: number;
+  readonly y: number;
+  readonly offsetX: number;
+  readonly offsetY: number;
+}
+
+/** 可留在工作区外的身体边缘距离。 */
+export interface ReachInset {
+  readonly left: number;
+  readonly right: number;
+  readonly top: number;
+  readonly bottom: number;
+}
+
+const clampAxis = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
+
+/**
+ * 将宠物窗口适配到会把窗口钳回工作区的窗口管理器（X11）。
+ * 窗口保持在工作区内，超出的部分通过调整窗口内本体偏移补偿，避免宠物贴边时被窗口管理器推离屏幕边缘。
+ */
+export function fitWindowInArea(o: {
+  bodyX: number;
+  bodyY: number;
+  width: number;
+  height: number;
+  bodyWidth: number;
+  bodyHeight: number;
+  insetX: number;
+  insetY: number;
+  reach?: ReachInset;
+  area?: Rect;
+}): WindowFit {
+  const wantX = o.bodyX - o.insetX;
+  const wantY = o.bodyY - o.insetY;
+  if (!o.area) return { x: wantX, y: wantY, offsetX: o.insetX, offsetY: o.insetY };
+  const area = o.area;
+  const reach = o.reach ?? { left: 0, right: 0, top: 0, bottom: 0 };
+  const bodyX = clampAxis(o.bodyX, area.x - reach.left, rectRight(area) - o.bodyWidth + reach.right);
+  const bodyY = clampAxis(o.bodyY, area.y - reach.top, rectBottom(area) - o.bodyHeight + reach.bottom);
+  const x = clampAxis(bodyX - o.insetX, area.x, rectRight(area) - o.width);
+  const y = clampAxis(bodyY - o.insetY, area.y, rectBottom(area) - o.height);
+  return { x, y, offsetX: bodyX - x, offsetY: bodyY - y };
 }
 
 /** 计算一次移动的起点/终点比例坐标；目标越出视口边缘（含边距）时返回 null。

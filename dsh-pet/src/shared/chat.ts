@@ -7,6 +7,8 @@
  * @module dsh-pet/src/shared/chat
  */
 
+import { createCompositionWatch, decideEnter } from './chat-enter';
+
 /** 发送回执：本类型只声明消费方用到的 ok，正文展示一律走 /state 的 pets.<id>.say。 */
 export type ChatSendState =
   | { ok: true }
@@ -121,6 +123,10 @@ export function mountChatDialog(opts: {
   input.placeholder = '说点什么…';
   input.maxLength = 2000;
   input.rows = 1;
+  // 桌面透明窗通常以非激活方式显示：DOM 输入框可以出现光标，但 X11 等窗口管理器仍可能
+  // 把系统键盘焦点留在前一个应用。只在聊天输入框获得焦点时请求一次主进程激活；网页端无此桥接。
+  const petBridge = (window as Window & { petBridge?: { requestKeyboardFocus?: () => void } }).petBridge;
+  input.addEventListener('focus', () => petBridge?.requestKeyboardFocus?.());
 
   // 宽度/高度自适应：宽度按文本测量（≤CHAT_MAX_W），封顶后高度随折行增长
   let measureCtx: CanvasRenderingContext2D | null = null;
@@ -208,11 +214,14 @@ export function mountChatDialog(opts: {
         if (!closed) input.focus();
       });
   };
+  const ime = createCompositionWatch();
+  input.addEventListener('compositionstart', ime.start);
+  input.addEventListener('compositionend', () => ime.end(performance.now()));
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      doSend();
-    }
+    const action = decideEnter(e, ime, performance.now());
+    if (action === 'ignore') return;
+    e.preventDefault();
+    if (action === 'send') doSend();
   });
 
   input.focus();

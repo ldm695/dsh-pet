@@ -23,7 +23,7 @@ export const pickSlot = (slot: EventSlot, exclude?: string): string => {
 
 /** 槽位是否包含某动画名：字符串按名比；数组查成员（成员判断必须走这里——直接 includes 会漏掉数组槽位） */
 export const slotIncludes = (slot: EventSlot, anim: string): boolean =>
-  typeof slot === 'string' ? slot === anim : slot.includes(anim);
+  typeof slot === 'string' ? slot === anim : Array.isArray(slot) ? slot.includes(anim) : false;
 
 /** 事件池（档位槽位数组）是否包含某动画名 */
 export const poolIncludes = (pool: readonly EventSlot[], anim: string): boolean =>
@@ -31,7 +31,9 @@ export const poolIncludes = (pool: readonly EventSlot[], anim: string): boolean 
 
 /** 整个 events 段是否包含某动画名（事件动画播完回 idle / switchTo 诊断 / 循环护栏共用） */
 export const isEventAnim = (events: Readonly<Events> | undefined, anim: string): boolean =>
-  events ? Object.values(events).some((pool) => poolIncludes(pool, anim)) : false;
+  events
+    ? Object.entries(events).some(([name, pool]) => name !== 'sleep' && Array.isArray(pool) && poolIncludes(pool, anim))
+    : false;
 
 /**
  * workStatus 播完（ended）续播决策：找到包含 current 动画的档位——

@@ -22,7 +22,7 @@
  *     （如余额周期读不到就按 1800、碎碎念按 300）；
  *   - **显式写了但非法**（类型/结构/白名单外）→ 告警 + 填内置默认值
  *     （同一 文件+字段 进程内只告警一次，避免每请求刷屏；保证返回绝不出现残缺/非法值）；
- *   - **例外：全局默认**（GLOBAL_DEFAULT_KEYS 那 10 个「用户级成本/偏好/环境/节奏」字段）——
+ *   - **例外：全局默认**（GLOBAL_DEFAULT_KEYS 列出的「用户级成本/偏好/环境/节奏」字段）——
  *     文件宠物条目的基座取**用户层**（main-config.jsonc）而不是内置默认，即"设置页改一次，
  *     所有宠物都生效"；种类文件仍可在自己顶层覆盖（写了就用自己那份）；
  *   - 身份字段例外（无默认可填）：id 必须存在、全局唯一（缺失/重复/非法/冲突 →
@@ -38,6 +38,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync
 import { dirname, join } from 'node:path';
 
 import { defaultLog } from './log-file';
+import { isKnownVoice } from './voice/voices';
 
 /** 位置角落白名单 */
 const CORNERS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'] as const;
@@ -405,7 +406,9 @@ function animationsValid(a: unknown): boolean {
   const ev = anims.events;
   if (!ev || typeof ev !== 'object' || Array.isArray(ev)) return false;
   const evEntries = ev as Record<string, unknown>;
-  for (const pool of Object.values(evEntries)) {
+  for (const [name, pool] of Object.entries(evEntries)) {
+    // sleep 是 animations 下的独立动画套，不属于普通事件池；旧配置误嵌在 events 下时忽略它。
+    if (name === 'sleep') continue;
     if (!Array.isArray(pool) || pool.length === 0) return false;
     for (const slot of pool) {
       // 档位槽位：单个动画名（原行为）或候选数组（档内随机抽 1，见 shared/pickers pickSlot）；
@@ -422,8 +425,35 @@ function animationsValid(a: unknown): boolean {
       }
     }
   }
+  const sleep = anims.sleep;
+  if (
+    sleep !== undefined &&
+    (!Array.isArray(sleep) ||
+      sleep.some(
+        (value) =>
+          !value ||
+          typeof value !== 'object' ||
+          Array.isArray(value) ||
+          !['start', 'loop', 'end'].every((phase) => {
+            const names = (value as Record<string, unknown>)[phase];
+            return Array.isArray(names) && names.length > 0 && names.every((name) => typeof name === 'string' && name.length > 0);
+          }),
+      ))
+  ) {
+    return false;
+  }
   const balance = evEntries.balance;
-  return Array.isArray(balance) && balance.length > 0;
+  if (!Array.isArray(balance) || balance.length === 0) return false;
+  if (anims.sleep === undefined) return true;
+  if (!Array.isArray(anims.sleep) || anims.sleep.length === 0) return false;
+  return anims.sleep.every((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const set = value as Record<string, unknown>;
+    return ['start', 'loop', 'end'].every((phase) => {
+      const names = set[phase];
+      return Array.isArray(names) && names.length > 0 && names.every((name) => typeof name === 'string' && name.length > 0);
+    });
+  });
 }
 
 /** animationWeights 段校验（idle/turn/move 三个非负数字） */
@@ -495,6 +525,11 @@ function workStatusTextsValid(value: unknown): boolean {
   return true;
 }
 
+/** 睡眠文案池校验：至少一条非空字符串。 */
+function sleepTextsValid(value: unknown): boolean {
+  return Array.isArray(value) && value.length > 0 && value.every((text) => typeof text === 'string' && text.trim().length > 0);
+}
+
 /** 顶层标量字段的合法性（非法与缺失同处理：取默认值 + 告警） */
 function topFieldValid(key: string, value: unknown): boolean {
   switch (key) {
@@ -508,6 +543,17 @@ function topFieldValid(key: string, value: unknown): boolean {
       // 对话配图张数上限：非负数字（0 = 不限制）；小数按消费者 Math.floor 取整
       const n = Number(value);
       return Number.isFinite(n) && n >= 0;
+    }
+    case 'voiceEnabled':
+    case 'voiceWhisperEnabled':
+    case 'voiceTodoEnabled':
+    case 'voiceNotifyEnabled':
+      return typeof value === 'boolean';
+    case 'voiceName':
+      return typeof value === 'string' && isKnownVoice(value);
+    case 'voiceVolume': {
+      const n = Number(value);
+      return Number.isFinite(n) && n >= 0 && n <= 1;
     }
     case 'notificationsEnabled':
       return typeof value === 'boolean';
@@ -545,6 +591,10 @@ function topFieldValid(key: string, value: unknown): boolean {
       return modelSelectionValid(value);
     case 'workStatusTexts':
       return workStatusTextsValid(value);
+    case 'sleepStartTexts':
+    case 'sleepEndTexts':
+    case 'sleepRefuseTexts':
+      return sleepTextsValid(value);
     default:
       return true;
   }
@@ -884,6 +934,18 @@ export function saveUserConfig(
   }
   const ne = o.notificationsEnabled;
   if (ne !== undefined && typeof ne !== 'boolean') return null;
+  const voiceEnabled = o.voiceEnabled;
+  if (voiceEnabled !== undefined && !topFieldValid('voiceEnabled', voiceEnabled)) return null;
+  const voiceName = o.voiceName;
+  if (voiceName !== undefined && !topFieldValid('voiceName', voiceName)) return null;
+  const voiceVolume = o.voiceVolume;
+  if (voiceVolume !== undefined && !topFieldValid('voiceVolume', voiceVolume)) return null;
+  const voiceWhisperEnabled = o.voiceWhisperEnabled;
+  if (voiceWhisperEnabled !== undefined && !topFieldValid('voiceWhisperEnabled', voiceWhisperEnabled)) return null;
+  const voiceTodoEnabled = o.voiceTodoEnabled;
+  if (voiceTodoEnabled !== undefined && !topFieldValid('voiceTodoEnabled', voiceTodoEnabled)) return null;
+  const voiceNotifyEnabled = o.voiceNotifyEnabled;
+  if (voiceNotifyEnabled !== undefined && !topFieldValid('voiceNotifyEnabled', voiceNotifyEnabled)) return null;
   const cse = o.clickSoundEnabled;
   if (cse !== undefined && typeof cse !== 'boolean') return null;
   const wie = o.whisperImageEnabled;
@@ -906,6 +968,8 @@ export function saveUserConfig(
   // 校验直接复用读取侧的 fontValid（family 白名单 / size 4~200 / followPet 布尔），读写同一份规则。
   const fo = o.font;
   if (fo !== undefined && !fontValid(fo)) return null;
+  const aw = o.animationWeights;
+  if (aw !== undefined && !weightsValid(aw)) return null;
   const uiTheme = o.uiTheme;
   if (uiTheme !== undefined && !topFieldValid('uiTheme', uiTheme)) return null;
   // whisperModel / chatModel（碎碎念 / 对话各自的服务商 + 模型；设置页两个下拉框写的就是它们）：
@@ -932,6 +996,12 @@ export function saveUserConfig(
   // 对话历史条数）同样只在请求体**真的传了**时才写（未传则走下面的透传保留，不凭空造值）
   const outConfig: { pets: unknown[]; [key: string]: unknown } = { pets: out };
   if (ne !== undefined) outConfig.notificationsEnabled = ne;
+  if (voiceEnabled !== undefined) outConfig.voiceEnabled = voiceEnabled;
+  if (voiceName !== undefined) outConfig.voiceName = voiceName;
+  if (voiceVolume !== undefined) outConfig.voiceVolume = Number(voiceVolume);
+  if (voiceWhisperEnabled !== undefined) outConfig.voiceWhisperEnabled = voiceWhisperEnabled;
+  if (voiceTodoEnabled !== undefined) outConfig.voiceTodoEnabled = voiceTodoEnabled;
+  if (voiceNotifyEnabled !== undefined) outConfig.voiceNotifyEnabled = voiceNotifyEnabled;
   if (cse !== undefined) outConfig.clickSoundEnabled = cse;
   if (wie !== undefined) outConfig.whisperImageEnabled = wie;
   if (cie !== undefined) outConfig.chatImageEnabled = cie;
@@ -940,6 +1010,7 @@ export function saveUserConfig(
   if (pdp !== undefined) outConfig.petDisplayPriority = pdp;
   if (ph !== undefined) outConfig.physics = ph;
   if (fo !== undefined) outConfig.font = fo;
+  if (aw !== undefined) outConfig.animationWeights = aw;
   if (uiTheme !== undefined) outConfig.uiTheme = uiTheme;
   if (wm !== undefined) outConfig.whisperModel = cleanModel(wm as Record<string, unknown>);
   if (cm !== undefined) outConfig.chatModel = cleanModel(cm as Record<string, unknown>);
@@ -952,6 +1023,12 @@ export function saveUserConfig(
   // 否则整包调用的调用方漏传一个字段，就会把用户既有设置悄悄抹成默认。
   const bodyOwned = new Set(['pets']);
   if (ne !== undefined) bodyOwned.add('notificationsEnabled');
+  if (voiceEnabled !== undefined) bodyOwned.add('voiceEnabled');
+  if (voiceName !== undefined) bodyOwned.add('voiceName');
+  if (voiceVolume !== undefined) bodyOwned.add('voiceVolume');
+  if (voiceWhisperEnabled !== undefined) bodyOwned.add('voiceWhisperEnabled');
+  if (voiceTodoEnabled !== undefined) bodyOwned.add('voiceTodoEnabled');
+  if (voiceNotifyEnabled !== undefined) bodyOwned.add('voiceNotifyEnabled');
   if (cse !== undefined) bodyOwned.add('clickSoundEnabled');
   if (wie !== undefined) bodyOwned.add('whisperImageEnabled');
   if (cie !== undefined) bodyOwned.add('chatImageEnabled');
@@ -960,6 +1037,7 @@ export function saveUserConfig(
   if (pdp !== undefined) bodyOwned.add('petDisplayPriority');
   if (ph !== undefined) bodyOwned.add('physics');
   if (fo !== undefined) bodyOwned.add('font');
+  if (aw !== undefined) bodyOwned.add('animationWeights');
   if (uiTheme !== undefined) bodyOwned.add('uiTheme');
   if (wm !== undefined) bodyOwned.add('whisperModel');
   if (cm !== undefined) bodyOwned.add('chatModel');

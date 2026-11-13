@@ -27,6 +27,9 @@ const TIMEOUT_MS = 30_000;
 /** 碎碎念指令：纯文本（没有配图时的原样请求）。 */
 const USER_TEXT = '随便说一句日常碎碎念，一句就好，20 字以内。';
 
+/** 睡眠期间使用的功能指令；与碎碎念共用人设和模型，只改变这一轮生成的语义。 */
+export const SLEEP_TALK_INSTRUCTION = '你正在睡觉，随便嘟囔一句梦话，一句就好，20 字以内；含糊、半梦半醒，不要清醒地回应任何人。';
+
 /**
  * 碎碎念指令：带表情包时要求模型配合作画说一句。
  *
@@ -60,6 +63,7 @@ export async function generateWhisper(
   system: string,
   meme?: { name: string; desc: string },
   preferred?: ModelRef,
+  instruction?: string,
 ): Promise<WhisperGenerateResult> {
   // 候选链：配置的模型优先 → 当前对话的模型兜底（whisperModel 留空时链上只有后者）
   const candidates = modelCandidates(ctx, preferred);
@@ -76,7 +80,7 @@ export async function generateWhisper(
   // 兜底文案与失败分支同源，避免两处字面量漂移
   let last: WhisperGenerateResult = { ok: false, reason: 'generate-error', message: noTextReason(undefined) };
   for (const [i, sel] of candidates.entries()) {
-    const result = await generateWith(ctx, llm, sel, system, meme);
+    const result = await generateWith(ctx, llm, sel, system, meme, instruction);
     if (result.ok) return result;
     last = result;
     // 回落要留痕：配的模型没生效时能在日志里看到原因（否则「我明明配了 A，怎么还是用 B」没法查）
@@ -97,6 +101,7 @@ async function generateWith(
   sel: ModelRef,
   system: string,
   meme?: { name: string; desc: string },
+  instruction?: string,
 ): Promise<WhisperGenerateResult> {
   const deadline = AbortSignal.timeout(TIMEOUT_MS);
   // 仅当模型声明支持 reasoning effort（含 "off"）时才传，否则省略：
@@ -110,7 +115,7 @@ async function generateWith(
     sessionId: PET_CALL_IDENTITY,
     messages: [
       createUserMessage({
-        content: [{ type: 'text', text: meme ? userTextWithMeme(meme) : USER_TEXT }],
+        content: [{ type: 'text', text: instruction ?? (meme ? userTextWithMeme(meme) : USER_TEXT) }],
         source: { kind: 'user' },
       }),
     ],

@@ -293,6 +293,38 @@ export const HELPER_STOP_TIMEOUT_MS = 3000;
 /** SIGKILL 之后还给进程多久退出（ms）；到点仍未退出就放弃等待，绝不无限挂住调用方 */
 export const HELPER_STOP_GRACE_MS = 1000;
 
+/** Electron 在 Windows 沙箱初始化失败时以 STATUS_BREAKPOINT 秒退；仅为该明确退出形态自动降级。 */
+const SANDBOX_INIT_FAILED_CODE = 0x80000003;
+const SANDBOX_FALLBACK_WINDOW_MS = 5000;
+
+/** 子进程输出是否证明 JS 已经开始运行；启动器偶尔写出的空白换行不算。 */
+export function helperOutputIsMeaningful(chunk: string): boolean {
+  return Boolean(chunk.trim());
+}
+
+/** 仅在默认 Electron 启动路径中，将开关放在 Helper 脚本路径之前。 */
+export function helperLaunchArgs(
+  baseArgs: readonly string[],
+  opts: { sandboxFallback: boolean; customCommand: boolean },
+): string[] {
+  return opts.sandboxFallback && !opts.customCommand ? ['--no-sandbox', ...baseArgs] : [...baseArgs];
+}
+
+/** 严格识别 Chromium 沙箱初始化失败，避免把普通启动崩溃隐藏成自动降级。 */
+export function shouldFallbackToNoSandbox(input: {
+  code: number | null;
+  sawOutput: boolean;
+  ranMs: number;
+  alreadyApplied: boolean;
+  customCommand: boolean;
+  sandboxOptOut: boolean;
+}): boolean {
+  if (input.alreadyApplied || input.customCommand || input.sandboxOptOut) return false;
+  if (input.code === null || (input.code >>> 0) !== SANDBOX_INIT_FAILED_CODE) return false;
+  if (input.sawOutput) return false;
+  return input.ranMs < SANDBOX_FALLBACK_WINDOW_MS;
+}
+
 /**
  * spawn helper 用的环境变量（纯函数，可独立测试）。
  *
@@ -325,6 +357,10 @@ export class HelperProcess {
   declare private restartFailures: number;
   /** 最近一次 start() 的时间戳（稳定性判定基准） */
   declare private lastStartAt: number;
+  /** 沙箱初始化失败后是否已用 --no-sandbox 重试；每个 Helper 生命周期最多降级一次。 */
+  declare private hasSandboxFallbackApplied: boolean;
+  /** 本次进程是否输出过有意义的内容；用于区分沙箱启动失败与应用已启动后的崩溃。 */
+  declare private hasChildOutput: boolean;
   /** stdout 按行缓冲（协议行按 \n 切分）。用 declare + 构造器赋值，避免类字段降级出外部 helper */
   declare private stdoutBuffer: string;
 
@@ -336,6 +372,8 @@ export class HelperProcess {
     this.restartTimer = undefined;
     this.restartFailures = 0;
     this.lastStartAt = 0;
+    this.hasSandboxFallbackApplied = false;
+    this.hasChildOutput = false;
     this.stdoutBuffer = '';
   }
 
@@ -347,7 +385,11 @@ export class HelperProcess {
       ? { command: this.options.command, args: this.options.args || [helperPath] }
       : defaultLaunch(this.options);
     const command = launch.command;
-    const args = this.options.args || launch.args;
+    const args = helperLaunchArgs(this.options.args || launch.args, {
+      sandboxFallback: this.hasSandboxFallbackApplied,
+      customCommand: Boolean(this.options.command),
+    });
+    this.hasChildOutput = false;
 
     // issue #88：cwd 必须落在包目录之外 —— Windows 不允许重命名/删除活进程的当前目录，
     // 否则 pnpm 无法 rename 覆盖 node_modules/dsh-pet。助手侧资源解析与 CWD 无关，故用 $DSH_HOME。
@@ -383,6 +425,7 @@ export class HelperProcess {
       if (this.child !== child) return;
       this.child = undefined;
       if (!this.stopping) {
+        if (this.applySandboxFallback(code)) return;
         this.logger.warn?.(
           `dsh-pet desktop helper exited (code=${String(code)}, signal=${String(signal)}); restarting`,
         );
@@ -390,11 +433,16 @@ export class HelperProcess {
       }
     });
     child.stdout.on('data', (chunk) => {
-      this.onStdoutChunk(String(chunk));
+      const text = String(chunk);
+      if (helperOutputIsMeaningful(text)) this.hasChildOutput = true;
+      this.onStdoutChunk(text);
     });
     child.stderr.on('data', (chunk) => {
-      const line = String(chunk).trim();
-      if (line) this.logger.warn?.(`[dsh-pet desktop helper] ${line}`);
+      const text = String(chunk);
+      if (helperOutputIsMeaningful(text)) {
+        this.hasChildOutput = true;
+        this.logger.warn?.(`[dsh-pet desktop helper] ${text.trim()}`);
+      }
     });
     return child;
   }
@@ -455,6 +503,26 @@ export class HelperProcess {
     }).catch(() => {
       /* 回调失败（main.js 已退出等）：请求端会超时降级，这里静默 */
     });
+  }
+
+  /** 命中明确的沙箱初始化失败时，立即切换启动参数重试，不计入普通崩溃退避。 */
+  private applySandboxFallback(code: number | null): boolean {
+    const shouldFallback = shouldFallbackToNoSandbox({
+      code,
+      sawOutput: this.hasChildOutput,
+      ranMs: Date.now() - this.lastStartAt,
+      alreadyApplied: this.hasSandboxFallbackApplied,
+      customCommand: Boolean(this.options.command),
+      // 用户显式要求保留 GPU 沙箱时，不跨过这一选择自动禁用 Chromium 沙箱。
+      sandboxOptOut: process.env.DSH_PET_GPU_SANDBOX === '1',
+    });
+    if (!shouldFallback) return false;
+    this.hasSandboxFallbackApplied = true;
+    this.logger.warn?.(
+      `dsh-pet desktop helper 因沙箱初始化失败而快速退出（code=${String(code)}），改用 --no-sandbox 重试一次`,
+    );
+    this.start();
+    return true;
   }
 
   /** 停止 helper：发 SIGTERM 即返回，**不等它退出**。宿主退出/插件卸载路径用它——

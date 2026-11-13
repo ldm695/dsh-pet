@@ -7,9 +7,8 @@
 //     飞行宠物撞到）；vx/vy = 当前速度（飞行中实时值，静止/拖拽 = 0）。
 //   - setInteractive：点击穿透翻转——窗口默认整窗穿透（透明像素不挡下层应用），
 //     renderer 在光标进/出宠物身体命中区时上报，主进程 setIgnoreMouseEvents 翻转。
-//   - 宠物间碰撞（跨窗，主进程 broker）：
-//       reportFlight：飞行中每 ~30ms 上报自己的状态（位置/速度/尺寸）→ 主进程汇聚并广播；
-//       onFlightStates：订阅主进程广播的全量宠物状态（碰撞检测用其它宠物的最新位置/速度）；
+//   - 宠物间碰撞（跨窗，主进程 broker）：位置与速度随 setBounds 一起上报；
+//       onFlightStates：订阅主进程合并广播的全量宠物状态（碰撞检测用其它宠物的最新位置/速度）；
 //       reportCollide：本窗飞行方检测到撞到 targetId → 主进程把动量结果转发给目标窗；
 //       onPetHit：订阅「你被撞了」→ 用新初速 startThrow 抛出去（与浏览器 onHit 同语义）。
 const { contextBridge, ipcRenderer } = require('electron');
@@ -30,6 +29,7 @@ contextBridge.exposeInMainWorld('petBridge', {
     vy,
     marginL,
     marginT,
+    marginR,
     freeMotion,
     positionClaim,
   ) {
@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld('petBridge', {
       vy,
       marginL,
       marginT,
+      marginR,
       freeMotion,
       positionClaim,
     });
@@ -101,6 +102,9 @@ contextBridge.exposeInMainWorld('petBridge', {
   setInputRegions(input) {
     ipcRenderer.send('pet:input-regions', input);
   },
+  requestKeyboardFocus() {
+    ipcRenderer.send('pet:request-keyboard-focus');
+  },
   // 右键菜单「打开网站」：主进程按宿主形态打开——桌面应用宿主唤起桌面窗口（dsh://open），否则系统默认浏览器打开 DSH 网站（等效网页 Ctrl+点击链接）
   openDshSite(url) {
     ipcRenderer.send('pet:open-site', { url });
@@ -115,9 +119,6 @@ contextBridge.exposeInMainWorld('petBridge', {
     ipcRenderer.send('pet:quit-app');
   },
   // ---- 宠物间碰撞（跨窗 broker）----
-  reportFlight(petId, state) {
-    ipcRenderer.send('pet:report-flight', { ...state, petId });
-  },
   onFlightStates(cb) {
     ipcRenderer.on('pet:flight-states', (e, states) => cb(states));
   },
@@ -131,5 +132,10 @@ contextBridge.exposeInMainWorld('petBridge', {
   // （{hull, areas, workAreas, panels, primaryIndex}，屏幕坐标）——渲染端就地重挂视口与边界。
   onDisplays(cb) {
     ipcRenderer.on('pet:displays', (e, geo) => cb(geo));
+  },
+  onPointerLeft(cb) {
+    const listener = () => cb();
+    ipcRenderer.on('pet:pointer-left', listener);
+    return () => ipcRenderer.removeListener('pet:pointer-left', listener);
   },
 });

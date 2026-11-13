@@ -98,7 +98,13 @@ class PetSprite {
     // 注意：余量自此**不再四边相等**，主进程不能再按「窗口宽/4」反推命中区，故 setBounds 一并上报余量。
     const m = this.size * WINDOW_MARGIN_RATIO;
     const fontConf = pet.font || config.font || S.DEFAULT_FONT;
-    this.margin = { t: Math.max(m, S.bubbleTopMarginPx(fontConf, this.size)), r: m, b: m, l: m };
+    this.margin = {
+      t: Math.max(m, S.bubbleTopMarginPx(fontConf, this.size), S.todoPanelTopMarginPx(fontConf, this.size)),
+      r: m,
+      b: m,
+      l: m,
+    };
+    this.winOffset = { x: this.margin.l, y: this.margin.t };
     window.__dshPetDebug.winMargin = this.margin;
     // 宠物包围盒左上角在【工作区】坐标系里的位置（本窗口的位置 = 宠物的位置）
     this.pos = { x: 0, y: 0 };
@@ -137,6 +143,8 @@ class PetSprite {
     // 占用锁：锁生效时冻结随机动画和自动事件；用户输入可立即接管。
     this.frozen = false;
     this.lockTimer = null;
+    this.sleepSet = null;
+    this.sleepPhase = null;
     this._facing = 'left';
     this.poseTimer = null;
     this.facing = 'left';
@@ -199,6 +207,7 @@ class PetSprite {
     }
     // 右键菜单（统一自绘组件，两端共用同一份：树+渲染均来自 shared-core）
     this.menuOpen = false; // 菜单开启期间强制整窗可交互（悬停菜单不触发穿透翻转）
+    this.menuInterruptedMove = false; // 右键菜单关闭时恢复被 stopMove 暂停的动画链
     this.menuClose = null; // 当前菜单的 close()（打开时挂载，关闭后置空）
     // 余额气泡
     this.bubbleOn = false;
@@ -211,6 +220,9 @@ class PetSprite {
     this.balanceState = null; // 最近一次余额读数（展开态要用它算三窗口行；balanceView 只是收起态的行）
     this.balanceViewIndex = 0;
     this.balanceFadeTimer = null; // 展开/收起的淡出等待（250ms 后才换内容，避免硬切）
+    this.envOn = false;
+    this.envTimer = null;
+    this.envState = null;
     this.prevTick = 0;
     // 说话（碎碎念 / 命令气泡 / 对话回复三合一）：文本/配图由容器统一轮询 /state 后经
     // showWhisper 送进来，本精灵不再自己轮询（改造前的 whisperLoopTimer / broadcastLoopTimer 已删）
@@ -235,6 +247,8 @@ class PetSprite {
     //   光标移到输入框（不在身体命中区）就会被 onMouseMove 翻回穿透，点击全被透传）
     this.chatClose = null;
     this.chatOpen = false;
+    this.todoPanel = null;
+    this.todoOpen = false;
 
     // DOM：sprite 钉在窗口内 (margin.l, margin.t)；宠物"位置"= sprite 位置，窗口随余量外扩
     this.el = document.createElement('div');
@@ -304,6 +318,18 @@ class PetSprite {
     this.hit.addEventListener('pointerdown', (e) => this.onPointerDown(e), { signal: ac.signal });
     this.hit.addEventListener('pointermove', (e) => this.onPointerMove(e), { signal: ac.signal });
     this.hit.addEventListener('click', (e) => this.onClick(e), { signal: ac.signal });
+    window.addEventListener('keydown', (e) => {
+      const target = e.target;
+      const typing = target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
+      if (!typing && this.hoverBody && !e.repeat && S.isTodoHotkey(e)) {
+        e.preventDefault();
+        this.toggleTodo();
+        return;
+      }
+      if (typing || !this.hoverBody || e.repeat || e.ctrlKey || e.altKey || e.metaKey || e.key.toLowerCase() !== 's') return;
+      e.preventDefault();
+      this.requestSleep(this.sleeping ? 'wake' : 'sleep');
+    }, { signal: ac.signal });
     this.hit.addEventListener('contextmenu', (e) => this.onContextMenu(e), { signal: ac.signal });
     window.addEventListener('pointerup', (e) => this.onPointerUp(e), { signal: ac.signal });
     window.addEventListener('pointercancel', (e) => this.onPointerUp(e), { signal: ac.signal });
@@ -312,13 +338,18 @@ class PetSprite {
     // 光标进/出身体命中区时翻转可交互；穿透期间 mousemove 由 main 转发进来（forward:true），
     // mouseleave 保证光标离开窗口立即恢复穿透（透明像素不挡下层应用，与浏览器一致）。
     window.addEventListener('mousemove', (e) => this.onMouseMove(e), { signal: ac.signal });
+    if (window.petBridge && typeof window.petBridge.onPointerLeft === 'function') {
+      const unsubscribe = window.petBridge.onPointerLeft(() => this.setTip(false));
+      if (typeof unsubscribe === 'function') ac.signal.addEventListener('abort', unsubscribe, { once: true });
+    }
     window.addEventListener(
       'blur',
       () => {
         // 切到其它应用后旧菜单不应继续占着整个透明窗口；丢失松手时也释放拖拽。
         this.closeMenu();
+        this.closeTodo();
         if (this.dragState.active) this.onPointerUp();
-        if (!this.chatOpen) this.setInteractive(false);
+        if (!this.chatOpen && !this.todoOpen) this.setInteractive(false);
       },
       { signal: ac.signal },
     );
@@ -329,7 +360,7 @@ class PetSprite {
         // 拖拽中与对话弹窗开着都不恢复：前者会绕过 busy 造成穿透并丢失 pointerup，
         // 后者要留光标回来点输入框。
         this.closeMenu();
-        if (!this.chatOpen && !this.dragState.active) this.setInteractive(false);
+        if (!this.chatOpen && !this.todoOpen && !this.dragState.active) this.setInteractive(false);
       },
       { signal: ac.signal },
     );
@@ -339,7 +370,6 @@ class PetSprite {
     this.others = {}; // petId -> {x,y,vx,vy,size,bottomPad}（其它宠物的最新状态，来自主进程广播）
     this.throwState = null; // 飞行中的实时状态（被撞查询 / 其它窗碰撞检测时上报用）
     this.pressScoreFired = false; // 按下瞬间已触发过积分（pointerdown 即触发；click 据此不重复弹，同浏览器）
-    this.lastFlightReport = 0;
     if (window.petBridge && window.petBridge.onFlightStates) {
       window.petBridge.onFlightStates((states) => {
         if (!states || typeof states !== 'object') return;
@@ -404,6 +434,7 @@ class PetSprite {
     this.inputRegionResize.disconnect();
     this.inputRegionElements.clear();
     if (this.bubbleTimer !== null) window.clearTimeout(this.bubbleTimer);
+    if (this.envTimer !== null) window.clearTimeout(this.envTimer);
     if (this.balanceFadeTimer !== null) window.clearTimeout(this.balanceFadeTimer);
     if (this.whisperTimer !== null) window.clearTimeout(this.whisperTimer);
     if (this.workTimer !== null) window.clearTimeout(this.workTimer);
@@ -427,16 +458,17 @@ class PetSprite {
   // 跨进程坐标统一 ×scale 回到屏幕物理像素（§3.5 IPC 收口）。
   sendBounds(px, py, positionClaim = false) {
     this.pos = { x: Math.round(px), y: Math.round(py) };
+    const fit = this.fitWindow();
+    this.pos = { x: Math.round(fit.x + fit.offsetX), y: Math.round(fit.y + fit.offsetY) };
     window.__dshPetDebug.dragPos = { x: this.pos.x, y: this.pos.y };
     if (window.petBridge) {
-      // 完整状态一次捎带：size/bottomPad 让静止宠物从首帧起就登记进碰撞站场
-      // （此前只有 report-flight 带尺寸，从没飞过的宠物 size=0 被碰撞检测直接跳过）；
-      // vx/vy 带当前速度——飞行中实时值、静止/拖拽 = 0，避免落地后残留上次飞行速度干扰碰撞动量。
+      // 完整状态一次捎带：size/bottomPad 让静止宠物也登记进碰撞站场；vx/vy 在飞行中实时
+      // 更新，静止/拖拽时为 0，避免落地后残留上次飞行速度干扰碰撞动量。
       const fly = this.throwState;
       window.petBridge.setBounds(
         this.pet.id,
-        toScreen(this.pos.x - this.margin.l + VIEW.x),
-        toScreen(this.pos.y - this.margin.t + VIEW.y),
+        toScreen(fit.x + VIEW.x),
+        toScreen(fit.y + VIEW.y),
         toScreen(this.size + this.margin.l + this.margin.r),
         toScreen(this.winH + this.margin.t + this.margin.b),
         toScreen(this.pos.x), // 包围盒左上角（碰撞站场用：窗口坐标 ≠ 包围盒坐标）
@@ -445,8 +477,9 @@ class PetSprite {
         toScreen(this.bottomPad),
         fly ? toScreen(fly.vx) : 0,
         fly ? toScreen(fly.vy) : 0,
-        toScreen(this.margin.l),
-        toScreen(this.margin.t),
+        toScreen(fit.offsetX),
+        toScreen(fit.offsetY),
+        toScreen(this.size + this.margin.l + this.margin.r - fit.offsetX - this.size),
         this.dragState.dragging || !!this.throwState,
         positionClaim,
       );
@@ -456,6 +489,40 @@ class PetSprite {
     // 只在显示时重摆：漫游逐帧调本函数，没显示提示时不做无谓的 DOM 写入。
     if (this.tipOn) this.renderTip();
     this.markPoseDirty();
+  }
+
+  /** X11 把窗口钳在工作区时，窗口留在屏内并把桌宠本体移到实际可见位置。 */
+  fitWindow() {
+    const width = this.size + this.margin.l + this.margin.r;
+    const height = this.winH + this.margin.t + this.margin.b;
+    const area = CONFIG.isWindowClampedToWorkArea
+      ? S.resolveRect(WORK_AREAS, this.pos.x + this.halfW, this.pos.y + this.halfH)
+      : undefined;
+    const hit = this.hitRect;
+    const keep = S.MIN_REACHABLE_PX;
+    const fit = S.fitWindowInArea({
+      bodyX: this.pos.x,
+      bodyY: this.pos.y,
+      width,
+      height,
+      bodyWidth: this.size,
+      bodyHeight: this.winH,
+      insetX: this.margin.l,
+      insetY: this.margin.t,
+      reach: {
+        left: Math.max(0, hit.x + hit.w - keep),
+        right: Math.max(0, this.size - hit.x - keep),
+        top: Math.max(0, hit.y + hit.h - keep),
+        bottom: Math.max(0, this.winH - hit.y - keep),
+      },
+      area,
+    });
+    if (this.winOffset.x !== fit.offsetX || this.winOffset.y !== fit.offsetY) {
+      this.winOffset = { x: fit.offsetX, y: fit.offsetY };
+      this.el.style.left = fit.offsetX + 'px';
+      this.el.style.top = fit.offsetY + 'px';
+    }
+    return fit;
   }
 
   get facing() {
@@ -566,15 +633,107 @@ class PetSprite {
    */
   relayout(prevView) {
     this.space = null;
-    if (this.dragState.active || this.throwRef !== null) return;
-    this.stopMove();
+    this.gapEscapePending = false;
     const from = prevView || VIEW;
-    const oldCenter = { x: this.pos.x + this.halfW, y: this.pos.y + this.halfH };
-    const moved = { x: oldCenter.x + from.x - VIEW.x, y: oldCenter.y + from.y - VIEW.y };
-    const p = S.rebaseCenter(oldCenter, from, VIEW, AREAS);
-    const clamped = p.x !== moved.x || p.y !== moved.y;
-    if (this.customPos || clamped) this.customPos = { rx: p.x / VIEW.w, ry: p.y / VIEW.h };
+    const wasCustom = !!this.customPos;
+    const interruptedMove = this.moveDriving || !!this.pendingMove || this.posFollow !== null;
+    const source = this.throwState || this.pos;
+    const next = S.rebaseRect({ x: source.x, y: source.y, width: this.size, height: this.height }, from, VIEW, AREAS);
+    const shiftX = next.x - source.x;
+    const shiftY = next.y - source.y;
+    const viewShiftX = from.x - VIEW.x;
+    const viewShiftY = from.y - VIEW.y;
+    const unclampedX = source.x + from.x - VIEW.x;
+    const unclampedY = source.y + from.y - VIEW.y;
+    const clamped = Math.abs(next.x - unclampedX) > 0.5 || Math.abs(next.y - unclampedY) > 0.5;
+
+    this.pos = { x: Math.round(next.x), y: Math.round(next.y) };
+    if (this.dragState.active) {
+      this.dragState.petX += shiftX;
+      this.dragState.petY += shiftY;
+      this.dragState.sx += viewShiftX;
+      this.dragState.sy += viewShiftY;
+      if (Number.isFinite(this.dragState.anchorX)) this.dragState.anchorX += shiftX;
+      if (Number.isFinite(this.dragState.anchorY)) this.dragState.anchorY += shiftY;
+      for (const point of this.dragTrail) {
+        point.x += viewShiftX;
+        point.y += viewShiftY;
+      }
+      if (this.dragTarget) {
+        this.dragTarget.x += shiftX;
+        this.dragTarget.y += shiftY;
+      }
+    }
+    if (this.throwState) {
+      this.throwState.x = next.x;
+      this.throwState.y = next.y;
+    }
+
+    if (interruptedMove) this.stopMove();
+    if (wasCustom || clamped || interruptedMove) {
+      this.customPos = { rx: (this.pos.x + this.halfW) / VIEW.w, ry: (this.pos.y + this.halfH) / VIEW.h };
+    }
+
+    if (this.dragState.active || this.throwRef !== null) {
+      this.sendBounds(this.pos.x, this.pos.y);
+      return;
+    }
+
     this.position();
+    if (this.startDisplayGapEscape()) return;
+    if (interruptedMove && !this.resumeWorkStatusAnim()) this.playIdle();
+  }
+
+  /** 接近屏缝或显示器空隙时，用移动动画回到当前屏内的最近完整位置。 */
+  startDisplayGapEscape(rect = { x: this.pos.x, y: this.pos.y, width: this.size, height: this.height }) {
+    if (!S.relocateRectFromDisplayGap(PANELS, rect) || this.gapEscapePending) return false;
+    const area = S.resolveRect(PANELS, this.pos.x + this.halfW, this.pos.y + this.halfH);
+    const actions = this.animations.moves.actions;
+    if (!area || !actions.length || area.width < this.size || area.height < this.height) return false;
+
+    let targetX = Math.max(area.x, Math.min(area.x + area.width - this.size, rect.x));
+    let targetY = Math.max(area.y, Math.min(area.y + area.height - this.height, rect.y));
+    if (this.pet.horizontalOnly === true) {
+      if (this.pos.y < area.y || this.pos.y + this.height > area.y + area.height) return false;
+      targetY = this.pos.y;
+    }
+    if (Math.abs(targetX - this.pos.x) < 0.5 && Math.abs(targetY - this.pos.y) < 0.5) {
+      const inset = Math.max(1, this.size * 0.2);
+      targetX = Math.max(
+        area.x,
+        Math.min(area.x + area.width - this.size, this.pos.x + Math.sign(area.x + area.width / 2 - this.pos.x) * inset),
+      );
+      if (this.pet.horizontalOnly !== true && Math.abs(targetX - this.pos.x) < 0.5) {
+        targetY = Math.max(
+          area.y,
+          Math.min(
+            area.y + area.height - this.height,
+            this.pos.y + Math.sign(area.y + area.height / 2 - this.pos.y) * inset,
+          ),
+        );
+      }
+    }
+    if (Math.abs(targetX - this.pos.x) < 0.5 && Math.abs(targetY - this.pos.y) < 0.5) return false;
+
+    const chosen = actions[Math.floor(Math.random() * actions.length)];
+    const mp = Object.assign({}, this.animations.moves.default, chosen.params || {});
+    this.stopMove();
+    this.gapEscapePending = true;
+    this.pendingMove = {
+      startRatio: (this.pos.x + this.halfW) / VIEW.w,
+      startYRatio: (this.pos.y + this.halfH) / VIEW.h,
+      targetRatio: (targetX + this.halfW) / VIEW.w,
+      targetYRatio: (targetY + this.halfH) / VIEW.h,
+      dir: targetX >= this.pos.x ? 1 : -1,
+      isVertical: Math.abs(targetY - this.pos.y) > Math.abs(targetX - this.pos.x),
+      leadSec: mp.leadSec,
+      tailSec: mp.tailSec,
+      animationName: chosen.name,
+      playbackId: null,
+      gapEscape: true,
+    };
+    this.switchTo(chosen.name, true);
+    return true;
   }
 
   currentCenterX() {
@@ -628,6 +787,9 @@ class PetSprite {
   // 双缓冲切换（与浏览器同一套：前台 opacity 切换 + 降级视频清 handler 并停播，防残留 ended 雪崩）
   switchTo(next, nextOnce, playbackId, url) {
     if (!next) return;
+    // 当前动画与播放模式只在这里更新，避免事件回调读到旧动画名。
+    this.anim = next;
+    this.once = !nextOnce;
     const pending = this.pending;
     if (pending && pending.anim === next && pending.once === nextOnce) {
       // 防重命中（单动画点击时目标=当前动画，不重播）：仍消费 Q 弹标记，压当前前台视频，
@@ -657,7 +819,7 @@ class PetSprite {
     el.muted = true;
     el.autoplay = true;
     el.playsInline = true;
-    el.onended = nextOnce ? () => this.handleEnded() : null;
+    el.onended = nextOnce ? () => this.handleEnded() : () => this.restartLoop(el);
     // 加载兜底（与浏览器 web 端 fetch+blob 的 10s 超时同义）：素材加载失败或卡住时必须释放
     // pending，否则它永久挂起——之后相同目标会被防重分支吞掉、不同目标靠 gen 覆盖，
     // 表现就是"点了没反应"（#62 报告的就是 web 端同一类问题，桌面端此前完全没有兜底）。
@@ -669,6 +831,12 @@ class PetSprite {
       }
       console.warn('[dsh-pet] 素材加载失败 pet=' + this.pet.id + ' anim=' + next + '：' + why + '（已释放本次切换）');
       this.releaseInactiveVideo(el);
+      if (this.sleepSet && [this.sleepSet.start, this.sleepSet.loop, this.sleepSet.end].includes(next)) {
+        this.sleepSet = null;
+        this.sleepPhase = null;
+        this.playIdle();
+        this.requestSleep('wake');
+      }
       // 播放回执：这一段点播没能播起来 → 如实回 failed（而不是让调用方干等到 timeout）
       if (playbackId) {
         if (this.playback === playbackId) this.playback = null;
@@ -731,9 +899,16 @@ class PetSprite {
     if (el.readyState >= 2) onReady();
   }
 
+  /** 循环动画意外触发 ended（素材截断或解码提前结束）时原地续播，避免停在末帧。 */
+  restartLoop(el) {
+    if (!el || this.disposed) return;
+    try {
+      el.currentTime = 0;
+      void el.play().catch(() => {});
+    } catch {}
+  }
+
   playOnce(name, playbackId, url) {
-    this.anim = name;
-    this.once = true;
     this.switchTo(name, true, playbackId, url);
   }
 
@@ -785,6 +960,54 @@ class PetSprite {
     );
   }
 
+  setSleep(state) {
+    if (state.sleeping) {
+      if (this.sleepSet) return;
+      this.stopThrow();
+      this.stopMove();
+      this.sleepSet = { start: state.start, loop: state.loop, end: state.end };
+      this.sleepPhase = 'start';
+      this.workOn = false;
+      this.workText = null;
+      if (this.workTimer !== null) window.clearTimeout(this.workTimer);
+      this.workTimer = null;
+      for (const key of ['bubbleTimer', 'balanceFadeTimer', 'whisperTimer', 'envTimer']) {
+        if (this[key] !== null) window.clearTimeout(this[key]);
+        this[key] = null;
+      }
+      this.bubbleOn = false;
+      this.whisperOn = false;
+      this.envOn = false;
+      if (this.chatClose) {
+        this.chatClose();
+        this.chatClose = null;
+      }
+      this.renderBubble();
+      this.playOnce(this.sleepSet.start);
+      return;
+    }
+    if (!this.sleepSet || this.sleepPhase === 'end') return;
+    if (this.sleepPhase === 'start') {
+      this.sleepSet = null;
+      this.sleepPhase = null;
+      if (this.animations.idle.length) this.playOnce(S.pick(this.animations.idle, this.anim));
+      return;
+    }
+    this.sleepPhase = 'end';
+    this.playOnce(this.sleepSet.end);
+  }
+
+  get sleeping() {
+    return this.sleepSet !== null;
+  }
+
+  requestSleep(action) {
+    const url = BASE + '/' + action + '?pet=' + encodeURIComponent(this.pet.id) + '&surface=desktop';
+    S.postAction(url).then((ok) => {
+      if (!ok) console.warn('[dsh-pet] 睡眠状态请求失败 pet=' + this.pet.id + ' action=' + action);
+    }).catch((error) => console.error('[dsh-pet] 睡眠状态请求异常', error));
+  }
+
   // 动画链（与浏览器 pickNext 语义一致，纯逻辑在 shared）
   playIdle() {
     if (this.frozen) return;
@@ -827,8 +1050,25 @@ class PetSprite {
       this.playback = null; // 先清再上报：后续链式换源不该把它当成"被打断"
       this.reportPlayback(done, 'ended');
     }
-    if (this.dragState.active) return;
-    if (this.frozen) return;
+    if (this.sleepSet) {
+      if (this.sleepPhase === 'start') {
+        this.sleepPhase = 'loop';
+        this.switchTo(this.sleepSet.loop, false);
+      } else if (this.sleepPhase === 'loop') {
+        this.switchTo(this.sleepSet.loop, false);
+      } else if (this.sleepPhase === 'end') {
+        this.sleepSet = null;
+        this.sleepPhase = null;
+        this.playIdle();
+      }
+      return;
+    }
+    if (this.dragState.active) {
+      return;
+    }
+    if (this.frozen) {
+      return;
+    }
     if (this.moveDriving) {
       // ended can arrive before the final rAF: commit the exact endpoint before releasing it.
       if (this.moveDestination) {
@@ -848,7 +1088,13 @@ class PetSprite {
         el.onerror = null;
       }
       this.finishMoveTarget('completed');
-      if (this.resumeWorkStatusAnim()) return;
+      this.gapEscapePending = false;
+      if (this.startDisplayGapEscape()) {
+        return;
+      }
+      if (this.resumeWorkStatusAnim()) {
+        return;
+      }
     }
     if (this.canRelocate()) {
       this.playIdle();
@@ -898,7 +1144,9 @@ class PetSprite {
       }
       // 非 workStatus 事件动画（余额/碎碎念）播完：workStatus 仍非终态 → 立即恢复档位循环动画，
       // 不进随机链（长事件期间状态不变，随机链会一直播到状态切换才被拉回）
-      if (this.resumeWorkStatusAnim()) return;
+      if (this.resumeWorkStatusAnim()) {
+        return;
+      }
       if (animations.idle.length) this.playOnce(S.pick(animations.idle, this.anim));
       return;
     }
@@ -908,7 +1156,9 @@ class PetSprite {
     }
     if (animations.drag.includes(this.anim) || animations.clicks.includes(this.anim)) {
       // 互动动画播完：workStatus 非终态时恢复状态循环，否则回 idle（与浏览器同一语义）
-      if (this.resumeWorkStatusAnim()) return;
+      if (this.resumeWorkStatusAnim()) {
+        return;
+      }
       if (animations.idle.length) this.playOnce(S.pick(animations.idle, this.anim));
       return;
     }
@@ -934,10 +1184,8 @@ class PetSprite {
     if (rotating)
       this.playOnce(name); // 多候选：播完由 handleEnded 轮换
     else {
-      // switchTo 只负责视频双缓冲，不会更新 sprite 的逻辑状态；保持 this.anim 与实际动画一致，
-      // 否则收到 idle 时会误判当前不是 workStatus 动画，导致正在循环的工作动画残留。
-      this.anim = name;
-      this.once = false;
+      // switchTo 是当前动画状态的唯一写入点；单候选工作动画循环时也必须同步更新 this.anim，
+      // 这样收到 idle 后才能识别并结束工作状态循环。
       this.switchTo(name, false); // 单候选：无限循环
     }
     return true;
@@ -1113,8 +1361,6 @@ class PetSprite {
       relocate: options.relocate === true,
       manualMove,
     };
-    this.anim = moveAnimation;
-    this.once = true;
     this.switchTo(moveAnimation, true, playbackId);
     return moveAnimation;
   }
@@ -1230,8 +1476,6 @@ class PetSprite {
     const moveKind = pm.relocate ? 'yield' : 'claim';
     const moveReason = pm.relocate ? 'overlap-yield' : pm.manualMove ? 'manual-movement' : 'automatic-movement';
     this.beginMoveTarget(targetRatio * VIEW.w, targetYRatio * VIEW.h, moveKind, moveReason);
-    this.anim = pm.animationName || this.anim;
-    this.once = true;
     el.loop = false;
     el.onended = () => this.handleEnded();
     el.onerror = () => {
@@ -1263,7 +1507,12 @@ class PetSprite {
       const progress = t <= leadSec ? 0 : t >= duration - tailSec ? 1 : (t - leadSec) / travelWindow;
       const ratioX = startRatio + (targetRatio - startRatio) * progress;
       const ratioY = startYRatio + (targetYRatio - startYRatio) * progress;
-      this.sendBounds(ratioX * VIEW.w - this.halfW, ratioY * VIEW.h - this.halfH);
+      const x = ratioX * VIEW.w - this.halfW;
+      const y = ratioY * VIEW.h - this.halfH;
+      if (!pm.gapEscape && this.startDisplayGapEscape({ x, y, width: this.size, height: this.height })) {
+        return;
+      }
+      this.sendBounds(x, y);
       if (progress < 1) this.moveRef = requestAnimationFrame(step);
       else {
         this.moveRef = null;
@@ -1276,6 +1525,7 @@ class PetSprite {
   }
 
   stopMove() {
+    this.gapEscapePending = false;
     this.pendingMove = null;
     this.moveToken++;
     if (this.moveDriving) {
@@ -1414,19 +1664,6 @@ class PetSprite {
       }
       state = { x: res.x, y: res.y, vx: res.vx, vy: res.vy };
       this.throwState = state;
-      // 上报飞行状态（节流 ~30ms）：主进程 broker 汇聚后广播，其它窗口用它做跨窗碰撞检测；
-      // broker 协议单位 = 物理像素，这里 ×scale（§3.5 收口）
-      if (window.petBridge && window.petBridge.reportFlight && now - this.lastFlightReport > 30) {
-        window.petBridge.reportFlight(this.pet.id, {
-          x: toScreen(state.x),
-          y: toScreen(state.y),
-          vx: toScreen(state.vx),
-          vy: toScreen(state.vy),
-          size: toScreen(this.size),
-          bottomPad: toScreen(this.bottomPad),
-        });
-        this.lastFlightReport = now;
-      }
       // 宠物间碰撞（仅 petCollision 开启）：飞行中的自己撞到其它宠物 → 动量弹开
       if (this.physics && this.physics.petCollision) {
         const myBody = S.bodyPixelBox({ x: state.x, y: state.y, size: this.size, bottomPad: this.bottomPad });
@@ -1488,6 +1725,7 @@ class PetSprite {
         this.throwState = null;
         this.sendBounds(this.pos.x, this.pos.y);
         this.customPos = { rx: (this.pos.x + this.halfW) / VIEW.w, ry: (this.pos.y + this.halfH) / VIEW.h };
+        if (this.startDisplayGapEscape()) return;
         window.__dshPetDebug.lastDragRelease = { x: this.pos.x, y: this.pos.y };
         console.info(
           '[dsh-pet] throw end pet=' +
@@ -1892,6 +2130,7 @@ class PetSprite {
           // startThrow 落定也按同一公式存），松手无边界夹取
           this.customPos = { rx: (px + this.halfW) / VIEW.w, ry: (py + this.halfH) / VIEW.h };
           this.position();
+          if (this.startDisplayGapEscape()) return;
           // 释放后的最终窗口位置（position() 换算后，松手无夹取），冒烟断言"释放不位移"用
           window.__dshPetDebug.lastDragRelease = { x: this.pos.x, y: this.pos.y };
         }
@@ -1913,7 +2152,7 @@ class PetSprite {
    */
   inputBusy() {
     // 可点的余额气泡是第四个来源：它同样长在窗口里、同样靠窗口级 click 触发，而它悬在宠物头顶的
-    return this.dragState.active || this.menuOpen || this.chatOpen || this.balanceClickable();
+    return this.dragState.active || this.menuOpen || this.chatOpen || this.todoOpen || this.balanceClickable();
   }
 
   /**
@@ -1952,7 +2191,7 @@ class PetSprite {
     if (!window.petBridge?.setInputRegions || !this.inputRegionResize) return;
     const rects = [];
     const controls = [
-      ...document.querySelectorAll('.dsh-pet-menu-column, .dsh-pet-chat, .pet-error.visible, .pet-bubble.is-clickable'),
+      ...document.querySelectorAll('.dsh-pet-menu-column, .dsh-pet-chat, .dsh-pet-todo, .pet-error.visible, .pet-bubble.is-clickable'),
     ];
     for (const el of this.inputRegionElements) {
       if (!controls.includes(el)) {
@@ -2084,6 +2323,18 @@ class PetSprite {
   onClick(e) {
     const d = this.dragState;
     if (d.active || d.dragging || this.justDragged) return;
+    if (this.sleeping) {
+      playClickSound();
+      if (this.sleepPhase === 'start') {
+        this.sleepSet = null;
+        this.sleepPhase = null;
+        if (this.animations.clicks.length) this.playOnce(S.pick(this.animations.clicks));
+        this.requestSleep('wake');
+      } else if (this.sleepPhase === 'loop') {
+        this.requestSleep('wake');
+      }
+      return;
+    }
     if (isOpenShortcut(e)) {
       this.stopThrow();
       this.stopMove();
@@ -2138,8 +2389,10 @@ class PetSprite {
     const d = this.dragState;
     if (d.active || d.dragging || this.justDragged || this.menuOpen) return;
     e.preventDefault();
+    const interruptedMove = this.moveDriving;
     this.stopThrow(); // 菜单弹出前停住飞行中的宠物
     this.stopMove(); // 菜单悬停期间宠物不漫游
+    this.menuInterruptedMove = interruptedMove;
     // 独立模式的 AI 开关保存在专用设置中，不属于桌宠 config 文件；打开菜单时刷新一次，
     // 让保存开关后更新后续菜单的对话项，而无需重启 Helper。DSH 宿主模式不增加此请求。
     // 刷新必须后台进行：菜单是即时交互，不能让本地 HTTP 请求卡住 contextmenu 事件。
@@ -2169,6 +2422,8 @@ class PetSprite {
       tools.push({ label: '查看余额', action: 'show-balance' });
     }
     tools.push(
+      { label: '查询天气', action: 'show-environment' },
+      { label: '待办事项', action: 'todo', hint: S.TODO_HOTKEY_HINT },
       { label: '碎碎念', action: 'whisper' },
       { label: '回到初始位置', action: 'home' },
       // 显示位置（仅桌面/不显示）：改这只宠物的 display 配置 + 宿主重载生效。
@@ -2178,22 +2433,33 @@ class PetSprite {
     );
     if (!STANDALONE || config.aiChatEnabled !== false)
       tools.splice(tools.length - 1, 0, { label: '对话', action: 'chat' });
-    const more = S.buildMoreBranch(this.menuItems);
-    const tree = tools.concat(S.buildMenuTree(this.animations), more ? [more] : []);
-    // 客户端启动器和维护操作固定放在「动作」分支之后，启动器悬停展开子菜单。
-    tree.push({
-      label: '打开应用',
-      children: [
-        { label: 'DSH Desktop', action: 'open-app', app: 'desktop' },
-        { label: 'DSH Web', action: 'open-app', app: 'web' },
-      ],
+    const supportsSleep = Array.isArray(this.animations.sleep) && this.animations.sleep.length > 0;
+    if (supportsSleep) tools.splice(tools.length - 1, 0, {
+      label: this.sleeping ? '起来' : '睡觉', action: this.sleeping ? 'wake' : 'sleep', hint: 'S',
     });
-    tree.push({ label: '重载配置', action: 'reload' });
-    if (STANDALONE) {
-      tree.push({ label: '打开桌宠设置', action: 'open-settings' });
-      tree.push({ label: '退出桌宠', action: 'quit-app' });
+    const more = S.buildMoreBranch(this.menuItems);
+    const tree = this.sleeping
+      ? [{ label: '起来', action: 'wake', hint: 'S' }]
+      : tools.concat(S.buildMenuTree(this.animations), more ? [more] : []);
+    // 客户端启动器和维护操作固定放在「动作」分支之后，启动器悬停展开子菜单。
+    if (!this.sleeping) {
+      tree.push({
+        label: '打开应用',
+        children: [
+          { label: 'DSH Desktop', action: 'open-app', app: 'desktop' },
+          { label: 'DSH Web', action: 'open-app', app: 'web' },
+        ],
+      });
+      tree.push({ label: '重载配置', action: 'reload' });
+      if (STANDALONE) {
+        tree.push({ label: '打开桌宠设置', action: 'open-settings' });
+        tree.push({ label: '退出桌宠', action: 'quit-app' });
+      }
     }
-    if (!tree.length) return;
+    if (!tree.length) {
+      this.resumeMenuInterruptedAnimation();
+      return;
+    }
     this.menuOpen = true;
     this.setInteractive(true); // 菜单是窗口内 DOM：悬停期间整窗保持可交互，关闭后恢复命中区穿透
     this.syncInputBusy();
@@ -2212,6 +2478,7 @@ class PetSprite {
         window.__dshPetDebug.menuOpen = false;
         this.syncInputBusy();
         if (!this.inputBusy()) this.setInteractive(false);
+        this.resumeMenuInterruptedAnimation();
       },
     });
     this.menuClose = m.close;
@@ -2221,6 +2488,11 @@ class PetSprite {
   onMenuAction(leaf, options = {}) {
     this.closeMenu();
     if (!leaf || typeof leaf !== 'object') return;
+    if (this.sleeping && leaf.action !== 'wake') return;
+    if (leaf.action === 'sleep' || leaf.action === 'wake') {
+      this.requestSleep(leaf.action);
+      return;
+    }
     if (leaf.action === 'third-party') {
       // 第三方菜单项：只把 (owner, label) 交给宿主，具体做什么由注册方自己去查 /menu/events。
       // 带上本窗口的宠物 id——同一条菜单项在不同宠物上被点，注册方要能分辨是哪只。
@@ -2245,6 +2517,18 @@ class PetSprite {
     }
     if (leaf.action === 'show-balance') {
       this.showBalanceFromMenu(); // 立即拉余额并展示（无需等 1s 触发轮询，展示路径与周期触发一致）
+      return;
+    }
+    if (leaf.action === 'show-environment') {
+      S.postAction(ENVIRONMENT_URL + '?pet=' + encodeURIComponent(this.pet.id) + '&surface=desktop&fresh=1')
+        .then((ok) => {
+          if (!ok) console.warn('[dsh-pet] 菜单查询天气：查询未成功 pet=' + this.pet.id);
+        })
+        .catch((error) => console.error('[dsh-pet] 菜单查询天气异常', error));
+      return;
+    }
+    if (leaf.action === 'todo') {
+      this.toggleTodo();
       return;
     }
     if (leaf.action === 'whisper') {
@@ -2304,6 +2588,43 @@ class PetSprite {
     }
     this.menuOpen = false;
     window.__dshPetDebug.menuOpen = false;
+    this.syncInputBusy();
+    if (!this.inputBusy()) this.setInteractive(false);
+  }
+
+  resumeMenuInterruptedAnimation() {
+    if (!this.menuInterruptedMove) return;
+    this.menuInterruptedMove = false;
+    if (this.frozen || this.sleeping) return;
+    if (!this.resumeWorkStatusAnim()) this.playIdle();
+  }
+
+  toggleTodo() {
+    if (this.todoOpen) {
+      this.closeTodo();
+      return;
+    }
+    const panel = S.createTodoPanel({
+      baseUrl: BASE + '/todos',
+      onClose: () => this.closeTodo(),
+      keepOpenOn: (target) => typeof target?.closest === 'function' && target.closest('.pet-hit') !== null,
+    });
+    this.bubble.replaceChildren(panel.el);
+    this.todoPanel = panel;
+    this.todoOpen = true;
+    window.__dshPetDebug.todoOpen = true;
+    this.renderBubble();
+    this.syncInputBusy();
+    this.setInteractive(true);
+  }
+
+  closeTodo() {
+    if (!this.todoOpen && !this.todoPanel) return;
+    this.todoPanel?.dispose();
+    this.todoPanel = null;
+    this.todoOpen = false;
+    window.__dshPetDebug.todoOpen = false;
+    this.renderBubble();
     this.syncInputBusy();
     if (!this.inputBusy()) this.setInteractive(false);
   }
@@ -2416,6 +2737,14 @@ class PetSprite {
   }
 
   renderBubble() {
+    if (this.todoOpen && this.todoPanel) {
+      this.bubble.classList.add('dsh-pet-todo-bubble', 'is-on');
+      this.bubble.classList.remove('is-whisper', 'is-env', 'is-clickable', 'is-expanded', S.MEME_BUBBLE_CLASS);
+      window.__dshPetDebug.lastBubbleTitle = 'todo';
+      this.syncInputBusy();
+      return;
+    }
+    this.bubble.classList.remove('dsh-pet-todo-bubble');
     // 气泡单槽：同一时刻只显示一个（优先级：终态任务 > 碎碎念/对话 > 余额 > 非终态任务）。
     // 为什么终态任务不让位：完成/失败气泡只活 10s，被事件顶掉就彻底看不到了；非终态任务气泡
     // 常驻（不设自动收起），让位 10s 零损失；优先级由桌面端单槽规则统一处理。
@@ -2426,9 +2755,20 @@ class PetSprite {
     const workOn = !!(this.workOn && this.workText);
     const whisperOn = !!(this.whisperOn && this.whisperView);
     const balanceOn = !!(this.bubbleOn && this.balanceView);
+    const envOn = !!(this.envOn && this.envState);
     const workTerminal = this.workState === 'success' || this.workState === 'error';
     const slot =
-      workTerminal && workOn ? 'work' : whisperOn ? 'whisper' : balanceOn ? 'balance' : workOn ? 'work' : 'none';
+      workTerminal && workOn
+        ? 'work'
+        : whisperOn
+          ? 'whisper'
+          : balanceOn
+            ? 'balance'
+            : envOn
+              ? 'env'
+              : workOn
+                ? 'work'
+                : 'none';
     const whisperImg =
       slot === 'whisper'
         ? this.whisperImageUrl
@@ -2450,6 +2790,7 @@ class PetSprite {
       // 余额「文字说明」（不可用状态）同样套用紧凑变体：字号更小、宽度下限更窄，多行说明更紧凑
       slot === 'whisper' || slot === 'work' || (slot === 'balance' && this.balanceWrap),
     );
+    this.bubble.classList.toggle('is-env', slot === 'env');
     this.bubble.classList.toggle(S.MEME_BUBBLE_CLASS, !!whisperImg);
     // 可点/展开两个状态类：可点 → 气泡参与命中区（见 syncInputRegions）；展开 → 三窗口排版与更宽的盒
     const clickable = slot === 'balance' && this.balanceClickable();
@@ -2468,16 +2809,15 @@ class PetSprite {
       line.className = 'pet-bub-row';
       line.textContent = this.whisperView[0]?.text ?? '';
       this.bubble.appendChild(line);
+    } else if (slot === 'env' && this.envState) {
+      this.renderEnvironmentBubble(this.envState);
     } else if (this.balanceState && S.customViews(this.balanceState)) {
       const views = S.customViews(this.balanceState);
       const page = views[Math.min(this.balanceViewIndex, views.length - 1)];
       if (page) this.bubble.appendChild(this.renderBalanceTree(page));
     } else {
       // 展开态的行在这里现算：renderBubble 是只读渲染路径，不缓存（余额每轮都在变，缓存反而要同步失效）
-      const rows =
-        clickable && this.balanceViewIndex > 0 && this.balanceState
-          ? S.balanceDetailView(this.balanceState)
-          : this.balanceView;
+      const rows = clickable && this.balanceState ? S.balancePageView(this.balanceState, this.balanceViewIndex) : this.balanceView;
       const hasTier = rows.some((r) => r.role === 'tier');
       if (hasTier) {
         // deepseek 余额单行：余额（峰/谷）¥x — 档位字着色
@@ -2516,6 +2856,49 @@ class PetSprite {
             this.bubble.appendChild(row);
             continue;
           }
+          if (r.role === 'usage') {
+            const box = document.createElement('div');
+            box.className = 'pet-bub-usage';
+            const line = (cells) => {
+              const row = document.createElement('div');
+              row.className = 'pet-bub-usage-line';
+              for (const cell of cells) {
+                const span = document.createElement('span');
+                span.className = cell.className;
+                span.textContent = cell.text;
+                row.appendChild(span);
+              }
+              return row;
+            };
+            if (r.inputPercent !== undefined) {
+              const bar = document.createElement('div');
+              bar.className = 'pet-bub-usage-bar';
+              const inputBar = document.createElement('i');
+              inputBar.className = 'pet-bub-usage-bar-in';
+              inputBar.style.width = r.inputPercent + '%';
+              const outputBar = document.createElement('i');
+              outputBar.className = 'pet-bub-usage-bar-out';
+              outputBar.style.width = 100 - r.inputPercent + '%';
+              bar.append(inputBar, outputBar);
+              box.appendChild(bar);
+            }
+            box.append(
+              line([
+                { className: 'pet-bub-usage-title', text: r.title },
+                { className: 'pet-bub-usage-total', text: r.total },
+              ]),
+              line([
+                { className: 'pet-bub-usage-in', text: r.input },
+                { className: 'pet-bub-usage-out', text: r.output },
+              ]),
+              line([
+                { className: 'pet-bub-usage-period', text: r.period },
+                { className: 'pet-bub-usage-spend', text: r.spend },
+              ]),
+            );
+            this.bubble.appendChild(box);
+            continue;
+          }
           const div = document.createElement('div');
           if (r.role === 'error') div.className = 'pet-bub-err';
           else if (r.role === 'sub') div.className = 'pet-bub-row pet-bub-sub';
@@ -2530,5 +2913,78 @@ class PetSprite {
     this.syncInputBusy();
     // 气泡内容/尺寸变了 → 重报控件矩形（可点的余额气泡要靠它拿点击），并同步 busy 标记。
     // 这里是所有显隐/换内容的汇聚点，放在这里就不会漏掉任何一条路径。
+  }
+
+  showEnvironment(state) {
+    if (this.envTimer !== null) window.clearTimeout(this.envTimer);
+    this.envState = state;
+    this.envOn = true;
+    this.renderBubble();
+    this.envTimer = window.setTimeout(() => {
+      this.envOn = false;
+      this.renderBubble();
+    }, BUBBLE_DURATION_MS);
+  }
+
+  renderEnvironmentBubble(state) {
+    const view = S.envBubbleView(state);
+    const title = document.createElement('div');
+    title.className = 'pet-bub-title';
+    title.textContent = view.title;
+    this.bubble.appendChild(title);
+    if (view.emptyText) {
+      const empty = document.createElement('div');
+      empty.className = 'pet-bub-row';
+      empty.textContent = view.emptyText;
+      this.bubble.appendChild(empty);
+      return;
+    }
+    const main = document.createElement('div');
+    main.className = 'pet-env-main';
+    const icon = document.createElement('span');
+    icon.className = 'pet-env-icon';
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '1.5');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    for (const shape of view.icon || []) {
+      let node;
+      if (shape.kind === 'path') {
+        node = document.createElementNS(svg.namespaceURI, 'path');
+        node.setAttribute('d', shape.d);
+      } else if (shape.kind === 'line') {
+        node = document.createElementNS(svg.namespaceURI, 'line');
+        node.setAttribute('x1', String(shape.x1)); node.setAttribute('y1', String(shape.y1));
+        node.setAttribute('x2', String(shape.x2)); node.setAttribute('y2', String(shape.y2));
+      } else {
+        node = document.createElementNS(svg.namespaceURI, 'circle');
+        node.setAttribute('cx', String(shape.cx)); node.setAttribute('cy', String(shape.cy));
+        node.setAttribute('r', String(shape.r));
+      }
+      svg.appendChild(node);
+    }
+    icon.appendChild(svg);
+    const temperature = document.createElement('span');
+    temperature.className = 'pet-env-temp';
+    temperature.textContent = view.temperature || '';
+    const summary = document.createElement('span');
+    summary.className = 'pet-env-summary';
+    summary.textContent = view.summary || '';
+    main.append(icon, temperature, summary);
+    this.bubble.appendChild(main);
+    for (const row of view.rows) {
+      const line = document.createElement('div');
+      line.className = 'pet-bub-row';
+      const label = document.createElement('span'); label.textContent = row.label;
+      const value = document.createElement('span'); value.className = 'pet-bub-val'; value.textContent = row.value;
+      line.append(label, value); this.bubble.appendChild(line);
+    }
+    if (view.footer) {
+      const footer = document.createElement('div'); footer.className = 'pet-env-foot'; footer.textContent = view.footer;
+      this.bubble.appendChild(footer);
+    }
   }
 }
