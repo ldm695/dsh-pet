@@ -14,6 +14,7 @@ export interface MovePlan {
   startRatio: number;
   startYRatio: number;
   targetRatio: number;
+  targetYRatio: number;
   totalRatio: number;
 }
 
@@ -31,6 +32,11 @@ export const planMove = (o: {
   maxDist: number;
   margin: number;
   halfW: number;
+  halfH?: number;
+  /** Travel angle in degrees from the horizontal axis; omitted means horizontal movement. */
+  angleDegrees?: number;
+  /** Vertical direction for angled movement. */
+  verticalDir?: 1 | -1;
   /** 可选：身体相对视频盒左/右各留多少像素（默认 0 = 按视频盒贴边） */
   sideAllow?: number;
   /** 可选：显示器工作区列表（与 cx/cy 同坐标系）。给了就按并集判定落点可达性 */
@@ -38,23 +44,31 @@ export const planMove = (o: {
 }): MovePlan | null => {
   const side = o.sideAllow ?? 0;
   const distance = randomBetween(o.minDist, o.maxDist);
-  const target = o.cx + o.dir * distance;
+  const angle = (Math.max(0, Math.min(89, o.angleDegrees ?? 0)) * Math.PI) / 180;
+  const target = o.cx + o.dir * distance * Math.cos(angle);
+  const targetY = o.cy + (o.verticalDir ?? 1) * distance * Math.sin(angle);
+  const halfH = o.halfH ?? 0;
   if (o.areas && o.areas.length > 0) {
     // 身体左右缘各外扩 margin 后都得落在某块屏上（可以分属不同屏 = 允许骑缝行走）
     const bodyHalf = o.halfW - side;
-    if (!rectAtPoint(o.areas, target - bodyHalf - o.margin, o.cy)) return null;
-    if (!rectAtPoint(o.areas, target + bodyHalf + o.margin, o.cy)) return null;
+    for (const x of [target - bodyHalf - o.margin, target + bodyHalf + o.margin]) {
+      for (const y of [targetY - halfH - o.margin, targetY + halfH + o.margin]) {
+        if (!rectAtPoint(o.areas, x, y)) return null;
+      }
+    }
   } else {
     // margin 语义 =「身体到屏幕边缘的安全距」：盒中心可到 margin + halfW - side（身体左缘 = margin）
     const leftBound = o.margin + o.halfW - side;
     const rightBound = o.W - o.margin - o.halfW + side;
-    if (target < leftBound || target > rightBound) return null;
+    if (target < leftBound || target > rightBound || targetY < o.margin + halfH || targetY > o.H - o.margin - halfH)
+      return null;
   }
   return {
     startRatio: o.cx / o.W,
     startYRatio: o.cy / o.H,
     targetRatio: target / o.W,
-    totalRatio: Math.abs(target - o.cx) / o.W,
+    targetYRatio: targetY / o.H,
+    totalRatio: Math.hypot(target - o.cx, targetY - o.cy) / o.W,
   };
 };
 

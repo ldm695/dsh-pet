@@ -1,0 +1,38 @@
+extends: electron-builder.yml
+appId: cloud.ldm695.dsh-pet.personal
+productName: 哦鲸鲸
+directories:
+  output: dist-app/personal
+extraMetadata:
+  main: lib/app.js
+  dshPetEdition: personal
+  dshPetDisplayName: 哦鲸鲸
+  dshPetAppUserModelId: cloud.ldm695.dsh-pet.personal
+  dshPetTrayIcon: dsh-pet-icon-16.png
+  description: 哦鲸鲸桌面宠物
+files:
+  - lib/**
+  - runtime/**
+  - assets/webm/**
+  - assets/fonts/**
+  - assets/pic/**
+  - assets/memes/**
+  - assets/sound/**
+  - assets/config.jsonc
+  - assets/logo.png
+  - assets/dsh-pet-icon.ico
+  - assets/dsh-pet-icon-16.png
+  - package.json
+  - from: node_modules/.pnpm/koffi@3.3.3/node_modules/koffi
+    to: node_modules/koffi
+  - from: node_modules/.pnpm/@koromix+koffi-win32-x64@3.3.3/node_modules/@koromix/koffi-win32-x64
+    to: node_modules/@koromix/koffi-win32-x64
+asarUnpack:
+  - node_modules/koffi/**
+  - node_modules/@koromix/koffi-win32-x64/**
+win:
+  icon: assets/dsh-pet-icon.ico
+  target:
+    - dir
+portable:
+  artifactName: 哦鲸鲸-${version}-portable-personal.${ext}

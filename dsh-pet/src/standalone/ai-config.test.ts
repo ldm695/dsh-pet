@@ -77,6 +77,35 @@ test('余额服务商：默认不查询，只接受三条可用路由，且随�
   }
 });
 
+test('语音密钥独立于对话密钥：单独保存、单独清空、互不影响', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'pet-ai-speech-'));
+  try {
+    const store = createAiConfig(home);
+    assert.equal(store.publicSettings().hasDeepseekKey, false, '默认没有语音密钥');
+    const saved = await store.save({ ...configured, deepseekApiKey: 'speech-secret' });
+    assert.equal(saved.hasDeepseekKey, true);
+    assert.equal('deepseekApiKey' in saved, false, '密钥不回显');
+    // 清对话密钥不能连语音那把一起清掉：两者是给不同服务商用的
+    assert.equal((await store.save({ clearApiKey: true })).hasDeepseekKey, true);
+    assert.equal(store.current().deepseekApiKey, 'speech-secret');
+    assert.equal(store.current().apiKey, '');
+    // 清语音密钥同样不动对话密钥
+    await store.save({ apiKey: 'talk-secret' });
+    assert.equal((await store.save({ clearDeepseekKey: true })).hasDeepseekKey, false);
+    assert.equal(store.current().deepseekApiKey, '');
+    assert.equal(store.current().apiKey, 'talk-secret');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('语音密钥与对话密钥同时清空又写入时拒绝，意图不明', () => {
+  assert.throws(
+    () => validateSettings({ clearDeepseekKey: true, deepseekApiKey: 'x' }, DEFAULT_AI_SETTINGS),
+    /Invalid standalone AI settings/,
+  );
+});
+
 test('persists only in isolated home, redacts keys, supports keep and clear, reloads offline', async () => {
   const home = mkdtempSync(join(tmpdir(), 'pet-ai-'));
   try {
@@ -89,7 +118,10 @@ test('persists only in isolated home, redacts keys, supports keep and clear, rel
     assert.equal(saved.whisperIntervalSec, 300);
     assert.equal((await store.save({ apiKey: '', automaticWhispers: true })).hasKey, true);
     assert.equal(createAiConfig(home).publicSettings().model, 'chosen-model');
-    assert.match(readFileSync(join(home, 'dsh-pet', 'standalone-ai.json'), 'utf8'), /test-secret/);
+    assert.doesNotMatch(readFileSync(join(home, 'dsh-pet', 'standalone-ai.json'), 'utf8'), /test-secret/);
+    const storedKey = readFileSync(join(home, 'dsh-pet', 'standalone-ai-key.dpapi'), 'utf8');
+    if (process.platform === 'win32') assert.notEqual(storedKey, 'test-secret', 'Windows 密钥文件应只包含 DPAPI 密文');
+    else assert.equal(storedKey, 'test-secret', '非 Windows 平台依赖当前用户文件权限保护');
     // 启用位只为旧文件保留：无论传什么，落盘一律为 true，对外视图也不再暴露。
     const forced = await store.save({ enabled: false });
     assert.equal('enabled' in forced, false);
@@ -126,6 +158,23 @@ test('旧配置文件缺后加字段：铺默认值后仍可读，不因 strict 
     assert.equal(store.publicSettings().model, 'legacy-model');
     assert.equal(store.publicSettings().hasKey, true);
     assert.equal(store.publicSettings().balanceProvider, '', '缺的新字段用默认值补齐');
+    assert.doesNotMatch(readFileSync(join(home, 'dsh-pet', 'standalone-ai.json'), 'utf8'), /legacy-secret/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('DeepSeek 官方协议固定使用官方地址', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'pet-ai-deepseek-'));
+  try {
+    const store = createAiConfig(home);
+    await assert.rejects(
+      store.save({ protocol: 'deepseek-official', baseUrl: 'https://gateway.example/v1' }),
+      /Invalid standalone AI settings/,
+    );
+    const saved = await store.save({ protocol: 'deepseek-official', baseUrl: 'https://api.deepseek.com' });
+    assert.equal(saved.protocol, 'deepseek-official');
+    assert.equal(saved.baseUrl, 'https://api.deepseek.com');
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

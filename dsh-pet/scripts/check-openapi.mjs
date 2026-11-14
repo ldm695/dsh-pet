@@ -22,7 +22,6 @@ const doc = yaml.load(readFileSync(SPEC_PATH, 'utf8'));
 const fail = [];
 const ok = [];
 
-// ---- 1. 顶层结构 ----
 if (doc.openapi !== '3.1.0') fail.push(`openapi 版本应为 3.1.0，实际 ${doc.openapi}`);
 else ok.push('openapi 3.1.0');
 for (const key of ['info', 'paths', 'components', 'servers', 'tags']) {
@@ -30,7 +29,7 @@ for (const key of ['info', 'paths', 'components', 'servers', 'tags']) {
 }
 if (!doc.info?.title || !doc.info?.version) fail.push('info.title / info.version 缺失');
 
-// ---- 2. $ref 解析 ----
+/** 按 JSON Pointer 解析文档内引用（含 ~1/~0 反转义），解析不到返回 undefined。 */
 const deref = (ref) => {
   if (!ref.startsWith('#/')) return undefined;
   let cur = doc;
@@ -41,6 +40,7 @@ const deref = (ref) => {
   return cur;
 };
 let refCount = 0;
+/** 深度遍历文档，逐个校验 $ref 可解析并计数。 */
 const walk = (node, path) => {
   if (!node || typeof node !== 'object') return;
   if (Array.isArray(node)) return node.forEach((v, i) => walk(v, `${path}[${i}]`));
@@ -54,7 +54,6 @@ const walk = (node, path) => {
 walk(doc, '$');
 ok.push(`${refCount} 个 $ref 全部可解析`);
 
-// ---- 3. 操作与响应 ----
 const METHODS = ['get', 'put', 'post', 'delete', 'patch', 'head', 'options', 'trace'];
 let ops = 0;
 for (const [p, item] of Object.entries(doc.paths)) {
@@ -76,7 +75,7 @@ for (const [p, item] of Object.entries(doc.paths)) {
       if (!/^[1-5](\d\d|XX)$/.test(code)) fail.push(`${m.toUpperCase()} ${p} 响应码非法: ${code}`);
       if (!r.description && !r.$ref) fail.push(`${m.toUpperCase()} ${p} 响应 ${code} 缺少 description`);
     }
-    // 组件响应被 $ref 时不能带兄弟字段（3.1 里兄弟字段会被忽略）——顺带查一下参数引用
+    // 内联参数必须自带 name/in，否则路由无法绑定；$ref 参数交给上面的悬空引用检查。
     for (const prm of op.parameters ?? []) {
       if (prm.$ref === undefined && (!prm.name || !prm.in)) fail.push(`${m.toUpperCase()} ${p} 的参数缺少 name/in`);
     }
@@ -116,7 +115,7 @@ for (const seg of implemented) {
 }
 ok.push(`路由对齐：${[...documented].sort().join(', ')}`);
 
-// ---- 5. 组件 schema 里的 $ref 目标存在且是 schema ----
+// 组件 schema 要么自带类型组合、要么引用别处，否则消费者无法据此生成代码。
 for (const [name, s] of Object.entries(doc.components.schemas)) {
   if (!s || typeof s !== 'object') fail.push(`schema ${name} 不是对象`);
   if (!s.type && !s.oneOf && !s.allOf && !s.anyOf && !s.$ref) fail.push(`schema ${name} 没有 type/oneOf`);

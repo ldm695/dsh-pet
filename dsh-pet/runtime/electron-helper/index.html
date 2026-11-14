@@ -19,9 +19,7 @@
         height: 100%;
         background: transparent;
         overflow: hidden;
-        font-family:
-          'ShangshouSoftCandy', 'Yuanti SC', 'YouYuan', '幼圆', 'Comic Sans MS', 'PingFang SC', 'Microsoft YaHei',
-          sans-serif;
+        font-family: 'Microsoft YaHei UI', 'Segoe UI', sans-serif;
         user-select: none;
       }
       /* 宠物画布必须与窗口内容区重合：主进程按 winOffset 算命中区，假定 #root 原点就是窗口内容原点。
@@ -72,7 +70,7 @@
       .pet-hit.dragging {
         cursor: grabbing;
       }
-      /* 余额气泡：白色圆润泡 + 峰/谷/错误着色。
+      /* 余额气泡：与浏览器 overlay 同一套视觉（白色圆润泡 + 峰/谷/错误着色）。
          尺寸分两类锚点：盒子（宽度/内边距/圆角/尾巴/阴影/行间距）锚在字号 --f 上——字号调大盒子同步变大，
          文字不会顶出白底；位置（bottom 偏移）仍锚在宠物宽度 var(--pet-size)，气泡始终贴着宠物头顶。
          宽度必须写 width:max-content：气泡是 left:50% 的绝对定位盒，可用宽度只有包含块一半，
@@ -89,7 +87,7 @@
            内容可用宽度被悄悄缩掉一圈（表现为「明明还有空位却折行」）。与浏览器 bubble.ts 同一口径 */
         box-sizing: content-box;
         min-width: calc(var(--f) * 5.7143);
-        max-width: min(calc(var(--f) * 10.989), 100%);
+        max-width: min(calc(var(--f) * 16), 100%);
         padding: calc(var(--f) * 0.4835) calc(var(--f) * 0.6593);
         border-radius: calc(var(--f) * 0.7692);
         background: rgba(255, 255, 255, 0.92);
@@ -138,7 +136,40 @@
       .pet-bubble.is-on {
         opacity: 1;
       }
-      /* 碎碎念变体：字号缩到余额气泡的 0.75、宽度下限更窄（0.10 → 2.1978），
+      /* 戳破：鼓一下 → 缩成小泡泡 → 模糊散掉，与浏览器 overlay 同一套 keyframes。
+         transform 必须带 translateX(-50%)：气泡靠它居中，动画一覆盖就会横向跳半个身位 */
+      .pet-bubble.is-popping {
+        pointer-events: none;
+        animation: popOut 0.42s cubic-bezier(0.2, 0.72, 0.3, 1) forwards;
+      }
+      @keyframes popOut {
+        0% {
+          transform: translateX(-50%) scale(1);
+          opacity: 1;
+          filter: blur(0);
+        }
+        16% {
+          transform: translateX(-50%) scale(1.07);
+          opacity: 1;
+          filter: blur(0);
+        }
+        34% {
+          transform: translateX(-50%) scale(1.16);
+          opacity: 0.92;
+          filter: blur(0.3px);
+        }
+        62% {
+          transform: translateX(-50%) scale(0.9);
+          opacity: 0.42;
+          filter: blur(2px);
+        }
+        100% {
+          transform: translateX(-50%) scale(0.55);
+          opacity: 0;
+          filter: blur(7px);
+        }
+      }
+      /* 碎碎念变体：与浏览器 overlay 一致 —— 字号缩到余额气泡的 0.75、宽度下限更窄（0.10 → 2.1978），
          上限与余额气泡相同；宽度取宽/折行规则继承 .pet-bubble，高度随行数自然增长 */
       .pet-bubble.is-whisper {
         font-size: calc(var(--f) * 0.7473);
@@ -149,34 +180,11 @@
         display: flex;
         justify-content: space-between;
         gap: calc(var(--f) * 0.6593);
+        flex-wrap: wrap;
       }
-      .pet-bub-title {
-        font-size: calc(var(--f) * 0.7692);
-        color: rgba(43, 43, 43, 0.6);
-        margin-bottom: calc(var(--f) * 0.24);
-      }
-      .pet-bub-val {
-        font-size: calc(var(--f) * 0.7692);
-        font-weight: 650;
-        font-variant-numeric: tabular-nums;
-        color: #1f1f1f;
-      }
-      .pet-bub-row .pet-bub-val { white-space: nowrap; }
-      .pet-env-main { display: flex; align-items: center; gap: calc(var(--f) * 0.4); }
-      .pet-env-icon { color: #5f7f9e; display: block; }
-      .pet-env-icon svg { width: calc(var(--f) * 1.55); height: calc(var(--f) * 1.55); display: block; }
-      .pet-env-temp {
-        font-size: calc(var(--f) * 1.75); line-height: 1.1; font-weight: 700; letter-spacing: -0.02em;
-        font-variant-numeric: tabular-nums; color: #1f1f1f;
-      }
-      .pet-env-summary {
-        font-size: calc(var(--f) * 0.95); color: rgba(43, 43, 43, 0.68);
-        align-self: flex-end; padding-bottom: calc(var(--f) * 0.22);
-      }
-      .pet-env-foot {
-        margin-top: calc(var(--f) * 0.3); padding-top: calc(var(--f) * 0.18);
-        border-top: 1px solid rgba(43, 43, 43, 0.1); font-size: calc(var(--f) * 0.6);
-        color: rgba(43, 43, 43, 0.45);
+      /* 档位行由多个片段拼成：只允许在片段之间换行，片段内部不拆字 */
+      .pet-bub-row > span {
+        white-space: nowrap;
       }
       .pet-bub-sub {
         font-size: calc(var(--f) * 0.7692);
@@ -247,7 +255,9 @@
       }
       /* ---- 展开态（点余额气泡后的完整额度）：每窗口一行，进度条长度 = 已用百分比 ----
          与浏览器端 src/client/bubble.ts 的规则逐条对应（两端样式各存一份，数值必须同步） */
-      /* 可点：气泡默认 pointer-events:none（不挡下层应用），只有这张可展开的余额气泡才开命中。 */
+      /* 可点：气泡默认 pointer-events:none（不挡下层应用），只有这张可展开的余额气泡才开命中。
+         光有 DOM 可点还不够——窗口级穿透由 main 的 setIgnoreMouseEvents 管，气泡矩形要经
+         syncInputRegions 上报给主进程，见 sprite.js */
       .pet-bubble.is-clickable {
         pointer-events: auto;
         cursor: pointer;
@@ -397,11 +407,17 @@
       .pet-error.visible {
         display: block;
       }
+      body.dsh-pet-fullscreen-transition {
+        transition: opacity var(--dsh-pet-fullscreen-fade-duration, 220ms) ease;
+      }
+      body.dsh-pet-fullscreen-hidden {
+        opacity: 0;
+      }
       @media (prefers-reduced-motion: reduce) {
-        body.dsh-pet-fullscreen-transition {
+        video.pet-video {
           transition: none;
         }
-        video.pet-video {
+        body.dsh-pet-fullscreen-transition {
           transition: none;
         }
       }

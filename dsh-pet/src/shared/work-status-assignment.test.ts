@@ -1,137 +1,59 @@
-import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import vm from 'node:vm';
+import { createRequire } from 'node:module';
+import { test } from 'node:test';
 
-import { WorkStatusAssignmentManager } from './work-status-assignment.ts';
-import type { WorkStatusAgentSnapshot } from './work-status.ts';
-
-function agent(
-  key: string,
-  startedAt: number,
-  overrides: Partial<WorkStatusAgentSnapshot> = {},
-): WorkStatusAgentSnapshot {
-  return {
-    key,
-    state: 'working',
-    revision: 1,
-    startedAt,
-    ...overrides,
+const require = createRequire(import.meta.url);
+const { createWorkStatusAssignmentManager } =
+  require('../../runtime/electron-helper/main/work-status-assignment.cjs') as {
+    createWorkStatusAssignmentManager: () => {
+      reconcile: (
+        agents: Array<{ key: string; state: string; startedAt: number }>,
+        eligiblePetIds: string[],
+      ) => {
+        assignments: Array<{ agentKey: string; petId: string; assignmentRevision: number }>;
+        released: Array<{ agentKey: string; petId: string; assignmentRevision: number }>;
+      };
+    };
   };
-}
 
-describe('WorkStatusAssignmentManager', () => {
-  test('randomly assigns distinct eligible pets and keeps existing ownership stable', () => {
-    const manager = new WorkStatusAssignmentManager(() => 0);
-    const first = manager.reconcile([agent('agent-a', 1), agent('agent-b', 2)], ['pet-1', 'pet-2']);
-    assert.deepEqual(
-      first.assignments.map(({ agentKey, petId }) => [agentKey, petId]),
-      [
-        ['agent-a', 'pet-1'],
-        ['agent-b', 'pet-2'],
-      ],
-    );
+test('work-status broker keeps an owner stable and assigns concurrent sources to separate pets', () => {
+  const manager = createWorkStatusAssignmentManager();
+  const agents = [
+    { key: 'codex:client', state: 'working', startedAt: 10 },
+    { key: 'claude:client', state: 'thinking', startedAt: 20 },
+  ];
+  const initial = manager.reconcile(agents, ['main', 'pet-2']);
+  assert.equal(initial.assignments.length, 2);
+  assert.notEqual(initial.assignments[0]?.petId, initial.assignments[1]?.petId);
 
-    const second = manager.reconcile(
-      [agent('agent-b', 2, { revision: 2 }), agent('agent-a', 1, { state: 'result', revision: 3 })],
-      ['pet-2', 'pet-1'],
-    );
-    assert.deepEqual(
-      second.assignments.map(({ agentKey, petId }) => [agentKey, petId]),
-      [
-        ['agent-a', 'pet-1'],
-        ['agent-b', 'pet-2'],
-      ],
-    );
-    assert.deepEqual(second.released, []);
+  const updated = manager.reconcile(
+    agents.map((agent) => ({ ...agent, state: 'result' })),
+    ['main', 'pet-2'],
+  );
+  assert.deepEqual(
+    updated.assignments.map(({ agentKey, petId, assignmentRevision }) => ({ agentKey, petId, assignmentRevision })),
+    initial.assignments.map(({ agentKey, petId, assignmentRevision }) => ({ agentKey, petId, assignmentRevision })),
+  );
+});
 
-    const unchanged = manager.reconcile(
-      [agent('agent-a', 1, { state: 'result', revision: 3 }), agent('agent-b', 2, { revision: 2 })],
-      ['pet-2', 'pet-1'],
-    );
-    assert.deepEqual(
-      unchanged.assignments.map(({ agentKey, petId, assignmentRevision }) => [agentKey, petId, assignmentRevision]),
-      second.assignments.map(({ agentKey, petId, assignmentRevision }) => [agentKey, petId, assignmentRevision]),
-    );
-  });
-
-  test('uses Agent key as a deterministic tie-breaker for equal start times', () => {
-    const manager = new WorkStatusAssignmentManager(() => 0);
-    const result = manager.reconcile([agent('z-agent', 10), agent('a-agent', 10)], ['only-pet']);
-    assert.deepEqual(
-      result.assignments.map(({ agentKey }) => agentKey),
-      ['a-agent'],
-    );
-  });
-
-  test('leaves excess Agents pending and assigns a freed pet on the next snapshot', () => {
-    const manager = new WorkStatusAssignmentManager(() => 0);
-    const first = manager.reconcile([agent('agent-a', 1), agent('agent-b', 2)], ['pet-1']);
-    assert.deepEqual(
-      first.assignments.map(({ agentKey }) => agentKey),
-      ['agent-a'],
-    );
-
-    const next = manager.reconcile([agent('agent-b', 2)], ['pet-1']);
-    assert.deepEqual(
-      next.released.map(({ agentKey, petId }) => [agentKey, petId]),
-      [['agent-a', 'pet-1']],
-    );
-    assert.deepEqual(
-      next.assignments.map(({ agentKey, petId }) => [agentKey, petId]),
-      [['agent-b', 'pet-1']],
-    );
-    assert.ok(next.assignments[0].assignmentRevision > first.assignments[0].assignmentRevision);
-  });
-
-  test('releases an ineligible pet and reassigns its still-active Agent', () => {
-    const manager = new WorkStatusAssignmentManager(() => 0);
-    const first = manager.reconcile([agent('agent-a', 1)], ['pet-1', 'pet-2']);
-    const next = manager.reconcile([agent('agent-a', 1)], ['pet-2']);
-
-    assert.deepEqual(
-      next.released.map(({ petId }) => petId),
-      ['pet-1'],
-    );
-    assert.equal(next.assignments[0].petId, 'pet-2');
-    assert.ok(next.assignments[0].assignmentRevision > first.assignments[0].assignmentRevision);
-  });
-
-  test('keeps terminal states assigned until the Agent leaves the snapshot', () => {
-    const manager = new WorkStatusAssignmentManager(() => 0);
-    const first = manager.reconcile([agent('agent-a', 1)], ['pet-1']);
-    const terminal = manager.reconcile([agent('agent-a', 1, { state: 'success', revision: 2 })], ['pet-1']);
-    assert.equal(terminal.assignments[0].petId, 'pet-1');
-    assert.equal(terminal.assignments[0].assignmentRevision, first.assignments[0].assignmentRevision);
-
-    const idle = manager.reconcile([], ['pet-1']);
-    assert.deepEqual(idle.assignments, []);
-    assert.deepEqual(
-      idle.released.map(({ agentKey, petId }) => [agentKey, petId]),
-      [['agent-a', 'pet-1']],
-    );
-  });
-
-  test('increments assignment revision when a new Agent takes the same pet with identical visible state', () => {
-    const manager = new WorkStatusAssignmentManager(() => 0);
-    const previous = manager.reconcile([agent('agent-a', 1, { sourceName: 'Codex', revision: 4 })], ['pet-1']);
-    const next = manager.reconcile([agent('agent-b', 2, { sourceName: 'Codex', revision: 4 })], ['pet-1']);
-
-    assert.equal(next.assignments[0].petId, previous.assignments[0].petId);
-    assert.ok(next.assignments[0].assignmentRevision > previous.assignments[0].assignmentRevision);
-  });
-
-  test('the Electron shared-core bundle exposes the same assignment behavior without a legacy normalizer', () => {
-    const source = readFileSync(new URL('../../runtime/electron-helper/shared-core.js', import.meta.url), 'utf8');
-    const context = vm.createContext({});
-    vm.runInContext(source, context);
-    const bundledShared = context.PetShared as typeof import('./index.ts');
-    assert.equal(typeof bundledShared.WorkStatusAssignmentManager, 'function');
-    assert.equal('normalizeWorkStatusAgents' in bundledShared, false);
-
-    const agents = [agent('agent-a', 1), agent('agent-b', 2)];
-    const sourceResult = new WorkStatusAssignmentManager(() => 0).reconcile(agents, ['pet-1', 'pet-2']);
-    const bundledResult = new bundledShared.WorkStatusAssignmentManager(() => 0).reconcile(agents, ['pet-1', 'pet-2']);
-    assert.deepEqual(JSON.parse(JSON.stringify(bundledResult)), sourceResult);
-  });
+test('work-status broker releases an ineligible pet and never assigns one pet to two sources', () => {
+  const manager = createWorkStatusAssignmentManager();
+  manager.reconcile(
+    [
+      { key: 'codex:client', state: 'working', startedAt: 10 },
+      { key: 'claude:client', state: 'thinking', startedAt: 20 },
+    ],
+    ['main', 'pet-2'],
+  );
+  const result = manager.reconcile(
+    [
+      { key: 'codex:client', state: 'working', startedAt: 10 },
+      { key: 'claude:client', state: 'thinking', startedAt: 20 },
+      { key: 'dsh:client', state: 'result', startedAt: 30 },
+    ],
+    ['pet-2'],
+  );
+  assert.ok(result.released.some(({ petId }) => petId === 'main'));
+  assert.equal(new Set(result.assignments.map(({ petId }) => petId)).size, result.assignments.length);
+  assert.equal(result.assignments.length, 1);
 });

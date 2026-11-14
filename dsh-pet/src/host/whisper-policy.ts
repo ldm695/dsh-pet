@@ -7,6 +7,8 @@
 export interface StandaloneWhisperPolicy {
   /** 独立模式服务是否已就绪（配置齐全且未暂停）。 */
   isReady(): boolean;
+  /** 独立模式全局自动碎碎念开关与峰谷门控。 */
+  allowsAutomaticWhisper?(): boolean;
 }
 
 /**
@@ -20,5 +22,25 @@ export function automaticWhisperSchedule(
   configuredPeriodSec: number,
 ): { enabled: boolean; periodSec: number } {
   if (!policy) return { enabled: petEnabled, periodSec: configuredPeriodSec };
-  return { enabled: petEnabled && policy.isReady(), periodSec: configuredPeriodSec };
+  return {
+    enabled: petEnabled && policy.isReady() && (policy.allowsAutomaticWhisper?.() ?? true),
+    periodSec: configuredPeriodSec,
+  };
+}
+
+/** 北京时间 DeepSeek 峰谷计划：工作日 09–12、14–18 为峰价；周末全天谷价。 */
+export function isDeepSeekOffPeak(at: Date = new Date()): boolean {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    weekday: 'short',
+    hour: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(at);
+  const weekday = parts.find((part) => part.type === 'weekday')?.value;
+  const hour = Number(parts.find((part) => part.type === 'hour')?.value);
+  if (!Number.isInteger(hour) || !weekday) return false;
+  if (weekday === 'Sat' || weekday === 'Sun') return true;
+  const workday = weekday === 'Mon' || weekday === 'Tue' || weekday === 'Wed' || weekday === 'Thu' || weekday === 'Fri';
+  const peak = (hour >= 9 && hour < 12) || (hour >= 14 && hour < 18);
+  return !workday || !peak;
 }

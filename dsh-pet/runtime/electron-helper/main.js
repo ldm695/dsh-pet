@@ -51,11 +51,10 @@ const { createBridge } = require('./main/bridge.js');
 const { createTray } = require('./main/tray.js');
 const { createWindows } = require('./main/windows.js');
 const { registerIpc } = require('./main/ipc.js');
+const { registerDshNotificationIpc } = require('./main/notifications.js');
+const { createFullscreenVisibility } = require('./main/fullscreen.js');
 const { createDisplaySync } = require('./main/displays.js');
 const { dshHomeDir, resolveUserDataDir } = require('./main/user-data.js');
-const { registerDshNotificationIpc } = require('./main/notifications.js');
-const { createWorkStatusAssignments } = require('./main/work-status.js');
-const { createFullscreenVisibility } = require('./main/fullscreen.js');
 
 /** Linux 指针提供者：仅在 Linux 创建；查询失败时 get() 返回 null（调用方回退 Electron 原生 API） */
 const linuxPointer = process.platform === 'linux' ? createLinuxPointer() : null;
@@ -76,7 +75,7 @@ app.setName('dsh-pet-electron-helper');
 // Windows 任务栏分组：不设 AppUserModelID 时窗口归到 electron.exe 名下，任务栏按钮意外出现就显示
 // Electron 默认图标。必须在 ready 之前调用；独立应用与 DSH 内 helper 用不同 ID，避免被合成一组。
 if (process.platform === 'win32') {
-  app.setAppUserModelId(APP_MODE ? 'com.dsh.pet.app' : 'com.dsh.pet.helper');
+  app.setAppUserModelId(APP_MODE ? process.env.DSH_PET_APP_USER_MODEL_ID || 'com.dsh.pet.app' : 'com.dsh.pet.helper');
 }
 // 应用模式只改数据目录、不改应用名：共用同一个 userData 时两个 Chromium 进程会抢同一份 profile 互踢。
 if (APP_MODE) app.setPath('userData', path.join(app.getPath('appData'), 'dsh-pet'));
@@ -225,8 +224,8 @@ const petWindows = createWindows({
   platform: TRAY_PLATFORM,
   shouldReassertTopmost,
   topmostLevel,
-  displayPriority: process.env.DSH_PET_DISPLAY_PRIORITY,
   taskbarWatchdogEnabled: taskbarWatchdogEnabledFromEnv(process.env.DSH_PET_TASKBAR_WATCHDOG),
+  displayPriority: process.env.DSH_PET_DISPLAY_PRIORITY,
 });
 /** 托盘：显示开关与退出入口。 */
 const tray = createTray({
@@ -242,6 +241,7 @@ const tray = createTray({
   platform: TRAY_PLATFORM,
   helperDir: __dirname,
 });
+let fullscreenVisibility = null;
 
 /**
  * 应用模式的重建钩子：同进程里没有「重启 helper 进程」这条路，宿主改完显示位置会调它——
@@ -256,8 +256,6 @@ if (process.env.DSH_PET_IN_PROCESS === '1') {
   };
 }
 
-let workStatusAssignments = null;
-let fullscreenVisibility = null;
 app.whenReady().then(() => {
   // 探测子进程：此时没有 force-device-scale-factor，读到的是 Windows 的真实主屏缩放。
   // 退出推迟一拍——在 ready 回调里直接 app.exit() 会赶在 stdout 落盘前拆掉进程
@@ -297,10 +295,6 @@ app.whenReady().then(() => {
   // 托盘：不 await（建窗与建托盘互不依赖），内部自己等 bridge 回调服务就绪
   void tray.start();
 
-  registerIpc({ ipcMain, petWindows, shell, openTarget: OPEN_TARGET, petRoute: PET_ROUTE });
-  registerDshNotificationIpc({ ipcMain, BrowserWindow, Notification, petWindows, helperDir: __dirname });
-  workStatusAssignments = createWorkStatusAssignments({ app, BrowserWindow, ipcMain, petWindows });
-
   linuxPointer?.start();
   petWindows.create();
 
@@ -312,6 +306,8 @@ app.whenReady().then(() => {
   powerMonitor.on('resume', reassertTaskbar);
   powerMonitor.on('unlock-screen', reassertTaskbar);
 
+  registerIpc({ ipcMain, petWindows, shell, openTarget: OPEN_TARGET, petRoute: PET_ROUTE });
+  registerDshNotificationIpc({ ipcMain, BrowserWindow, Notification, petWindows, helperDir: __dirname });
   fullscreenVisibility = createFullscreenVisibility({
     app,
     BrowserWindow,
@@ -320,12 +316,14 @@ app.whenReady().then(() => {
     petWindows,
     priority: process.env.DSH_PET_DISPLAY_PRIORITY,
   });
-  globalThis.__dshPetSetDisplayPriority = (priority) => {
-    process.env.DSH_PET_DISPLAY_PRIORITY = priority;
-    petWindows.setDisplayPriority(priority);
-    fullscreenVisibility.setPriority(priority);
-  };
   fullscreenVisibility.start();
+  if (APP_MODE) {
+    globalThis.__dshPetSetDisplayPriority = (priority) => {
+      process.env.DSH_PET_DISPLAY_PRIORITY = String(priority);
+      petWindows.setDisplayPriority(priority);
+      fullscreenVisibility.setPriority(priority);
+    };
+  }
   createDisplaySync({ screen, petWindows, dpi });
 
   // 冒烟自检（默认关闭）：DSH_PET_SMOKE=1 时延时截图到 DSH_PET_SMOKE_OUT 后退出，
@@ -343,9 +341,8 @@ app.whenReady().then(() => {
 // 退出时销毁托盘图标：不销毁会在 Windows 通知区留下「幽灵图标」（鼠标划过才消失）。
 // 宿主改 display 时是 SIGTERM/SIGKILL 硬杀，Windows 上拦不到，所以这条只覆盖优雅退出。
 app.on('before-quit', () => {
-  workStatusAssignments?.dispose();
   fullscreenVisibility?.stop();
-  delete globalThis.__dshPetSetDisplayPriority;
+  globalThis.__dshPetSetDisplayPriority = undefined;
   petWindows.stopTaskbarWatchdog();
   if (!tray.exists()) return;
   try {

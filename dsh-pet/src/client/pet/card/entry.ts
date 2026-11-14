@@ -104,6 +104,23 @@ export function createCardEntry(rt: CardEntryRuntime) {
     // 右键菜单与对话弹窗当前的句柄，卸载或重开前清理。对话弹窗还要按住说话遥控开录/收尾。
     const menuRef = useRef<{ close: () => void } | null>(null);
     const chatRef = useRef<ChatDialogMount | null>(null);
+    const menuCapabilitiesRef = useRef({ chatEnabled: true, balanceSupported: true });
+    useEffect(() => {
+      let active = true;
+      void fetch(ROUTE_PATH + '/menu/capabilities', { cache: 'no-store' })
+        .then((response) => (response.ok ? response.json() : null))
+        .then((value: { ok?: boolean; chatEnabled?: boolean; balanceSupported?: boolean } | null) => {
+          if (!active || !value || value.ok === false) return;
+          menuCapabilitiesRef.current = {
+            chatEnabled: value.chatEnabled !== false,
+            balanceSupported: value.balanceSupported !== false,
+          };
+        })
+        .catch(() => undefined);
+      return () => {
+        active = false;
+      };
+    }, []);
 
     /** 把提示框摆到光标右下，放不下时翻边并夹回视口。
      *  直接写 DOM style：每次鼠标移动都走 React 状态会让整个 PetCard 重渲染。
@@ -353,12 +370,18 @@ export function createCardEntry(rt: CardEntryRuntime) {
         : { label: '睡觉', action: 'sleep', hint: SLEEP_HOTKEY_HINT };
       // 顺序与桌面端同一排法：余额 / 待办 / 碎碎念 / 对话 / 配图 / 睡觉 → 动作树 → 显示位置 / 回到初始位置。
       // 桌面专属的两项（打开软件、重载配置）在网页端没有对应动作，不出现。
+      const balanceTool: MenuNode[] = menuCapabilitiesRef.current.balanceSupported
+        ? [{ label: '查看余额', action: 'show-balance' }]
+        : [];
+      const chatTool: MenuNode[] = menuCapabilitiesRef.current.chatEnabled
+        ? [{ label: '对话', action: 'chat', hint: CHAT_HOTKEY_HINT }]
+        : [];
       const tools: MenuNode[] = [
-        { label: '查看余额', action: 'show-balance' },
+        ...balanceTool,
         { label: '查询天气', action: 'show-environment' },
         { label: '待办事项', action: 'todo', hint: TODO_HOTKEY_HINT },
         { label: '碎碎念', action: 'whisper' },
-        { label: '对话', action: 'chat', hint: CHAT_HOTKEY_HINT },
+        ...chatTool,
         ...(memes ? [memes] : []),
         ...(canSleep ? [sleepItem] : []),
       ];

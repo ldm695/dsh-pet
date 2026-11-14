@@ -16,10 +16,10 @@ import { apply } from '../host/index.ts';
 import { defaultLog, setDefaultLogger } from '../host/log-file.ts';
 import { runCheck, packageVersion } from './check.ts';
 import { createStandaloneAi } from './ai-provider.ts';
-import { createRequestSecurity } from './request-security.ts';
 import { prepareStandaloneMigrations } from './migrations.ts';
-import { standaloneAiEnvironmentApiKey } from './deepseek.ts';
 import { createMigrationRecoveryRoutes, openMigrationBackupFolder } from './migration-recovery-routes.ts';
+import { createStandaloneWorkStatusBridge } from './work-status-bridge.ts';
+import { createRequestSecurity } from './request-security.ts';
 import { writeStandaloneRuntime } from './runtime-state.ts';
 import { createStandaloneContext, type RegisteredRoute, type StandaloneLogger } from './context.ts';
 import { createStandaloneLogger } from './logger.ts';
@@ -42,19 +42,17 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
     return;
   }
 
-  const migration = await prepareStandaloneMigrations({
-    home,
-    packageRoot,
-    environmentApiKey: standaloneAiEnvironmentApiKey(),
-    logger,
-  });
   const routes: RegisteredRoute[] = [];
   // /shutdown 的回调要在建服务时交出，而收尾函数要在服务之后定义：
   // 用可替换的转发器解耦，让服务构造时只拿到「将来会是谁」。
   let forwardShutdown: (reason: string) => void = () => {};
   const portRef = { value: options.port };
-  const ai = createStandaloneAi(home, logger, { initialApiKey: migration.initialApiKey });
-  const security = createRequestSecurity();
+  const migrations = await prepareStandaloneMigrations({
+    home,
+    packageRoot,
+    logger,
+  });
+  const ai = createStandaloneAi(home, logger, { initialApiKey: migrations.initialApiKey });
   routes.push(
     ...createMigrationRecoveryRoutes({
       home,
@@ -62,11 +60,13 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
       shutdown: (reason) => forwardShutdown(reason),
     }),
   );
+  const security = createRequestSecurity();
   const context = createStandaloneContext({
     port: () => portRef.value,
     logger,
     routes,
     ai,
+    workStatusBridge: createStandaloneWorkStatusBridge(home, (message) => logger.warn(message)),
     authenticatedUrl: security.authenticatedUrl,
     // 托盘退出与 POST /shutdown 走同一条收尾路径。
     shutdown: (reason) => forwardShutdown(reason),
@@ -159,6 +159,9 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
     ai.getSettings().balanceProvider
       ? `  余额        已选 ${ai.getSettings().balanceProvider}，设置页点「查询余额」取数`
       : '  余额        未选服务商；设置页「AI 服务商」→「余额查询服务商」里选一家',
+    migrations.recoveredFromMigrationError
+      ? `  配置恢复    迁移异常；原配置已备份到 ${migrations.backupDirectory}，可在设置页查看或还原`
+      : '',
     '  不可用      会话工作状态 / DSH 系统通知',
     '  退出        Ctrl+C、POST /shutdown，或桌面托盘菜单的「退出」',
     '',

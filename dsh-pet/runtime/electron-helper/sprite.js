@@ -1,75 +1,49 @@
 /**
- * dsh-pet desktop helper —— 宠物本体（PetSprite 类）。
- *
- * 播放 / 拖拽抛掷 / 跨窗碰撞 / 点击穿透 / 右键菜单 / 聊天弹窗 / 气泡渲染。
- * 事件联动（余额 / 碎碎念 / 广播 / 工作状态）不在此文件——见 events.js。
- * 依赖 constants.js 的全局（CONFIG / VIEW / BASE / S / config / sprites 等），须后加载。
+ * dsh-pet 桌面 Helper 的宠物本体（PetSprite 类）：播放、拖拽抛掷、跨窗碰撞、点击穿透、
+ * 右键菜单、聊天弹窗与气泡渲染。
+ * 事件联动（余额/碎碎念/广播/工作状态）不在此文件，见 events.js；纯逻辑与常量来自 shared-core.js。
+ * 依赖 constants.js 的全局，须后加载。始终成立：所有位移都经 sendBounds 落到窗口，跨进程交换一律
+ * 在 toScreen/toLocal 收口。
+ * @module dsh-pet/runtime/electron-helper/sprite
  */
 'use strict';
 
-// 左键 + 修饰键 =「呼出 DSH」快捷键。macOS 上 Ctrl+左键会变成系统右键，故使用 Cmd。
+// 左键 + 修饰键 = 「呼出 DSH」的快捷键。Windows / Linux 用 Ctrl；macOS 上 Ctrl+左键是系统右键
+// （先触发 contextmenu、拿不到 click），所以改用 Cmd。快捷键文案按平台取，判定统一走 isOpenShortcut。
 const OPEN_SHORTCUT_HINT = /Mac/i.test(navigator.platform || navigator.userAgent) ? 'Cmd+左键' : 'Ctrl+左键';
+/** 本次点击是否按住了「呼出 DSH」的修饰键（Ctrl / Cmd） */
 const isOpenShortcut = (e) => !!(e && (e.ctrlKey || e.metaKey));
 
+// 点击音效：与浏览器端同一套参数（单例 audio、音量 0.5、100ms 节流、失败静默）。
+// 复用素材通道：bridge 模式由主进程取回音频，普通模式仍走 HTTP。
 const CLICK_SOUND_URL = BASE + '/sound/click-duck.wav';
+const CLICK_SOUND_VOLUME = 0.5;
+const CLICK_SOUND_THROTTLE_MS = 100;
 let clickAudio = null;
 let lastClickSoundAt = 0;
-function playClickSound() {
+const playClickSound = () => {
+  // 开关来自成品配置 main.clickSoundEnabled（renderer.js 的 loadConfig 带入）；缺失一律静音
   if (!config || config.clickSoundEnabled !== true) return;
   const now = Date.now();
-  if (now - lastClickSoundAt < 100) return;
+  if (now - lastClickSoundAt < CLICK_SOUND_THROTTLE_MS) return;
   lastClickSoundAt = now;
   try {
     clickAudio = clickAudio || new Audio(CLICK_SOUND_URL);
-    clickAudio.volume = 0.5;
+    clickAudio.volume = CLICK_SOUND_VOLUME;
     clickAudio.currentTime = 0;
-    const playback = clickAudio.play();
-    if (playback && typeof playback.catch === 'function') playback.catch(() => {});
-  } catch {}
-}
-
-function clampPetCenterToRegion(areas, cx, cy, halfW, halfH, sideAllow, topInset) {
-  if (!Array.isArray(areas) || areas.length === 0) return { x: cx, y: cy };
-  const bodyHalfW = Math.max(0, halfW - sideAllow);
-  const points = [
-    [cx, cy],
-    [cx - bodyHalfW, cy],
-    [cx + bodyHalfW, cy],
-    [cx, cy - halfH + topInset],
-    [cx, cy + halfH],
-  ];
-  if (points.every(([x, y]) => S.rectAtPoint(areas, x, y))) return { x: cx, y: cy };
-
-  let best = null;
-  let bestDistance = Infinity;
-  for (const area of areas) {
-    const minX = area.x + bodyHalfW;
-    const maxX = area.x + area.width - bodyHalfW - 1;
-    const minY = area.y + halfH - topInset;
-    const maxY = area.y + area.height - halfH - 1;
-    if (maxX < minX || maxY < minY) continue;
-    const x = Math.max(minX, Math.min(maxX, cx));
-    const y = Math.max(minY, Math.min(maxY, cy));
-    const distance = (x - cx) ** 2 + (y - cy) ** 2;
-    if (distance < bestDistance) {
-      best = { x, y };
-      bestDistance = distance;
-    }
+    const p = clickAudio.play();
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+  } catch {
+    /* 音频不可用：静默忽略 */
   }
-  return best || S.clampPointToRegion(areas, cx, cy);
-}
+};
 
-// ---------- 单只宠物（行为与浏览器 PetCard 一致；纯逻辑来自 src/shared） ----------
+// 单只宠物：行为与浏览器 PetCard 一致，纯逻辑来自 src/shared
 class PetSprite {
-  constructor(pet, index = CONFIG.petIndex) {
-    this.pet = pet; // 这只宠物的配置段（拍平后的成品实例，条目级字段已吹入：动画池/权重/周期）
-    this.index = index;
-    this.layout = CONFIG.petLayouts.find((layout) => layout.id === pet.id) || CONFIG.petLayouts[index] || {};
-    this.pointerOnBody = false;
-    // 页面级缩放（main 对窗口 setZoomFactor(CONFIG.scale)，见 DESIGN.md §3.5）统一放大整窗：
-    // pet.size 即 CSS 像素基准，**不再手工乘 CONFIG.scale**——固定 px UI（菜单/积分/聊天）
-    // 随同一缩放自动恢复 DIP 观感；跨进程交换（bounds/几何/碰撞）由 constants.js 的
-    // toScreen/toLocal 收口换算，这里与 shared 组件一样零乘除。
+  constructor(pet) {
+    this.pet = pet; // 这只宠物的配置段（拍平后的成品实例，条目级字段已吹入）
+    // 页面级缩放（主进程对窗口 setZoomFactor）统一放大整窗：pet.size 即 CSS 像素基准，
+    // 不再手工乘 CONFIG.scale；跨进程交换由 constants.js 的 toScreen/toLocal 收口。
     this.size = pet.size;
     this.height = (this.size * 9) / 16;
     this.halfW = this.size / 2;
@@ -77,9 +51,9 @@ class PetSprite {
     this.bottomPad = (this.size * (9 / 16) * (S.CANVAS_H - S.FEET_Y)) / S.CANVAS_H;
     // 窗口高 = 舞台高 + 脚底垫高（stage 被 translateY(bottomPad) 下移的余量，防底部被窗口裁剪）
     this.winH = this.height + this.bottomPad;
-    // 窗口内【可交互区域】= 身体命中区（像素，窗口坐标）。桌宠身体命中区是 .dsh-pet-hit
-    // pointer-events:auto（root/stage/气泡全 none）——桌面严格对齐：命中区外含透明像素一律穿透到下层应用。
-    // HIT_BOX 是 640×360 舞台坐标：x 按窗口宽缩放；y 除舞台高外还要加 bottomPad（舞台被下移）。
+    // 可交互区域 = 身体命中区（像素，窗口坐标）。浏览器只有 .dsh-pet-hit 可交互，桌面严格对齐：
+    // 命中区外（含透明像素）一律穿透到下层应用。HIT_BOX 是 640×360 舞台坐标：x 按窗口宽缩放，
+    // y 除舞台高外还要加 bottomPad（舞台被下移）。
     this.hitRect = {
       x: (S.HIT_BOX.x0 / 640) * this.size,
       y: this.bottomPad + (S.HIT_BOX.y0 / 360) * this.height,
@@ -87,8 +61,7 @@ class PetSprite {
       h: ((S.HIT_BOX.y1 - S.HIT_BOX.y0) / 360) * this.height,
     };
     window.__dshPetDebug.hitRect = this.hitRect;
-    // 左右透明边余量（视频盒内宠物身体居中）：让边界按"身体"贴边——宠物能走到屏幕边缘，
-    // 但身体永不越界（漫游/拖拽都不会弄丢宠物）。
+    // 左右透明边余量（视频盒内宠物身体居中）：让边界按身体贴边——宠物能走到屏幕边缘，但身体永不越界。
     this.sideAllow = (S.HIT_BOX.x0 / 640) * this.size;
     window.__dshPetDebug.sideAllow = this.sideAllow;
     // 窗口四周外扩：左右下 = WINDOW_MARGIN_RATIO×宠物尺寸；上边距按气泡与待办面板的最大高度算——
@@ -114,8 +87,7 @@ class PetSprite {
     this.physics = pet.physics || config.physics || S.DEFAULT_PHYSICS;
     // 字体：字号按本宠物尺寸算；字体族由 renderer.js 注入 documentElement（fontConf 见上，上边距用的是同一份）
     this.font = fontConf;
-    // 抛掷锁定在当前屏幕（根字段；拍平已吹入实例，兜底回主条目/默认）：
-    // true = 甩出去只在松手时所在那块屏内弹（屏缝当墙），false = 照常跨屏飞行
+    // 抛掷锁定在当前屏幕：true = 只在松手时所在那块屏内弹（屏缝当墙），false = 照常跨屏飞行
     this.confineToScreen = pet.confineToScreen === true || config.confineToScreen === true;
     // 素材根按 assetRoot（文件宠物 = 配置文件前缀，多实例共享同一素材目录）或宠物 id 回落
     this.assetRoot = pet.assetRoot || pet.id;
@@ -129,26 +101,11 @@ class PetSprite {
   }
 
   dispose() {
-    this.disposed = true;
-    this.pending = null;
-    this.gen++;
-    for (const timer of this.videoReleaseTimers.values()) window.clearTimeout(timer);
-    this.videoReleaseTimers.clear();
-    for (const video of [this.videoA, this.videoB]) {
-      if (!video) continue;
-      video.onended = null;
-      video.onerror = null;
-      video.pause();
-      video.removeAttribute('src');
-      video.load();
-    }
     this.ac.abort();
     this.inputRegionMutation.disconnect();
     this.inputRegionResize.disconnect();
     this.inputRegionElements.clear();
     if (this.bubbleTimer !== null) window.clearTimeout(this.bubbleTimer);
-    if (this.envTimer !== null) window.clearTimeout(this.envTimer);
-    if (this.balanceFadeTimer !== null) window.clearTimeout(this.balanceFadeTimer);
     if (this.whisperTimer !== null) window.clearTimeout(this.whisperTimer);
     if (this.workTimer !== null) window.clearTimeout(this.workTimer);
     if (this.chatMount) {
@@ -160,8 +117,6 @@ class PetSprite {
     this.stopDragFollow();
     this.stopSquash();
     this.stopMove();
-    if (this.poseTimer !== null) window.clearTimeout(this.poseTimer);
-    this.poseTimer = null;
     window.petBridge?.moveTargets?.forget?.(this.pet.id);
     this.el.remove();
   }
@@ -177,6 +132,7 @@ class PetSprite {
     this.markPoseDirty();
   }
 
+  /** 实况变了 → 交给节流器（连续变化被合并成一次冲刷） */
   markPoseDirty() {
     if (this.poseTimer !== null) return;
     this.poseTimer = window.setTimeout(() => {
@@ -185,15 +141,22 @@ class PetSprite {
     }, POSE_THROTTLE_MS);
   }
 
+  /**
+   * 把当前实况推给宿主（`POST /pose/report`）。读的是当前值，所以节流窗口内的连续变化只留最后一帧。
+   *
+   * 坐标与 POST /position 同一口径：宠物中心的归一化 0~1，基准是所有屏并集的外接矩形（VIEW）；
+   * 不这样读回来的值就喂不回 /position。
+   */
   reportPose() {
-    if (!this.pos) return;
+    if (!this.pos) return; // 还没摆过位（position() 首次调用前）：不报，免得推 0,0
     const body = {
       x: (this.pos.x + this.halfW) / VIEW.w,
       y: (this.pos.y + this.halfH) / VIEW.h,
-      facing: this.facing,
+      facing: this._facing,
     };
-    const url = POSE_REPORT_URL + '?pet=' + encodeURIComponent(this.pet.id) + '&surface=desktop';
-    void S.postAction(url, body);
+    void S.postAction(POSE_REPORT_URL + '?pet=' + encodeURIComponent(this.pet.id), body).then((ok) => {
+      if (!ok) console.warn('[dsh-pet] 实况上报未送达 pet=' + this.pet.id);
+    });
   }
 
   sendBounds(px, py) {
@@ -223,12 +186,11 @@ class PetSprite {
       x = this.customPos.rx * W - this.halfW;
       y = this.customPos.ry * H - this.halfH;
     } else {
-      // 角落取**主屏**而不是外接矩形：不规则多屏布局下外接矩形的角落可能不属于任何显示器
-      // （实测右倒 T 型双屏，top-left 落在主屏上方的空洞里），配了该角落的宠物开机即隐身。
+      // 角落取主屏而不是外接矩形：不规则多屏布局下外接矩形的角落可能不属于任何显示器，
+      // 配了该角落的宠物会开机即隐身。
       const anchor = S.anchorPixel({
         corner: this.pet.position.corner,
-        // marginX/marginY 是配置里的绝对像素：页面级缩放（§3.5）已统一放大整窗，
-        // 配置值不再手工乘 CONFIG.scale——150% 屏上与「线性化 + 旧 CONFIG.scale 补偿」观感一致
+        // marginX/marginY 是配置里的绝对像素：页面级缩放已统一放大整窗，配置值不再乘 scale
         marginX: this.pet.position.marginX,
         // macOS 顶部边距对齐身体命中盒，扣掉动画画布头顶留白。
         marginY:
@@ -241,35 +203,6 @@ class PetSprite {
       });
       x = anchor.x;
       y = anchor.y;
-      // 多只桌宠若配置在同一角落，启动时先沿角落向内错开，避免它们从重叠位置一起起跑。
-      // 只有同一 corner/margin 的实例参与错位；用户分开配置的位置保持原样。
-      const layout = this.layout;
-      const position = this.pet.position || {};
-      const margin = (value) => (Number.isFinite(Number(value)) ? Number(value) : 0);
-      const sameAnchor = (candidate) => {
-        const p = candidate && candidate.position;
-        return (
-          p &&
-          p.corner === position.corner &&
-          margin(p.marginX) === margin(position.marginX) &&
-          margin(p.marginY) === margin(position.marginY)
-        );
-      };
-      if (sameAnchor(layout)) {
-        const layoutIndex = CONFIG.petLayouts.findIndex((candidate) => candidate.id === this.pet.id);
-        const preceding = CONFIG.petLayouts.slice(0, layoutIndex < 0 ? this.index : layoutIndex).filter(sameAnchor);
-        const gap = 24;
-        const inward = position.corner.endsWith('-right') ? -1 : 1;
-        const offset = preceding.reduce(
-          (sum, sibling) => sum + Math.max(0, Number(sibling.size) || this.size) + gap,
-          0,
-        );
-        x += inward * offset;
-        const area = PRIMARY_AREA || { x: 0, y: 0, width: VIEW.w, height: VIEW.h };
-        const minX = area.x + margin(position.marginX) - this.sideAllow;
-        const maxX = area.x + area.width - margin(position.marginX) - this.size + this.sideAllow;
-        x = Math.max(minX, Math.min(maxX, x));
-      }
     }
     this.sendBounds(x, y);
   }
@@ -293,49 +226,11 @@ class PetSprite {
    */
   relayout(prevView) {
     this.space = null;
-    this.gapEscapePending = false;
-    const from = prevView || VIEW;
-    const wasCustom = !!this.customPos;
-    const interruptedMove = this.moveRef !== null || !!this.pendingMove || this.posFollow !== null;
-    const source = this.throwState || this.pos;
-    const next = S.rebaseRect({ x: source.x, y: source.y, width: this.size, height: this.height }, from, VIEW, AREAS);
-    const shiftX = next.x - source.x;
-    const shiftY = next.y - source.y;
-    const viewShiftX = from.x - VIEW.x;
-    const viewShiftY = from.y - VIEW.y;
-    const unclampedX = source.x + from.x - VIEW.x;
-    const unclampedY = source.y + from.y - VIEW.y;
-    const clamped = Math.abs(next.x - unclampedX) > 0.5 || Math.abs(next.y - unclampedY) > 0.5;
-
-    this.pos = { x: Math.round(next.x), y: Math.round(next.y) };
-    if (this.dragState.active) {
-      this.dragState.petX += shiftX;
-      this.dragState.petY += shiftY;
-      this.dragState.sx += viewShiftX;
-      this.dragState.sy += viewShiftY;
-      if (Number.isFinite(this.dragState.anchorX)) this.dragState.anchorX += shiftX;
-      if (Number.isFinite(this.dragState.anchorY)) this.dragState.anchorY += shiftY;
-      for (const point of this.dragTrail) {
-        point.x += viewShiftX;
-        point.y += viewShiftY;
-      }
-      if (this.dragTarget) {
-        this.dragTarget.x += shiftX;
-        this.dragTarget.y += shiftY;
-      }
-    }
-    if (this.throwState) {
-      this.throwState.x = next.x;
-      this.throwState.y = next.y;
-    }
-
-    if (interruptedMove) this.stopMove();
-    if (wasCustom || clamped || interruptedMove) {
-      this.customPos = { rx: (this.pos.x + this.halfW) / VIEW.w, ry: (this.pos.y + this.halfH) / VIEW.h };
-    }
-
-    if (this.dragState.active || this.throwRef !== null) {
-      this.sendBounds(this.pos.x, this.pos.y);
+    if (this.dragState.active || this.throwRef !== null) return;
+    this.stopMove();
+    if (!this.pos) {
+      // 还没摆过位（position() 首次调用前）：没有旧位置可守恒，直接按新几何定位
+      this.position();
       return;
     }
     if (this.customPos) {
@@ -345,60 +240,6 @@ class PetSprite {
       this.customPos = { rx: center.x / VIEW.w, ry: center.y / VIEW.h };
     }
     this.position();
-    if (this.startDisplayGapEscape()) return;
-    if (interruptedMove && !this.resumeWorkStatusAnim()) this.playIdle();
-  }
-
-  /** 接近屏缝或显示器空隙时，用移动动画回到当前屏内的最近完整位置。 */
-  startDisplayGapEscape(rect = { x: this.pos.x, y: this.pos.y, width: this.size, height: this.height }) {
-    if (!S.relocateRectFromDisplayGap(PANELS, rect) || this.gapEscapePending) return false;
-    const area = S.resolveRect(PANELS, this.pos.x + this.halfW, this.pos.y + this.halfH);
-    const actions = this.animations.moves.actions;
-    if (!area || !actions.length || area.width < this.size || area.height < this.height) return false;
-
-    let targetX = Math.max(area.x, Math.min(area.x + area.width - this.size, rect.x));
-    let targetY = Math.max(area.y, Math.min(area.y + area.height - this.height, rect.y));
-    if (this.pet.horizontalOnly === true) {
-      if (this.pos.y < area.y || this.pos.y + this.height > area.y + area.height) return false;
-      targetY = this.pos.y;
-    }
-    if (Math.abs(targetX - this.pos.x) < 0.5 && Math.abs(targetY - this.pos.y) < 0.5) {
-      const inset = Math.max(1, this.size * 0.2);
-      targetX = Math.max(
-        area.x,
-        Math.min(area.x + area.width - this.size, this.pos.x + Math.sign(area.x + area.width / 2 - this.pos.x) * inset),
-      );
-      if (this.pet.horizontalOnly !== true && Math.abs(targetX - this.pos.x) < 0.5) {
-        targetY = Math.max(
-          area.y,
-          Math.min(
-            area.y + area.height - this.height,
-            this.pos.y + Math.sign(area.y + area.height / 2 - this.pos.y) * inset,
-          ),
-        );
-      }
-    }
-    if (Math.abs(targetX - this.pos.x) < 0.5 && Math.abs(targetY - this.pos.y) < 0.5) return false;
-
-    const chosen = actions[Math.floor(Math.random() * actions.length)];
-    const mp = Object.assign({}, this.animations.moves.default, chosen.params || {});
-    this.stopMove();
-    this.gapEscapePending = true;
-    this.pendingMove = {
-      startRatio: (this.pos.x + this.halfW) / VIEW.w,
-      startYRatio: (this.pos.y + this.halfH) / VIEW.h,
-      targetRatio: (targetX + this.halfW) / VIEW.w,
-      targetYRatio: (targetY + this.halfH) / VIEW.h,
-      dir: targetX >= this.pos.x ? 1 : -1,
-      isVertical: Math.abs(targetY - this.pos.y) > Math.abs(targetX - this.pos.x),
-      leadSec: mp.leadSec,
-      tailSec: mp.tailSec,
-      animationName: chosen.name,
-      playbackId: null,
-      gapEscape: true,
-    };
-    this.switchTo(chosen.name, true);
-    return true;
   }
 
   currentCenterX() {
@@ -411,11 +252,10 @@ class PetSprite {
   }
 
   /**
-   * 播放回执上报（issue #122 第 3 项）：把这一段点播的**真实**状态告诉 host。
+   * 播放回执上报：把这一段点播的真实状态告诉宿主。
    *
-   * 只对第三方点播（带 playbackId）上报；自播动画（随机链 / 点击 / 拖拽 / 碎碎念 / 余额…）不报。
-   * 为什么必须有这一层：host 只知道"受理了"，不知道播没播完——动画在这里播，只有这里知道真相。
-   * S.postAction 自带 body 序列化且从不抛异常；再加一层 then 只为留一条排障日志。
+   * 只对第三方点播（带 playbackId）上报，自播动画不报——宿主只知道「受理了」，动画在这里播，
+   * 只有这里知道播没播完。postAction 从不抛异常，这里加一层 then 只为留排障日志。
    */
   reportPlayback(playbackId, status, reason) {
     if (!playbackId) return;
@@ -427,10 +267,8 @@ class PetSprite {
 
   // 可见夹取矩形：以宠物所在那块屏为界，返回窗口局部坐标；可见区太小则返回 null
   visibleClampRect() {
-    // pos 是视口相对坐标，窗口屏幕位置 = pos + VIEW 原点 − 外扩余量（见 sendBounds）；
-    // 比较双方都用屏幕坐标（坐标系不混），返回的夹取矩形仍是窗口局部坐标。
-    // 夹取用**宠物所在的那块屏**而不是外接矩形：外接矩形含空洞，按它夹菜单会伸进
-    // 不属于任何显示器的区域（看不见）；菜单本来也不该跨屏显示。
+    // 比较双方都用屏幕坐标，返回的夹取矩形是窗口局部坐标。夹取用宠物所在的那块屏而不是外接矩形：
+    // 后者含空洞，按它夹菜单会伸进不属于任何显示器的区域。
     const area = S.resolveRect(WORK_AREAS, this.pos.x + this.halfW, this.pos.y + this.halfH);
     if (!area) return null;
     const winX = this.pos.x + VIEW.x - this.winOffset.x;

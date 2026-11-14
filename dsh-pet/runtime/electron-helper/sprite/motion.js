@@ -12,98 +12,54 @@ Object.assign(PetSprite.prototype, {
     const pm = this.pendingMove;
     if (!pm || this.moveRef !== null) return;
     this.pendingMove = null;
-    const { startRatio, startYRatio, targetRatio, targetYRatio = startYRatio } = pm;
+    const { startRatio, startYRatio, targetRatio, targetYRatio = startYRatio, leadSec, tailSec } = pm;
     const duration = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 10.09;
-    const usesDragAnimation = this.animations.drag.includes(pm.animationName || this.anim);
-    const leadSec = usesDragAnimation ? Math.min(pm.leadSec, duration * 0.15) : pm.leadSec;
-    const tailSec = usesDragAnimation ? Math.min(pm.tailSec, duration * 0.15) : pm.tailSec;
     const travelWindow = Math.max(0.1, duration - leadSec - tailSec);
     const token = ++this.moveToken;
     const W = VIEW.w;
     const H = VIEW.h;
-    this.moveDestination = { rx: targetRatio, ry: targetYRatio };
-    const moveKind = pm.relocate ? 'yield' : 'claim';
-    const moveReason = pm.relocate ? 'overlap-yield' : pm.manualMove ? 'manual-movement' : 'automatic-movement';
-    this.beginMoveTarget(targetRatio * W, targetYRatio * H, moveKind, moveReason);
-    if (!pm.isVertical) this.facing = pm.dir > 0 ? 'right' : 'left';
-    el.style.transform = this.facing === 'right' ? 'scaleX(-1)' : '';
-    el.loop = false;
-    el.onended = () => this.handleEnded();
+    this.beginMoveTarget(targetRatio, targetYRatio, pm.relocate ? 'yield' : 'claim');
     const step = () => {
       if (this.moveToken !== token) return;
       const t = el.currentTime || 0;
-      const progress = t <= leadSec ? 0 : t >= duration - tailSec ? 1 : (t - leadSec) / travelWindow;
-      const ratioX = startRatio + (targetRatio - startRatio) * progress;
-      const ratioY = startYRatio + (targetYRatio - startYRatio) * progress;
-      const x = ratioX * W - this.halfW;
-      const y = ratioY * H - this.halfH;
-      if (!pm.gapEscape && this.startDisplayGapEscape({ x, y, width: this.size, height: this.height })) return;
+      let ratioX;
+      let ratioY;
+      if (t <= leadSec) ratioX = startRatio;
+      else if (t >= duration - tailSec) ratioX = targetRatio;
+      // 按规划落点插值而不是 dir × 距离：minDist/maxDist 为负时符号必须保留，
+      // 否则规划往左、驱动往右，走完再跳回原本的方向。
+      else ratioX = startRatio + (targetRatio - startRatio) * ((t - leadSec) / travelWindow);
+      if (t <= leadSec) ratioY = startYRatio;
+      else if (t >= duration - tailSec) ratioY = targetYRatio;
+      else ratioY = startYRatio + (targetYRatio - startYRatio) * ((t - leadSec) / travelWindow);
       // 移动的是窗口（宠物包围盒跟随）；本体在窗口内的偏移由 sendBounds 按钳制情况算
-      this.sendBounds(x, y);
+      this.sendBounds(ratioX * W - this.halfW, ratioY * H - this.halfH);
+      if (!pm.gapEscape && this.startDisplayGapEscape()) return;
       if (t < duration - tailSec) {
         this.moveRef = requestAnimationFrame(step);
       } else {
         this.moveRef = null;
-        this.moveDestination = null;
-        this.gapEscapePending = false;
         this.customPos = { rx: targetRatio, ry: targetYRatio };
-        this.finishMoveTarget('completed');
+        if (pm.gapEscape) {
+          this.gapEscapePending = false;
+        }
+        this.finishMoveTarget();
       }
     };
     this.moveRef = requestAnimationFrame(step);
   },
 
   stopMove() {
-    this.gapEscapePending = false;
     this.pendingMove = null;
+    this.gapEscapePending = false;
     this.moveToken++;
-    if (this.moveRef !== null) {
-      this.customPos = { rx: (this.pos.x + this.halfW) / VIEW.w, ry: (this.pos.y + this.halfH) / VIEW.h };
-      const el = this.front === 0 ? this.videoA : this.videoB;
-      if (el) {
-        el.onended = null;
-        el.onerror = null;
-        el.loop = false;
-        el.pause();
-      }
-    }
     if (this.moveRef !== null) {
       cancelAnimationFrame(this.moveRef);
       this.moveRef = null;
     }
-    this.moveDestination = null;
-    this.finishMoveTarget('interrupted');
+    this.finishMoveTarget();
     // 位置指令的弹簧也是自主移动：停走路时一并停掉，否则两套运动系统会同时改窗口位置。
     this.stopPosFollow();
-  },
-
-  /** 菜单打开会接管位置控制；暂停被打断的移动动画，关闭菜单后重新接回动画链。 */
-  interruptMoveForMenu() {
-    const activeMoveClip =
-      this.animations.moves.actions.some((action) => action.name === this.anim) || this.animations.drag.includes(this.anim);
-    const wasMoving = this.moveRef !== null || !!this.pendingMove || activeMoveClip;
-    this.menuInterruptedMove = wasMoving;
-    this.stopMove();
-    if (!wasMoving) return;
-    const el = this.front === 0 ? this.videoA : this.videoB;
-    if (!el) return;
-    el.onended = null;
-    el.onerror = null;
-    el.loop = false;
-    el.pause();
-    if (this.playback) {
-      const interrupted = this.playback;
-      this.playback = null;
-      this.reportPlayback(interrupted, 'cancelled', 'menu-interrupted');
-    }
-  },
-
-  /** 右键菜单关闭后恢复工作状态动画或常规随机动画链。 */
-  resumeMenuInterruptedAnimation() {
-    if (!this.menuInterruptedMove) return;
-    this.menuInterruptedMove = false;
-    if (this.frozen || this.sleeping) return;
-    if (!this.resumeWorkStatusAnim()) this.playIdle();
   },
 
   // 拖拽抛掷物理（弹簧跟手 + 甩抛 + 重力反弹）
@@ -223,6 +179,7 @@ Object.assign(PetSprite.prototype, {
         this.throwState = null;
         this.customPos = { rx: (this.pos.x + this.halfW) / VIEW.w, ry: (this.pos.y + this.halfH) / VIEW.h };
         window.__dshPetDebug.lastDragRelease = { x: this.pos.x, y: this.pos.y };
+        this.startDisplayGapEscape();
         return;
       }
       this.throwRef = requestAnimationFrame(step);

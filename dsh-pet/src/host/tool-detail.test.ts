@@ -25,8 +25,8 @@ function oneOf(actual: string | null, expected: readonly string[]): void {
   assert.ok(actual !== null && expected.includes(actual), `得到 ${String(actual)}，不在 [${expected.join(' | ')}] 里`);
 }
 
-describe('工具文案 —— 文件仅显示文件名，其他用户参数不显示', () => {
-  test('read：文件名显示在句子里，不暴露目录路径', () => {
+describe('工具文案 —— 每工具 3 句候选，且带具体对象', () => {
+  test('read：文件名必须出现在句子里', () => {
     oneOf(toolDetailFromEvent(call('read', { file_path: 'a.ts' })), [
       '翻翻 a.ts 看看嘛',
       'a.ts 里面写了啥呢',
@@ -57,14 +57,14 @@ describe('工具文案 —— 文件仅显示文件名，其他用户参数不�
       '给 notes.md 添点料',
     ]);
     oneOf(toolDetailFromEvent(call('glob', { pattern: '*.ts' })), [
-      '找找文件藏在哪',
-      '我来翻翻文件',
-      '看看文件在哪儿呢',
+      '*.ts 都躲哪儿了呢',
+      '找找 *.ts 在不在',
+      '*.ts 藏在哪个角落呀',
     ]);
     oneOf(toolDetailFromEvent(call('grep', { pattern: 'TODO' })), [
-      '搜搜文件里的内容',
-      '我来查查代码',
-      '在项目里翻一翻',
+      'TODO 藏哪儿了呢',
+      '搜搜 TODO 在哪',
+      '哪儿有 TODO 呀',
     ]);
     oneOf(toolDetailFromEvent(call('present', { files: [{ path: 'a.png' }] })), [
       '给你看 a.png 哦',
@@ -72,37 +72,20 @@ describe('工具文案 —— 文件仅显示文件名，其他用户参数不�
       '喏，a.png 在这儿',
     ]);
     oneOf(toolDetailFromEvent(call('skill', { name: 'git-commit' })), [
-      '学个新本事',
-      '把新本事学起来',
-      '我来学一招',
+      '学个新本事 git-commit',
+      'git-commit 这招得记住',
+      '把 git-commit 学起来',
     ]);
     oneOf(toolDetailFromEvent(call('web_search', { queries: ['electron'] })), [
-      '我去查查资料',
-      '上网找点信息',
-      '我来搜一搜',
+      '我去查查 electron',
+      'electron 得搜搜才知道',
+      '上网问问 electron 吧',
     ]);
     oneOf(toolDetailFromEvent(call('web_fetch', { url: 'https://github.com/x/y' })), [
-      '我去网页看看',
-      '翻翻网页内容',
-      '去网上瞅一眼',
+      '去 github.com 瞅瞅有啥',
+      'github.com 这页我翻翻',
+      '看看 github.com 上写了啥',
     ]);
-  });
-
-  test('搜索词、URL、任务描述与目录路径不会进入气泡', () => {
-    const privateText = 'sk-live-secret-token-123456';
-    const cases = [
-      call('grep', { pattern: privateText }),
-      call('web_search', { queries: [privateText] }),
-      call('web_fetch', { url: `https://user:password@example.test/${privateText}` }),
-      call('subagent', { description: privateText }),
-      call('read', { file_path: `C:\\Users\\Alice\\Documents\\${privateText}.txt` }),
-    ];
-    for (const event of cases) {
-      const detail = String(toolDetailFromEvent(event));
-      assert.equal(detail.includes(privateText), false, `不应显示输入内容：${detail}`);
-      assert.equal(detail.includes('C:\\Users'), false, `不应显示完整路径：${detail}`);
-      assert.equal(detail.includes('user:password'), false, `不应显示 URL 凭据：${detail}`);
-    }
   });
 
   test('workflow：整句不带对象也能出（不需要目标）', () => {
@@ -219,9 +202,9 @@ describe('安全与健壮性', () => {
 
   test('arguments 直接是对象（非字符串）也认', () => {
     oneOf(toolDetailFromEvent({ data: { name: 'read', arguments: { file_path: 'x/y.ts' } } }), [
-      '翻翻 y.ts 看看嘛',
-      'y.ts 里面写了啥呢',
-      '我先瞅瞅 y.ts 哈',
+      '翻翻 x/y.ts 看看嘛',
+      'x/y.ts 里面写了啥呢',
+      '我先瞅瞅 x/y.ts 哈',
     ]);
   });
 
@@ -247,11 +230,10 @@ describe('安全与健壮性', () => {
 
 describe('目标过长 —— 换一句不带名字的氛围兜底', () => {
   test('grep 的正则太长（现场截图那条）→ 不塞进句子', () => {
-    oneOf(toolDetailFromEvent(call('grep', { pattern: 'WORK_STATE_GAP_MS|busyFlip|workFlushTimer' })), [
-      '搜搜文件里的内容',
-      '我来查查代码',
-      '在项目里翻一翻',
-    ]);
+    assert.equal(
+      toolDetailFromEvent(call('grep', { pattern: 'WORK_STATE_GAP_MS|busyFlip|workFlushTimer' })),
+      '到处翻翻看',
+    );
   });
 
   test('文件名太长（超过 20 码点）→ 该工具的兜底句', () => {

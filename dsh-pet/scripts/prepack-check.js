@@ -1,16 +1,59 @@
 #!/usr/bin/env node
-/** Verify that the Windows application build contains only standalone runtime assets. */
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+/**
+ * 发布前健康检查，由 package.json 的 prepack 触发，任何一项失败都以非零退出码阻断发布。
+ *
+ * 查必需文件、待机动画素材、原始母版是否误入包、client.js 的官方 bundle 形态、
+ * package.json 的 dsh.bundle 与 dsh.client 声明、表情包图片与配置键是否对齐、包体积上限，
+ * 以及构建产物有没有引入未声明的 @oxc-project/runtime helper。
+ * 只读检查，不构建、不打包、不改任何文件，依赖已构建好的 lib 与 assets。
+ * @module dsh-pet/scripts/prepack-check
+ */
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// 包根目录（scripts/ 的上一级）
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const fail = (message) => {
-  console.error(`[desktop-package-check] FAIL: ${message}`);
+// 失败与通过两种输出的辅助函数。
+const fail = (msg) => {
+  console.error(`[prepack-check] FAIL: ${msg}`);
   process.exitCode = 1;
 };
-const ok = (message) => console.log(`[desktop-package-check] ok: ${message}`);
+const ok = (msg) => console.log(`[prepack-check] ok: ${msg}`);
+/** JSONC → JSON：字符串感知地剥离行注释与块注释（config.jsonc 里有行尾注释）。 */
+const stripJsonc = (s) => {
+  let out = '';
+  let inStr = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) {
+      out += c;
+      if (c === '\\') out += s[++i] ?? '';
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') {
+      inStr = true;
+      out += c;
+      continue;
+    }
+    if (c === '/' && s[i + 1] === '/') {
+      while (i < s.length && s[i] !== '\n') i++;
+      out += '\n';
+      continue;
+    }
+    if (c === '/' && s[i + 1] === '*') {
+      i += 2;
+      while (i < s.length && !(s[i] === '*' && s[i + 1] === '/')) i++;
+      i++;
+      continue;
+    }
+    out += c;
+  }
+  return out;
+};
 
+// 缺任一件，装上就是运行期报错，所以在发布前逐个点名。
 const required = [
   'lib/index.js', // 宿主半侧
   'lib/client.js', // 浏览器半侧
@@ -45,8 +88,8 @@ const required = [
   'runtime/electron-helper/shared-core.js', // 桌面模式共享纯逻辑（src/shared 构建产物，window.PetShared）
   'runtime/electron-helper/index.html', // 桌面模式页面壳
 ];
-for (const file of required) {
-  existsSync(join(ROOT, file)) ? ok(`exists ${file}`) : fail(`missing ${file}`);
+for (const f of required) {
+  existsSync(join(ROOT, f)) ? ok(`exists ${f}`) : fail(`missing ${f}`);
 }
 
 // 待机动画是播放链的起点，缺了宠物立不起来；浏览器与桌面 Helper 共用这一份 webm。
@@ -133,57 +176,27 @@ const walk = (dir) => {
       if (!entry.name.endsWith('.tgz')) total += statSync(p).size; // sourcemap 不计
     }
   }
-}
+};
+walk(ROOT);
+const mb = (total / 1e6).toFixed(1);
+if (total > 200e6) fail(`package too large: ${mb}MB (limit 200MB)`);
+else ok(`package size ${mb}MB`);
 
-const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
-if (pkg.private === true) ok('package is private and cannot be published as a DSH Web plugin');
-else fail('package.json must set private=true');
-if (!pkg.dsh) ok('no DSH plugin registration metadata');
-else fail('package.json still contains DSH plugin registration metadata');
-if (!pkg.exports?.['./client']) ok('no browser client export');
-else fail('package.json still exports a DSH Web client');
-const runtimeDshDependencies = ['dependencies', 'optionalDependencies', 'peerDependencies'].flatMap((section) =>
-  Object.keys(pkg[section] ?? {}).filter((name) => name.startsWith('@deepseek-ai/')),
-);
-if (runtimeDshDependencies.length === 0) ok('no DSH runtime dependencies are bundled into the EXE');
-else fail(`DSH-only build dependencies must stay out of the EXE: ${runtimeDshDependencies.join(', ')}`);
+// rolldown 在 target es2020 下会为「带初始化器的类字段」产出降级语法，
+// 打包结果里就会多出 `import _defineProperty from "@oxc-project/runtime/helpers/defineProperty"`；
+// 该包既不在 dependencies 也不随包发布，宿主加载插件树时会 ERR_MODULE_NOT_FOUND，整个 profile 起不来。
+// 约定是类字段一律 declare 加构造器赋值，避免降级出外部 helper（见 src/host/helper-process.ts）。
+const OXC_RUNTIME = '@oxc-project/runtime';
+const oxcBundles = ['lib/index.js', 'lib/client.js'].filter((f) => {
+  const p = join(ROOT, f);
+  return existsSync(p) && readFileSync(p, 'utf8').includes(OXC_RUNTIME);
+});
+if (oxcBundles.length > 0)
+  fail(
+    `bundle imports undeclared helper ${OXC_RUNTIME} (${oxcBundles.join(', ')}) — ` +
+      '类字段改用 declare + 构造器赋值（见 src/host/helper-process.ts 的约定）',
+  );
+else ok(`no undeclared ${OXC_RUNTIME} import in bundles`);
 
-const packagedFiles = Array.isArray(pkg.files) ? pkg.files : [];
-for (const file of ['lib/standalone.js', 'lib/standalone-settings.js', 'lib/*.js', 'runtime/electron-helper']) {
-  if (packagedFiles.includes(file)) ok(`package file list includes ${file}`);
-  else fail(`package file list is missing ${file}`);
-}
-for (const file of ['lib/**', 'src', 'cordis.patch.yml', 'lib/client.js', 'lib/index.js']) {
-  if (packagedFiles.includes(file)) fail(`package file list must exclude ${file}`);
-}
-for (const file of ['cordis.patch.yml', 'tsconfig.types.json', 'scripts/gen-types.mjs', 'lib/client.js', 'lib/index.js', 'lib/types']) {
-  if (existsSync(join(ROOT, file))) fail(`obsolete DSH Web source/build residue remains: ${file}`);
-  else ok(`no obsolete DSH Web residue at ${file}`);
-}
-
-for (const config of ['electron-builder.yml', 'electron-builder.public.yml']) {
-  const content = readFileSync(join(ROOT, config), 'utf8');
-  if (content.includes('lib/**')) fail(`${config} includes all lib outputs`);
-  else ok(`${config} excludes unneeded bundles`);
-  if (
-    content.includes('lib/standalone.js') &&
-    content.includes('lib/standalone-settings.js') &&
-    content.includes('lib/*.js')
-  ) {
-    ok(`${config} includes the EXE host, settings page, and generated runtime chunks`);
-  } else fail(`${config} is missing EXE bundles`);
-  if (content.includes('cordis.patch.yml') || content.includes('lib/client.js')) {
-    fail(`${config} includes a DSH Web plugin entry`);
-  }
-}
-
-const publicBuilder = readFileSync(join(ROOT, 'electron-builder.public.yml'), 'utf8');
-const packageFiles = Array.isArray(pkg.files) ? pkg.files : [];
-for (const file of ['assets/dsh-pet-icon-16.png', 'assets/dsh-pet-icon-256.png', 'assets/dsh-pet-icon.ico']) {
-  if (publicBuilder.includes(file)) fail(`public EXE must exclude the personal icon resource ${file}`);
-  else ok(`public EXE excludes personal icon resource ${file}`);
-  if (packageFiles.includes(file)) fail(`published package file list must exclude the personal icon resource ${file}`);
-}
-
-if (process.exitCode) console.error('\n[desktop-package-check] fix the failures before building the EXE.');
-else console.log('\n[desktop-package-check] standalone package contents are ready.');
+if (process.exitCode) console.error('\n[prepack-check] fix the failures above before publishing.');
+else console.log('\n[prepack-check] all checks passed — ready to pack/publish.');

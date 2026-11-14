@@ -93,8 +93,12 @@ export interface StandaloneAiService {
   queryBalance(): Promise<BalanceResult>;
   /** 余额查询要用的服务商与密钥；供宿主半侧的余额轮询取用，不进对外设置视图。 */
   balanceAuth(): { provider: string; apiKey: string };
+  /** 单独保存的 DeepSeek 语音密钥；空串表示没单独配。 */
+  deepseekKey(): string;
   /** 是否满足发起请求的全部条件。 */
   isReady(): boolean;
+  /** 是否允许当前时段生成自动碎碎念；手动请求不读此值。 */
+  allowsAutomaticWhisper(): boolean;
   /** 终止在途请求并释放服务。 */
   dispose(): void;
 }
@@ -103,6 +107,6 @@ export interface StandaloneAiService {
 export interface StandaloneAiDependencies {
   /** 替换 fetch 以隔离网络。 */
   fetch?: AiFetch;
-  /** 启动迁移已验证的本机密钥；密钥不会写进普通设置 JSON。 */
+  /** 启动迁移阶段已安全读取的密钥；不允许通过请求参数或日志传递。 */
   initialApiKey?: string;
 }

@@ -21,13 +21,6 @@ export const es: Record<Key, string> = {
   globalTitle: 'Interruptores globales',
   globalHint:
     'Compartidos por todas las mascotas (un pet pack puede sobrescribirlos en el archivo de su propio tipo). Estos interruptores solo cambian el estado local y se escriben en la configuración del usuario al "Guardar" (nunca al instante); las notificaciones del sistema se vuelven a leer justo después de guardar, sin necesidad de recargar la página.',
-  displayPriorityLabel: 'Prioridad de ventana',
-  displayPriorityHint:
-    'Ajuste global del modo escritorio. Windows detecta aplicaciones en pantalla completa; el modo maximizado también oculta las mascotas del monitor donde está la ventana maximizada. macOS sigue los Spaces de pantalla completa; Linux no detecta ventanas de otras aplicaciones.',
-  'displayPriority.always-on-top': 'Siempre en primer plano',
-  'displayPriority.hide-on-fullscreen': 'Ocultar en pantalla completa',
-  'displayPriority.hide-on-fullscreen-or-maximized': 'Ocultar en pantalla completa o maximizada',
-  'displayPriority.normal': 'Nivel de ventana normal',
   cornerHint:
     'En qué esquina de la pantalla se pega la mascota (en escritorio se calcula por el área de trabajo de cada monitor).',
   marginXHint: 'Distancia horizontal desde la esquina elegida (px); puede ser cualquier número.',
@@ -90,7 +83,8 @@ export const es: Record<Key, string> = {
   fixedEnabledHint:
     'Cuando está activado, la cadena aleatoria ya no gira ni aleja a esta mascota: solo se reproducen acciones de reposo y en el sitio. Las selecciones con clic derecho, los disparos por API y las animaciones de saldo / susurro / estado de trabajo no se ven afectados.',
   horizontalOnly: 'Solo movimiento horizontal',
-  horizontalOnlyHint: 'El movimiento automático mantiene la misma altura y no inclina a la mascota.',
+  horizontalOnlyHint:
+    'Al activarlo, el movimiento automático y la salida de un borde entre pantallas mantienen la misma altura. Desactívalo para permitir diagonales.',
   displayLabel: 'Visualización',
   displayHint: 'web = solo navegador / desktop = solo escritorio / both = ambos / none = ninguno',
   'display.web': 'Solo navegador',
@@ -167,6 +161,16 @@ export const es: Record<Key, string> = {
   confineToggle: 'Limitar a la pantalla actual',
   confineToggleHint:
     'Varios monitores: cuando está activado, la mascota solo se mueve dentro de la pantalla en la que está: una mascota lanzada rebota únicamente dentro de la pantalla donde se soltó (las uniones entre pantallas actúan como muros, así que nunca vuela al monitor vecino), y el vagabundeo autónomo solo camina dentro de la pantalla actual (el paso que cruzaría la unión se cancela). Desactívalo para permitir vuelos y caminatas entre pantallas. Solo afecta al modo escritorio: el overlay del navegador ya se queda dentro del viewport.',
+  petDisplayPriority: 'Comportamiento de visualización',
+  uiThemeLabel: 'Tema de la aplicación',
+  uiThemeSystem: 'Adaptativo',
+  uiThemeLight: 'Claro',
+  uiThemeDark: 'Oscuro',
+  priorityAlwaysOnTop: 'Siempre encima',
+  priorityHideFullscreen: 'Ocultar en pantalla completa',
+  priorityHideMaximized: 'Ocultar en pantalla completa o maximizada',
+  priorityNormal: 'Ventana normal',
+
   trayToggle: 'Bandeja del sistema',
   trayToggleHint:
     'Muestra un icono en la bandeja (área de notificaciones en Windows, barra de menús en macOS) cuando el modo escritorio está activo. Lista todas las mascotas de la configuración y alterna cada una entre escritorio y web/ninguno, incluidas las que ahora no están en el escritorio y no tienen ventana donde hacer clic derecho. Con esto desactivado, para devolver una mascota al escritorio hay que abrir el navegador (la página de configuración o el clic derecho sobre la mascota web). Windows ya oculta los iconos de terceros en «iconos ocultos». Solo afecta al modo escritorio.',
@@ -186,6 +190,11 @@ export const es: Record<Key, string> = {
   voiceNotifyEnabledHint:
     'Locuta una frase configurada de estado de trabajo cuando una tarea termina, falla o espera tu confirmación. Igual que las notificaciones del sistema, solo locuta cuando no estás en esta página (otra aplicación, sin foco, minimizada): no interrumpe mientras miras la pantalla. Solo se locuta la frase configurada, nunca el detalle de la tarea. Desactivado por defecto.',
   voiceNameLabel: 'Voz',
+  voiceNameHint:
+    'Qué voz lee el texto. Las voces provienen de la implementación de síntesis; aparecen más al instalar otra.',
+  speechProviderLabel: 'Reconocimiento de voz',
+  speechProviderHint:
+    'Qué implementación transcribe la grabación. Solo aparecen varias opciones si hay un complemento de entrada de voz instalado; la elección se guarda y un proveedor ausente falla en vez de cambiarse solo.',
   voiceVolumeLabel: 'Volumen',
   voiceVolumeHint:
     'Volumen de reproducción como decimal 0–1: 1 es el volumen máximo (100 %) y 0 silencia. Solo cambia la intensidad y no vuelve a sintetizar el audio, así que ajustarlo no tiene coste extra. Los cuatro tipos de locución comparten este mismo volumen.',

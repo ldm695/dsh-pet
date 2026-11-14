@@ -41,4 +41,9 @@ export const MENU_CSS = [
   // 右侧快捷键提示（菜单项 hint）：与 label 同一 flex 行，space-between 自动贴右
   '.dsh-pet-menu-hint{color:#9aa0a6;font-size:12px;flex:none;white-space:nowrap}',
   '.dsh-pet-menu-arrow{color:#9aa0a6;font-size:12px;flex:none}',
+  ':root[data-dsh-pet-theme="dark"] .dsh-pet-menu{color:#dedede}',
+  ':root[data-dsh-pet-theme="dark"] .dsh-pet-menu-column{background:rgba(36,36,36,.98);border-color:#505050}',
+  ':root[data-dsh-pet-theme="dark"] .dsh-pet-menu-item:hover{background:#373737}',
+  ':root[data-dsh-pet-theme="dark"] .dsh-pet-menu-hint,:root[data-dsh-pet-theme="dark"] .dsh-pet-menu-arrow{color:#a0a0a0}',
+  '@media(prefers-color-scheme:dark){:root[data-dsh-pet-theme="system"] .dsh-pet-menu{color:#dedede}:root[data-dsh-pet-theme="system"] .dsh-pet-menu-column{background:rgba(36,36,36,.98);border-color:#505050}:root[data-dsh-pet-theme="system"] .dsh-pet-menu-item:hover{background:#373737}:root[data-dsh-pet-theme="system"] .dsh-pet-menu-hint,:root[data-dsh-pet-theme="system"] .dsh-pet-menu-arrow{color:#a0a0a0}}',
 ].join('');

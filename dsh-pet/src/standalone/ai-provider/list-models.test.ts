@@ -69,6 +69,25 @@ test('Anthropic 协议：请求带版本号的清单地址与 x-api-key，不发
   assert.equal(calls[0].headers.authorization, undefined);
 });
 
+test('DeepSeek 官方协议：只请求官方端点并使用 Bearer 密钥', async () => {
+  const { calls, fetchImpl } = recorder(() => json({ data: [{ id: 'deepseek-chat' }] }));
+  const result = await discoverModels(fetchImpl, settings, {
+    protocol: 'deepseek-official',
+    baseUrl: 'https://api.deepseek.com',
+    apiKey: 'official-key',
+  });
+  assert.deepEqual(result, { ok: true, models: [{ id: 'deepseek-chat', name: 'deepseek-chat' }] });
+  assert.equal(calls[0].url, 'https://api.deepseek.com/models');
+  assert.equal(calls[0].headers.authorization, 'Bearer official-key');
+  const rejected = await discoverModels(fetchImpl, settings, {
+    protocol: 'deepseek-official',
+    baseUrl: 'https://gateway.example/v1',
+    apiKey: 'official-key',
+  });
+  assert.equal(rejected.ok, false);
+  assert.equal(calls.length, 1);
+});
+
 test('地址省略 /v1：先按原样请求，404 之后改打带版本号的地址', async () => {
   const { calls, fetchImpl } = recorder((url) =>
     url.endsWith('/v1/models') ? json({ data: [{ id: 'found' }] }) : json({ error: 'nope' }, 404),

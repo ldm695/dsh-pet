@@ -7,7 +7,7 @@
  */
 
 /** 设置页样式表；按类名族分段拼成单段文本，行内注释标出反直觉的那几条规则。 */
-const SETTINGS_CSS = [
+export const SETTINGS_CSS = [
   '.dsh-pet-mp{position:relative;min-width:0;display:flex;flex-direction:column;gap:4px}',
   '.dsh-pet-mp__trigger{display:flex;align-items:center;gap:6px;width:100%;max-width:340px;height:28px;padding:0 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;text-align:left;cursor:pointer;outline:none}',
   '.dsh-pet-mp__trigger:hover:not(:disabled){border-color:var(--dsw-alias-state-business-primary)}',
@@ -43,6 +43,7 @@ const SETTINGS_CSS = [
   '.dsh-pet-sel__chevron.is-open{transform:rotate(180deg)}',
   '.dsh-pet-sel__panel{position:fixed;z-index:2147483000;display:flex;flex-direction:column;gap:2px;padding:4px;overflow:hidden;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md,10px);background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-elevation-prominent,0 8px 30px rgba(0,0,0,.35));color:var(--dsw-alias-label-primary)}',
   '.dsh-pet-sel__list{display:flex;flex-direction:column;min-height:0;overflow-x:hidden;overflow-y:auto;scrollbar-width:thin}',
+  '.dsh-pet-sel__group{padding:4px 8px 2px;font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary);text-align:left}',
   '.dsh-pet-sel__item{display:flex;align-items:center;gap:8px;width:100%;padding:5px 8px;border:none;border-radius:var(--dsw-radius-sm,6px);background:transparent;color:inherit;font:inherit;font-size:13px;line-height:20px;text-align:left;cursor:pointer}',
   '.dsh-pet-sel__item:hover:not(:disabled),.dsh-pet-sel__item.is-active{background:var(--dsw-alias-interactive-bg-hover)}',
   '.dsh-pet-sel__item[aria-selected="true"]{color:var(--dsw-alias-state-business-primary)}',
@@ -72,12 +73,10 @@ const SETTINGS_CSS = [
 
   '.dsh-pet-cfg__grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 16px;align-items:end}',
   '.dsh-pet-cfg__grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px 16px;align-items:end}',
-  '.dsh-pet-cfg__grid5{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px 16px;align-items:end}',
   '.dsh-pet-cfg__grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 16px;align-items:end}',
 
   '@container (max-width:600px){.dsh-pet-cfg__grid4{grid-template-columns:repeat(2,minmax(0,1fr))}}',
-  '@container (max-width:600px){.dsh-pet-cfg__grid5{grid-template-columns:repeat(2,minmax(0,1fr))}}',
-  '@container (max-width:400px){.dsh-pet-cfg__grid2,.dsh-pet-cfg__grid3,.dsh-pet-cfg__grid4,.dsh-pet-cfg__grid5{grid-template-columns:minmax(0,1fr)}}',
+  '@container (max-width:400px){.dsh-pet-cfg__grid2,.dsh-pet-cfg__grid3,.dsh-pet-cfg__grid4{grid-template-columns:minmax(0,1fr)}}',
 
   '.dsh-pet-cfg__field{display:flex;flex-direction:column;gap:4px;min-width:0}',
   '.dsh-pet-cfg__flabel{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--dsw-alias-label-secondary)}',
@@ -161,6 +160,7 @@ const settingsCssTag = 'dsh-pet/settings.css';
 /** 把设置页样式注入 `document.head`：幂等，且没有 document（SSR 或单测）时直接返回。 */
 export function injectSettingsCss(): void {
   if (typeof document === 'undefined') return;
+  if (document.querySelector('link[data-dsh-pet-settings-css]') !== null) return;
   if (document.querySelector('style[data-plugin-css="' + settingsCssTag + '"]') !== null) return;
   const tag = document.createElement('style');
   tag.dataset.plugin = 'dsh-pet';

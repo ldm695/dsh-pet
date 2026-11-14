@@ -125,12 +125,12 @@ describe('源码守卫 —— 置顶看门狗必须在 main.js 里按这套规�
 
   test('建窗时那次置顶不能删，且看门狗使用相同的平台层级', () => {
     assert.ok(
-      /win\.setAlwaysOnTop\(DISPLAY_PRIORITY !== 'normal', topmostLevel\(process\.platform\)\);/.test(main),
+      /win\.setAlwaysOnTop\(true, topmostLevel\(process\.platform\)\);/.test(main),
       '建窗时必须先置顶一次（看门狗只负责复查，不能当成唯一置顶来源）',
     );
     assert.ok(
-      (main.match(/win\.setAlwaysOnTop\(true, topmostLevel\(process\.platform\)\)/g) ?? []).length >= 1,
-      '看门狗必须为独立桌宠窗口再钉一次同档位（HWND_TOPMOST 落带靠它；moveTop 的 HWND_TOP 对已沉底窗口无效）',
+      (main.match(/win\.setAlwaysOnTop\(true, topmostLevel\(process\.platform\)\)/g) ?? []).length >= 2,
+      '看门狗必须再钉一次同档位（HWND_TOPMOST 落带靠它；moveTop 的 HWND_TOP 对已沉底窗口无效）',
     );
     assert.ok(
       /require\('\.\.\/topmost-watchdog\.js'\)/.test(main),

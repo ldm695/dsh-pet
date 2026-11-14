@@ -22,8 +22,9 @@ import {
 } from '../standalone/server.ts';
 import { sendIcon } from '../standalone/server/respond.ts';
 import { readChatPanelScript } from '../standalone/chat-panel-asset.ts';
+import { readPetConfigScript } from '../standalone/pet-config-asset.ts';
 import { readSettingsIcon } from '../standalone/icon.ts';
-import { settingsPage, settingsScript, settingsStyle } from '../standalone/settings-page.ts';
+import { settingsPage, settingsScript, standaloneSettingsStyle } from '../standalone/settings-page.ts';
 
 /** 路由依赖：安全校验、AI 处理器与两个页面的数据源，全部注入以脱离 Electron 测试。 */
 interface RouterDeps {
@@ -34,6 +35,8 @@ interface RouterDeps {
   landingPage(port: number): string;
   /** 对话面板脚本来源；缺省读包内 `lib/chat-panel.js`，测试可注入。 */
   chatPanelScript?: () => string | undefined;
+  /** 桌宠配置 React 脚本来源；缺省读包内 `lib/pet-config.js`，测试可注入。 */
+  petConfigScript?: () => string | undefined;
 }
 
 /**
@@ -47,6 +50,7 @@ export function startRouter(
 ): Promise<{ port: number; close: () => Promise<void> }> {
   const settings = settingsHandler(deps.ai);
   const chatPanelScript = deps.chatPanelScript ?? readChatPanelScript;
+  const petConfigScript = deps.petConfigScript ?? readPetConfigScript;
   const tester = testHandler(deps.ai);
   const models = modelsHandler(deps.ai);
   const balance = balanceHandler(deps.ai);
@@ -85,7 +89,7 @@ export function startRouter(
       const assets: Record<string, readonly [string, string]> = {
         '/standalone-ai/': [settingsPage, 'text/html'],
         '/standalone-ai/settings.js': [settingsScript, 'text/javascript'],
-        '/standalone-ai/settings.css': [settingsStyle, 'text/css'],
+        '/standalone-ai/settings.css': [standaloneSettingsStyle, 'text/css'],
       };
       if (url.pathname === '/standalone-ai/icon.png') {
         if (method !== 'GET' && method !== 'HEAD') {
@@ -112,6 +116,19 @@ export function startRouter(
           return;
         }
         sendText(res, 200, 'text/javascript', chatPanel);
+        return;
+      }
+      if (url.pathname === '/standalone-ai/pet-config.js') {
+        if (method !== 'GET' && method !== 'HEAD') {
+          rejectRequest(res, 405, '仅支持 GET');
+          return;
+        }
+        const petConfig = petConfigScript();
+        if (petConfig === undefined) {
+          rejectRequest(res, 404, '桌宠设置脚本缺失，请重新构建（npm run bundle）');
+          return;
+        }
+        sendText(res, 200, 'text/javascript', petConfig);
         return;
       }
       const asset = assets[url.pathname];

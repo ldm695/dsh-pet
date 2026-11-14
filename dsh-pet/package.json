@@ -5,10 +5,13 @@
   "icon": "assets/logo.png",
   "keywords": [
     "dsh",
+    "dsh-plugin",
     "deepseek-harness",
     "desktop-pet",
     "pet",
     "floating-widget",
+    "web-ui",
+    "cordis",
     "react"
   ],
   "homepage": "https://github.com/PC2005-cloud/dsh-pet#readme",
@@ -38,19 +41,28 @@
     "================================================"
   ],
   "type": "module",
-  "main": "desktop-main.cjs",
+  "main": "lib/index.js",
   "bin": {
     "dsh-pet-standalone": "lib/standalone.js"
   },
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
   "files": [
-    "desktop-main.cjs",
-    "lib/standalone.js",
-    "lib/standalone-settings.js",
-    "lib/*.js",
-    "runtime/electron-helper",
-    "assets/config.jsonc",
-    "assets/logo-rounded.png",
+    "lib",
+    "src",
     "assets/webm",
+    "runtime/electron-helper",
     "assets/fonts",
     "assets/pic",
     "assets/memes",
@@ -67,8 +79,11 @@
     "watch": "tsdown --watch",
     "ensure:electron": "node scripts/ensure-electron.mjs",
     "start:desktop": "node scripts/start-desktop.mjs",
-    "standalone": "electron desktop-main.cjs",
-    "standalone:cli": "node lib/standalone.js",
+    "standalone": "node lib/standalone.js",
+    "start:app": "node scripts/start-app.mjs",
+    "dist": "node scripts/dist.mjs",
+    "dist:public": "node scripts/dist-edition.mjs public",
+    "dist:personal": "node scripts/dist-edition.mjs personal",
     "dev:mock": "node scripts/dev/mock-server.mjs",
     "dev:subpath": "node scripts/dev/subpath-proxy.mjs",
     "build": "node scripts/prepare.js",
@@ -76,6 +91,7 @@
     "check:openapi": "node scripts/check-openapi.mjs",
     "test": "node --experimental-strip-types --import ./scripts/test-register.mjs --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "types": "node scripts/gen-types.mjs",
     "lint": "eslint .",
     "check:cycles": "node scripts/check-import-cycles.mjs",
     "format": "prettier --write .",
@@ -95,6 +111,9 @@
     "koffi": "3.3.3",
     "openai": "7.39.0",
     "zod": "4.6.7"
+  },
+  "optionalDependencies": {
+    "@koromix/koffi-win32-x64": "3.3.3"
   },
   "dsh": {
     "bundle": {
@@ -123,12 +142,16 @@
     "@deepseek-ai/dsh-commands": "^0.2.0-rc.1",
     "@deepseek-ai/dsh-credentials": "^0.2.0-rc.1",
     "@deepseek-ai/dsh-home-paths": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-host-webserver": "^0.2.0-rc.1",
     "@deepseek-ai/dsh-llm": "^0.2.0-rc.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.2.0",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
-    "electron": "43.3.0",
     "electron-builder": "^26.15.3",
     "eslint": "^10.9.0",
     "eslint-plugin-jsdoc": "^65.4.2",

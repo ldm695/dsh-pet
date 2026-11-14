@@ -21,6 +21,12 @@ import { createPetLookup } from './plugin/pet-lookup.ts';
 import { createDownloadReport } from './plugin/download-report.ts';
 import { createWorkStatusBridge } from './plugin/work-status-bridge.ts';
 import { registerTodoReminders } from './plugin/todo-reminders.ts';
+import { DEEPSEEK_OFFICIAL_PROVIDER_ID } from './balance/providers/deepseek-official.ts';
+import { ensureDeepseekAsrProvider } from './voice/builtin-deepseek-asr.ts';
+import { ensureDeepseekTtsProvider } from './voice/builtin-deepseek-tts.ts';
+import { ensureDshSpeechProvider } from './voice/builtin-dsh.ts';
+import { ensureEdgeProvider } from './voice/builtin-edge.ts';
+import { credentialRef } from '@deepseek-ai/dsh-credentials';
 import { createVoiceService } from './voice/speak.ts';
 import { createHearService } from './voice/hear.ts';
 import { TODO_FILE_NAME, TodoStore } from './todo/store.ts';
@@ -96,6 +102,23 @@ export function apply(ctx: any): void {
   });
   const { startHelper, stopHelper, markDisposed } = desktopHelper;
 
+  // 内置语音实现与第三方走同一条注册路径：先登记，两个服务才解析得到各自的实现。
+  // 识别那侧惰性依赖宿主服务，没装语音输入插件也能登记——调用时才回 unsupported。
+  ensureEdgeProvider();
+  ensureDshSpeechProvider({ speechToText: () => setup.optionalService('speechToText') });
+  // DeepSeek 官方语音：鉴权复用 DSH 的 DEEPSEEK_API_KEY，与余额那条路一致；
+  // 独立模式依次借「语音专用 key」和「余额选 DeepSeek 时的那把」，最后才回落 DSH 凭据
+  const resolveDeepseekKey = async (): Promise<string | undefined> => {
+    const dedicated = setup.standaloneDeepseekKey();
+    if (dedicated) return dedicated;
+    const standalone = setup.standaloneAiBalance();
+    if (standalone?.provider === DEEPSEEK_OFFICIAL_PROVIDER_ID && standalone.apiKey) return standalone.apiKey;
+    const resolved = await ctx.credentials.resolve(credentialRef('DEEPSEEK_API_KEY'));
+    return resolved?.value;
+  };
+  ensureDeepseekTtsProvider({ resolveKey: resolveDeepseekKey });
+  ensureDeepseekAsrProvider({ resolveKey: resolveDeepseekKey });
+
   const deps: PetRouteDeps = {
     ...setup,
     ...petLookup,
@@ -108,10 +131,23 @@ export function apply(ctx: any): void {
     todos,
     // 环境查询：/environment 与 system 时间行共用同一个取数口
     environment: (opts?: { fresh?: boolean }) => currentEnvironment({ force: opts?.fresh === true }),
-    // 语音合成：缓存落 userRoot，失败只留日志，不打断宿主
-    voice: createVoiceService({ userRoot, log }),
-    // 语音识别：能力来自宿主（DSH 的 speechToText），没启用时服务自己在调用时回 unsupported
-    speech: createHearService({ speechToText: () => setup.optionalService('speechToText') }),
+    // 语音合成：缓存落 userRoot，失败只留日志，不打断宿主。
+    // 请求没带音色时用配置里的那个值——代码里没有第二份默认音色。
+    voice: createVoiceService({
+      userRoot,
+      log,
+      configuredVoice: () => {
+        const name = readAllConfig(configPaths).main?.voiceName;
+        return typeof name === 'string' && name ? name : undefined;
+      },
+    }),
+    // 语音识别：实现来自注册表；请求没带 provider 时用配置里的那个值，没有第二份默认
+    speech: createHearService({
+      configuredProvider: () => {
+        const provider = readAllConfig(configPaths).main?.speechProvider;
+        return typeof provider === 'string' && provider ? provider : undefined;
+      },
+    }),
   };
   const httpRoute = createHttpRoute(deps);
   registerHttpRoute(ctx, httpRoute.handlePetRoute);
@@ -178,6 +214,6 @@ export function apply(ctx: any): void {
     stopWorkStatusFlush,
   });
 
-  // 路由就绪后拉起桌面 Helper（Electron 缺失时仅告警，不影响本机 API 与设置页）
+  // 路由就绪后拉起桌面 Helper（Electron 缺失时仅告警，不影响 DSH 与浏览器 overlay）
   startHelper();
 }

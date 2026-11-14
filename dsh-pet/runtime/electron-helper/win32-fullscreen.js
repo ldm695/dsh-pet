@@ -26,9 +26,7 @@ function createFullscreenWindowProbe() {
   );
 
   const getForegroundWindow = user32.func('DshPetFullscreenHwnd __stdcall GetForegroundWindow()');
-  const getWindowLong = user32.func(
-    'int32_t __stdcall GetWindowLongW(DshPetFullscreenHwnd hWnd, int32_t nIndex)',
-  );
+  const getWindowLong = user32.func('int32_t __stdcall GetWindowLongW(DshPetFullscreenHwnd hWnd, int32_t nIndex)');
   const getWindowRect = user32.func(
     'int32_t __stdcall GetWindowRect(DshPetFullscreenHwnd hWnd, _Out_ DshPetFullscreenRect *lpRect)',
   );

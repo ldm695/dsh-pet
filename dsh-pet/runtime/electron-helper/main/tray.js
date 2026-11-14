@@ -54,7 +54,8 @@ function createTray({
 
   /** 托盘图标：包内 logo 缩到 16×16（macOS 要模板图，否则深色菜单栏下看不见） */
   function trayIcon() {
-    const file = path.join(helperDir, '..', '..', 'assets', 'logo.png');
+    const iconName = process.env.DSH_PET_TRAY_ICON || 'logo.png';
+    const file = path.join(helperDir, '..', '..', 'assets', iconName);
     let img = nativeImage.createFromPath(file);
     if (img.isEmpty()) {
       // 读不到图标 = 托盘不可见但菜单逻辑照跑，最难查的一种坏法：必须留下能定位的日志
@@ -141,7 +142,7 @@ function createTray({
       const menu = await buildMenu();
       if (menu === null) return;
       tray = new Tray(trayIcon());
-      tray.setToolTip('dsh-pet 桌面宠物');
+      tray.setToolTip((process.env.DSH_PET_DISPLAY_NAME || 'dsh-pet') + ' 桌面宠物');
       tray.setContextMenu(menu);
       // Windows 上 setContextMenu 只接管右键，左键默认什么都不做（macOS 相反：左键即弹菜单）
       if (platform.leftClickPopsMenu) tray.on('click', () => tray.popUpContextMenu());

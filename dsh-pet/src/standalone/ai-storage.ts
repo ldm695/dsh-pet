@@ -1,4 +1,12 @@
-import { execFileSync, spawn } from 'node:child_process';
+/**
+ * 独立模式的本机配置文件读写：只处理权限、原子替换与大小上限。
+ *
+ * 不负责设置语义与校验（见 ai-config），也不决定文件该放在哪个目录。
+ * 必须始终成立：写入先在空临时文件上收紧权限再原子替换；
+ * 读取拒绝符号链接、超限文件与过宽的 ACL。
+ * @module dsh-pet/src/standalone/ai-storage
+ */
+import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
   closeSync,
@@ -14,13 +22,13 @@ import {
   writeFileSync,
   constants,
 } from 'node:fs';
-import { chmod, lstat, open, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
+/** 配置文件的字节上限。 */
 const MAX_CONFIG_BYTES = 32_768;
 
-/** Never pass a shell command, account name, or an unvalidated SID to icacls. */
+/** 只把权限授给当前用户；绝不把 shell 命令、账户名或未校验的 SID 交给 icacls。 */
 function restrictFile(path: string): void {
   if (process.platform !== 'win32') {
     chmodSync(path, 0o600);
@@ -40,36 +48,7 @@ function restrictFile(path: string): void {
   );
 }
 
-function runFile(file: string, args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
-    child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
-    child.once('error', reject);
-    child.once('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`${file} failed: ${Buffer.concat(stderr).toString('utf8').trim() || `exit ${code}`}`));
-        return;
-      }
-      resolve(Buffer.concat(stdout).toString('utf8'));
-    });
-  });
-}
-
-async function restrictFileAsync(path: string): Promise<void> {
-  if (process.platform !== 'win32') {
-    await chmod(path, 0o600);
-    return;
-  }
-  const systemRoot = process.env.SystemRoot ?? 'C:\\Windows';
-  const identity = await runFile(join(systemRoot, 'System32', 'whoami.exe'), ['/user', '/fo', 'csv', '/nh']);
-  const sid = identity.match(/\bS-1-\d+(?:-\d+)+\b/)?.[0];
-  if (!sid) throw new Error('Cannot identify file owner');
-  await runFile(join(systemRoot, 'System32', 'icacls.exe'), [path, '/inheritance:r', '/grant:r', `*${sid}:F`]);
-}
-
+/** 解析并准备配置目录，拒绝符号链接。 */
 function configPath(home: string): string {
   const directory = join(home, 'dsh-pet');
   if (!existsSync(directory)) mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -78,13 +57,19 @@ function configPath(home: string): string {
   return join(directory, 'standalone-ai.json');
 }
 
+/**
+ * 读取本机 AI 配置。
+ * @param home - DSH_HOME。
+ * @returns 解析后的未知值；文件不存在时返回 undefined。
+ * @throws 路径、大小或权限不安全时抛出。
+ */
 export function readAiSettings(home: string): unknown | undefined {
   const path = configPath(home);
   if (!existsSync(path)) return undefined;
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_CONFIG_BYTES) throw new Error('Unsafe settings file');
-  // Refuse broad explicit Windows grants rather than reading a potentially public secret.
-  // Files created here have no explicit grants except the current SID.
+  // 显式宽权限比读不到更危险：先拒绝，再由 restrictFile 收紧到当前 SID。
+  // 这里创建的文件除当前 SID 外不应有任何显式授权。
   if (process.platform === 'win32') {
     const acl = execFileSync(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'icacls.exe'), [path], {
       encoding: 'utf8',
@@ -103,21 +88,72 @@ export function readAiSettings(home: string): unknown | undefined {
   }
 }
 
-/** Set permissions on an empty exclusive temporary file BEFORE writing any secret. */
+/**
+ * 原子写入 AI 配置。
+ * @param home - DSH_HOME。
+ * @param settings - 待持久化的成品配置。
+ * @throws 目录或权限不安全时抛出。
+ */
 export function writeAiSettings(home: string, settings: unknown): void {
-  // API keys are DPAPI-protected in a separate file; never persist plaintext here.
   const value = settings && typeof settings === 'object' ? { ...(settings as Record<string, unknown>) } : {};
   delete value.apiKey;
   writePrivateJson(configPath(home), value);
 }
 
-/** Internal server utility; caller supplies an existing, trusted parent directory. */
+/** 在已存在的私有目录中原子写入文本，供迁移回退与备份清单使用。 */
+export async function writePrivateTextAsync(path: string, contents: string): Promise<void> {
+  const directoryPath = dirname(path);
+  if (!existsSync(directoryPath)) mkdirSync(directoryPath, { recursive: true, mode: 0o700 });
+  const directory = lstatSync(directoryPath);
+  if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error('Unsafe private file directory');
+  if (existsSync(path)) {
+    const existing = lstatSync(path);
+    if (!existing.isFile() || existing.isSymbolicLink() || existing.nlink > 1) throw new Error('Unsafe settings file');
+  }
+  const temporary = join(directoryPath, `${process.pid}-${randomUUID()}.private.tmp`);
+  const fd = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+  try {
+    restrictFile(temporary);
+    writeFileSync(fd, contents, 'utf8');
+    fsyncSync(fd);
+    closeSync(fd);
+    renameSync(temporary, path);
+  } catch (error) {
+    try {
+      closeSync(fd);
+    } catch {
+      // 写盘失败时，文件描述符可能已经由系统关闭。
+    }
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // 临时文件可能已被重命名或由系统清理。
+    }
+    throw error;
+  }
+}
+
+/** 原子写入私有 JSON 文件。 */
+export async function writePrivateJsonAsync(path: string, value: unknown, space?: string | number): Promise<void> {
+  const serialized = JSON.stringify(value, null, space);
+  if (serialized === undefined) throw new Error('Value is not serializable as JSON');
+  await writePrivateTextAsync(path, serialized);
+}
+
+/**
+ * 把 JSON 原子写入受信任目录。
+ * @param path - 目标文件。
+ * @param settings - 待写入的 JSON 值。
+ * @throws 目录是符号链接或写入失败时抛出。
+ */
 export function writePrivateJson(path: string, settings: unknown): void {
+  // 先确认目录是普通目录，避免被符号链接带到别处。
   const directory = lstatSync(dirname(path));
   if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error('Unsafe private file directory');
   if (existsSync(path) && (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink()))
     throw new Error('Unsafe settings file');
   const temporary = `${path}.${randomUUID()}.tmp`;
+  // 先建空临时文件并收紧权限，再写入任何密钥，避免密钥短暂落进宽权限文件。
   const fd = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
   try {
     restrictFile(temporary);
@@ -135,58 +171,4 @@ export function writePrivateJson(path: string, settings: unknown): void {
     unlinkSync(temporary);
     throw error;
   }
-}
-
-/** Atomically write a private file without blocking the event loop while bytes reach disk. */
-export async function writePrivateTextAsync(path: string, contents: string): Promise<void> {
-  const directoryPath = dirname(path);
-  const directory = await lstat(directoryPath);
-  if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error('Unsafe private file directory');
-
-  try {
-    const existing = await lstat(path);
-    if (!existing.isFile() || existing.isSymbolicLink() || existing.nlink > 1) {
-      throw new Error('Unsafe settings file');
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-  }
-
-  const temporary = join(directoryPath, `${process.pid}-${randomUUID()}.private-json.tmp`);
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
-  try {
-    handle = await open(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
-    // Lock down inherited Windows ACLs before writing any chat history to the file.
-    await restrictFileAsync(temporary);
-    await handle.writeFile(contents, 'utf8');
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
-
-    // Recheck immediately before replacement; rename replaces the directory entry, not a link target.
-    try {
-      const existing = await lstat(path);
-      if (!existing.isFile() || existing.isSymbolicLink() || existing.nlink > 1) {
-        throw new Error('Unsafe settings file');
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-    await rename(temporary, path);
-  } catch (error) {
-    if (handle) await handle.close().catch(() => {});
-    await unlink(temporary).catch(() => {});
-    throw error;
-  }
-}
-
-/** Atomically write a private JSON file without blocking the event loop while bytes reach disk. */
-export async function writePrivateJsonAsync(
-  path: string,
-  settings: unknown,
-  space?: string | number,
-): Promise<void> {
-  const serialized = JSON.stringify(settings, null, space);
-  if (serialized === undefined) throw new Error('Value is not serializable as JSON');
-  await writePrivateTextAsync(path, serialized);
 }

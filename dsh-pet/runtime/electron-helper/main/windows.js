@@ -43,10 +43,8 @@ function createWindows({
   taskbarWatchdogEnabled,
   displayPriority = 'always-on-top',
 }) {
-  let shouldStayOnTop = displayPriority !== 'normal';
   /** 窗口表：petId -> BrowserWindow */
   const windows = new Map();
-  /** 无桌面宠物时仍轮询 DSH 状态的隐藏 renderer。 */
   let notificationWindow = null;
   /** win.id -> 上一次请求的内容区矩形（"x,y,w,h"）：pet:set-bounds 的去重基准 */
   const lastRequestedBounds = new Map();
@@ -66,6 +64,21 @@ function createWindows({
   const petStates = new Map();
   /** 冒烟期间暂停兜底泵：它按真实光标翻转，会干扰冒烟对渲染端通道的断言 */
   let pointerFallbackPaused = false;
+  let currentDisplayPriority = normalizeDisplayPriority(displayPriority);
+
+  function normalizeDisplayPriority(value) {
+    return ['hide-on-fullscreen', 'hide-on-fullscreen-or-maximized', 'normal'].includes(value)
+      ? value
+      : 'always-on-top';
+  }
+
+  function setDisplayPriority(value) {
+    currentDisplayPriority = normalizeDisplayPriority(value);
+    const topmost = currentDisplayPriority !== 'normal';
+    for (const win of windows.values()) {
+      if (!win.isDestroyed()) win.setAlwaysOnTop(topmost, topmostLevel(process.platform));
+    }
+  }
 
   /** 碰撞站场最多每 16ms 广播一次，位置仍由 IPC 逐帧立即提交。 */
   let petStateTimer = null;
@@ -164,13 +177,6 @@ function createWindows({
     taskbarWatchdogTimer = null;
   }
 
-  function setDisplayPriority(priority) {
-    shouldStayOnTop = priority !== 'normal';
-    for (const win of windows.values()) {
-      if (!win.isDestroyed()) win.setAlwaysOnTop(shouldStayOnTop, topmostLevel(process.platform));
-    }
-  }
-
   /** 穿透兜底泵：正规翻转链路只有 forward 鼠标钩子，它在 Windows 上可能静默失效。 */
   function startPointerFallback(win) {
     const pointerTimer = setInterval(() => {
@@ -212,7 +218,7 @@ function createWindows({
       );
       if (!due) return;
       lastTopmostAssertMs = nowMs;
-      win.setAlwaysOnTop(shouldStayOnTop, topmostLevel(process.platform));
+      if (currentDisplayPriority !== 'normal') win.setAlwaysOnTop(true, topmostLevel(process.platform));
     }, TOPMOST_WATCHDOG_TICK_MS);
     return () => clearInterval(topmostTimer);
   }
@@ -229,7 +235,7 @@ function createWindows({
       enableLargerThanScreen: true,
       transparent: true,
       frame: false,
-      alwaysOnTop: shouldStayOnTop,
+      alwaysOnTop: currentDisplayPriority !== 'normal',
       skipTaskbar: true,
       // 任务栏按钮万一还是冒出来（唤醒后重建），至少显示宠物图标而不是 Electron 默认原子图
       icon: path.join(helperDir, '..', '..', 'assets', 'logo.png'),
@@ -251,7 +257,7 @@ function createWindows({
   /** 一只宠物一个窗口；返回窗口，泵与清理都在这里装好。 */
   function createPetWindow(pet, geo, scale) {
     const win = new BrowserWindow(windowOptions(petWindowSize(pet.size * scale), geo.hull));
-    win.setAlwaysOnTop(shouldStayOnTop, topmostLevel(process.platform));
+    if (currentDisplayPriority !== 'normal') win.setAlwaysOnTop(true, topmostLevel(process.platform));
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     // 被遮挡的窗口默认暂停渲染，表现成「消失」；关掉后台节流让它持续渲染
     win.webContents.setBackgroundThrottling(false);
@@ -294,7 +300,7 @@ function createWindows({
     return win;
   }
 
-  /** 无可见宠物时保留一个隐藏 renderer，继续消费通知与其它宿主状态。 */
+  /** 没有可见桌宠时保留隐藏渲染页，继续消费 DSH 通知状态。 */
   function createNotificationWorkerWindow(geo, scale) {
     if (notificationWindow && !notificationWindow.isDestroyed()) return notificationWindow;
     const area = geo.hull;
@@ -362,9 +368,11 @@ function createWindows({
     const pets = petsFromEnv();
     if (pets.length === 0) {
       createNotificationWorkerWindow(geo, scale);
-      return;
+    } else {
+      if (notificationWindow && !notificationWindow.isDestroyed()) notificationWindow.destroy();
+      notificationWindow = null;
+      for (const pet of pets) windows.set(pet.id, createPetWindow(pet, geo, scale));
     }
-    for (const pet of pets) windows.set(pet.id, createPetWindow(pet, geo, scale));
     startTaskbarWatchdog();
   }
 

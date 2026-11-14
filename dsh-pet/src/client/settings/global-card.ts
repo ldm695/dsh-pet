@@ -5,10 +5,8 @@
  * @module dsh-pet/src/client/settings/global-card
  */
 import type { FunctionComponent } from 'react';
-import type { PetDisplayPriority } from '../../shared/types.ts';
 import type { SettingsRuntime } from './runtime.ts';
 import { makeUiKit } from './ui.ts';
-import { makeSelect } from './panel/select.ts';
 
 /** 五个全局开关的键名，与成品配置的字段名一致。 */
 export type GlobalFlagKey =
@@ -16,6 +14,7 @@ export type GlobalFlagKey =
 
 /** 五个全局开关的当前值。 */
 export type GlobalFlags = Record<GlobalFlagKey, boolean>;
+export type DisplayPriority = 'always-on-top' | 'hide-on-fullscreen' | 'hide-on-fullscreen-or-maximized' | 'normal';
 
 /** 全局开关卡的输入。 */
 export interface GlobalCardProps {
@@ -25,8 +24,10 @@ export interface GlobalCardProps {
   values: GlobalFlags;
   /** 某个开关被切换；通知开关的权限申请由外壳处理。 */
   onChange: (key: GlobalFlagKey, value: boolean) => void;
-  displayPriority: PetDisplayPriority;
-  onDisplayPriorityChange: (value: PetDisplayPriority) => void;
+  displayPriority: DisplayPriority;
+  onDisplayPriorityChange: (value: DisplayPriority) => void;
+  uiTheme: 'system' | 'light' | 'dark';
+  onUiThemeChange: (value: 'system' | 'light' | 'dark') => void;
 }
 
 /** 开关的展示顺序与文案键。 */
@@ -46,14 +47,7 @@ const TOGGLES: Array<{ key: GlobalFlagKey; label: string }> = [
  */
 export function makeGlobalCard(rt: SettingsRuntime): FunctionComponent<GlobalCardProps> {
   const { h, t } = rt;
-  const { cardHead, toggleCell, field } = makeUiKit({ h, t });
-  const Select = makeSelect(rt);
-  const displayPriorities: PetDisplayPriority[] = [
-    'always-on-top',
-    'hide-on-fullscreen',
-    'hide-on-fullscreen-or-maximized',
-    'normal',
-  ];
+  const { cardHead, toggleCell } = makeUiKit({ h, t });
 
   return function GlobalCard(props: GlobalCardProps) {
     return h('div', {
@@ -68,17 +62,43 @@ export function makeGlobalCard(rt: SettingsRuntime): FunctionComponent<GlobalCar
             ),
           ),
         }),
-        field(
-          t('displayPriorityLabel'),
-          h(Select, {
-            label: t('displayPriorityLabel'),
-            value: props.displayPriority,
-            options: displayPriorities.map((value) => ({ id: value, label: t('displayPriority.' + value) })),
-            disabled: props.busy,
-            onChange: (value: string) => props.onDisplayPriorityChange(value as PetDisplayPriority),
-          }),
-          t('displayPriorityHint'),
-        ),
+        h('label', {
+          className: 'dsh-pet-cfg__field',
+          children: [
+            h('span', { className: 'dsh-pet-cfg__flabel', children: t('petDisplayPriority') }),
+            h('select', {
+              className: 'dsh-pet-cfg__inp',
+              value: props.displayPriority,
+              disabled: props.busy,
+              onChange: (event: { currentTarget: { value: string } }) =>
+                props.onDisplayPriorityChange(event.currentTarget.value as DisplayPriority),
+              children: [
+                ['always-on-top', 'priorityAlwaysOnTop'],
+                ['hide-on-fullscreen', 'priorityHideFullscreen'],
+                ['hide-on-fullscreen-or-maximized', 'priorityHideMaximized'],
+                ['normal', 'priorityNormal'],
+              ].map(([value, label]) => h('option', { key: value, value, children: t(label) })),
+            }),
+          ],
+        }),
+        h('label', {
+          className: 'dsh-pet-cfg__field',
+          children: [
+            h('span', { className: 'dsh-pet-cfg__flabel', children: t('uiThemeLabel') }),
+            h('select', {
+              className: 'dsh-pet-cfg__inp',
+              value: props.uiTheme,
+              disabled: props.busy,
+              onChange: (event: { currentTarget: { value: string } }) =>
+                props.onUiThemeChange(event.currentTarget.value as 'system' | 'light' | 'dark'),
+              children: [
+                ['system', 'uiThemeSystem'],
+                ['light', 'uiThemeLight'],
+                ['dark', 'uiThemeDark'],
+              ].map(([value, label]) => h('option', { key: value, value, children: t(label) })),
+            }),
+          ],
+        }),
       ],
     });
   };

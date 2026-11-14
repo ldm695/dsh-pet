@@ -1,4 +1,4 @@
-# DSH Pet
+# dsh-pet 🐾
 
 <p align="center">
   <a href="https://www.npmjs.com/package/dsh-pet"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-pet?label=npm&color=blue"></a>
@@ -15,23 +15,20 @@
   <a href="https://atomgit.com/PC2005-cloud/dsh-pet"><img alt="AtomGit" src="https://img.shields.io/badge/AtomGit-%E9%95%9C%E5%83%8F%E5%90%8C%E6%AD%A5-4B8BBE"></a>
 </p>
 
-本仓库基于上游项目开发，维护 Windows 便携桌面应用，以及桌面交互和工作状态联动相关功能。
+一只住在 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 里的桌面宠物：待机呼吸、随机动作（打瞌睡、玩魔方、吃火锅……）、左右转向、屏幕漫游、点击 Q 弹、拖拽甩抛反弹、右键菜单点播——一百余个透明动画随时无缝衔接；还能跟随 DSH 会话事件切换工作状态动画、按档位播放余额动画 + 头顶气泡、碎碎念与对话聊天、窗口失焦时弹系统通知。可多开同屏，能脱离浏览器住上**桌面**（透明置顶小窗），也能自己添加**全新宠物种类**（pet pack）。
 
-本 Fork 不再将 DSH Pet 注册为 DSH Web 插件；DSH Web 可照常运行，但不会加载桌宠覆盖层。DSH Desktop 的会话与焦点上报桥接仍保留，用于独立 EXE 的工作状态和通知判断。
+这不是一个普通插件，而是**完整的三件套项目**：
 
-本项目保留上游代码的署名与许可要求。Fork 维护的改动见[改动说明](FORK_CUSTOMIZATIONS.md)。
+```
+① 提示词（配方）    →  ② 素材生成链（引擎）  →  ③ 插件（成品）
+AI 生成动画的配方     源视频 → 透明动画的管线    运行在 DSH 里的宠物
+```
 
-## 功能概览
+任何人 clone 本仓库，都可以**从零生成自己的桌面宠物**——换角色、换动作、换风格，全流程可复现。
 
-- **Windows 便携应用：** 使用 Electron 透明窗口独立运行，无需启动 DSH。
-- **桌面交互：** 支持多只桌宠、拖动与抛掷、屏幕范围移动、窗口显示优先级设置和单例设置窗口。
-- **独立 AI：** 可配置 OpenAI 兼容或 Anthropic 接口、服务地址、API Key 和模型，并在设置页测试连接。Windows 下使用 DPAPI 保护密钥；独立服务默认使用端口 `6952`。
-- **字体设置：** 字体种类应用于桌宠气泡、悬浮提示、对话窗口和得分弹窗；字号设置应用于气泡与悬浮提示。
-- **主题设置：** 全局设置可选择跟随 Windows、白天或黑夜主题；设置页和桌宠右键菜单共用此设置。
-- **工作状态联动：** 提供 DSH、Codex 和 Claude Code 的可选桥接插件。每个客户端来源同时最多分配一只桌宠；同一客户端的多个会话或 Agent 会合并处理。
-- **配置与素材：** 支持按宠物配置、自定义动画和额外宠物种类。
+---
 
-## 文档
+## 快速开始（安装插件）
 
 两种装法，任选一种：
 

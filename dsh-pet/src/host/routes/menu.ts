@@ -15,6 +15,15 @@ export async function handleMenuRoutes(deps: PetRouteDeps, input: RouteInput): P
   const { menuRegistry, state } = deps;
   const { body, method, rest, url } = input;
 
+  if (rest === 'menu/capabilities') {
+    if (method !== 'GET') return methodNotAllowed();
+    const settings = deps.ctx.standaloneAi?.getSettings?.();
+    return okResult({
+      chatEnabled: settings?.protocol === undefined ? true : deps.ctx.standaloneAi?.isChatEnabled?.() !== false,
+      balanceSupported: settings?.protocol === undefined || settings.protocol === 'deepseek-official',
+    });
+  }
+
   // 第三方右键菜单：POST /menu/item 注册（该 owner 整体覆盖），DELETE 清除，GET /menu/events
   // 读取即消费（支持长轮询），POST /menu/click 由渲染端上报。
   // 注册表在进程内存，快照写进 S 的 sections.menu：两端据此拼「更多」，注册后不用重启 Helper。

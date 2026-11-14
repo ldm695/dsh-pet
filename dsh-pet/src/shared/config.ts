@@ -5,40 +5,20 @@
  * 条目级字段必须吹进每只实例：多实例共享所属条目的同一份值。
  * @module dsh-pet/src/shared/config
  */
-import type {
-  Animations,
-  FontConfig,
-  ModelSelection,
-  Pet,
-  PetDisplay,
-  PetDisplayPriority,
-  PhysicsParams,
-  Weights,
-} from './types.ts';
+import type { Animations, FontConfig, ModelSelection, Pet, PetDisplay, PhysicsParams, Weights } from './types.ts';
 
-/** 可用显示位置。 */
+/** 显示位置白名单。 */
 export const PET_DISPLAYS: PetDisplay[] = ['web', 'desktop', 'both', 'none'];
 
 /** 该宠物是否参与浏览器半侧渲染。 */
 export const isWebVisible = (display: PetDisplay): boolean => display === 'web' || display === 'both';
 
-/** 桌面窗口层级白名单 */
-export const PET_DISPLAY_PRIORITIES: PetDisplayPriority[] = [
-  'always-on-top',
-  'hide-on-fullscreen',
-  'hide-on-fullscreen-or-maximized',
-  'normal',
-];
-
-/** 该宠物是否参与桌面模式（Electron 透明窗）渲染 */
+/** 该宠物是否参与桌面模式（Electron 透明窗）渲染。 */
 export const isDesktopVisible = (display: PetDisplay): boolean => display === 'desktop' || display === 'both';
 
-/** 把 host 的成品聚合拍平成渲染用宠物列表：
- *  条目级字段（animations / animationWeights / eventsRefreshSec / physics / font / confineToScreen /
- *  workStatusTexts / whisperModel / chatModel——合并器已填好；其中 10 个「全局默认」字段的
- *  条目值来自用户层，见 types.ts / host/config.ts）吹进每只实例；
- *  assetRoot = 条目 key（= 素材根，多实例共享）；非 main 条目的实例打 extra 标记
- *  （文件宠物：设置页不可编辑、保存时排除）。 */
+/** 把成品聚合拍平成渲染用宠物列表。
+ *  条目级字段（animations / physics / font 等）由所属条目一份、多实例共享；assetRoot 取条目 key，
+ *  即素材根。非 main 条目打 extra 标记：文件宠物在设置页不可编辑、保存时排除。 */
 export function flattenConfigPets(merged: Record<string, Record<string, unknown>>): Pet[] {
   const out: Pet[] = [];
   for (const [entry, conf] of Object.entries(merged)) {

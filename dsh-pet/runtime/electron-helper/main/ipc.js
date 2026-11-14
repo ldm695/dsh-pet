@@ -1,7 +1,9 @@
 'use strict';
 const { BrowserWindow, desktopCapturer, screen } = require('electron');
 const { decideWindowIgnore } = require('../pointer-target.js');
-const { registerMoveTargetHandlers } = require('../move-ipc.js');
+const { createWorkStatusAssignmentManager } = require('./work-status-assignment.cjs');
+const { MoveTargets } = require('./move-targets.cjs');
+const { registerMoveTargetHandlers } = require('./move-ipc.js');
 /**
  * 渲染端到主进程的 ipc：窗口跟随、飞行状态、碰撞转发、穿透翻转、输入租约与菜单首项（打开软件 / 打开 AI 设置）。
  *
@@ -18,7 +20,33 @@ const { registerMoveTargetHandlers } = require('../move-ipc.js');
  * @param deps.openTarget - 菜单首项的去向：desktop 唤起桌面应用；其余形态交给默认浏览器打开已鉴权地址。
  * @param deps.petRoute - 宠物路由前缀。
  */
-function registerIpc({ ipcMain, petWindows, shell, openTarget, petRoute, moveTargets, broadcastMoveTargets }) {
+function registerIpc({ ipcMain, petWindows, shell, openTarget, petRoute }) {
+  const workStatusAssignments = createWorkStatusAssignmentManager();
+  const moveTargets = new MoveTargets();
+  const broadcastMoveTargets = () => {
+    const targets = moveTargets.snapshot();
+    for (const win of petWindows.state.windows.values()) {
+      if (!win.isDestroyed()) win.webContents.send('pet:move-targets', targets);
+    }
+  };
+
+  // 每个窗口都会轮询同一份工作状态；分配必须由进程级 broker 仲裁，不能让各 renderer 各自抽签。
+  ipcMain.handle('pet:work-status-reconcile', (event, payload) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return { petId: '', assignment: null };
+    const petId = [...petWindows.state.windows].find(([, candidate]) => candidate === win)?.[0] || '';
+    if (!petId) return { petId: '', assignment: null };
+    const agents = Array.isArray(payload?.agents) ? payload.agents : [];
+    const eligible = Array.isArray(payload?.eligiblePetIds)
+      ? payload.eligiblePetIds.filter((id) => typeof id === 'string' && petWindows.state.windows.has(id))
+      : [];
+    const result = workStatusAssignments.reconcile(agents, eligible);
+    return {
+      petId,
+      assignment: result.assignments.find((item) => item.petId === petId) || null,
+    };
+  });
+
   // 宠物窗口跟随：renderer 逐帧上报窗口内容区位置/尺寸
   ipcMain.on('pet:set-bounds', (event, bounds) => {
     const win = BrowserWindow.fromWebContents(event.sender);
@@ -68,11 +96,7 @@ function registerIpc({ ipcMain, petWindows, shell, openTarget, petRoute, moveTar
         vy: Number.isFinite(vy) ? vy : 0,
       });
       if (Number.isFinite(bx) && Number.isFinite(by) && Number.isFinite(size) && size > 0) {
-        const changed = moveTargets.updateActual(
-          petId,
-          { x: bx + size / 2, y: by + (size * 9) / 32, size },
-          { freeMotion: bounds?.freeMotion === true, newClaim: bounds?.positionClaim === true },
-        );
+        const changed = moveTargets.updateActual(petId, { x: bx + size / 2, y: by + (size * 9) / 32, size });
         if (changed) broadcastMoveTargets();
       }
     }

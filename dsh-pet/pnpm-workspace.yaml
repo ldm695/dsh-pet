@@ -2,7 +2,8 @@
 # overrides 强制全依赖树（含 tsdown 嵌套）统一使用与 tsdown 0.8.0 兼容的 rolldown
 packages: []
 allowBuilds:
-  electron-winstaller: true
+  # electron-builder 的 Squirrel 目标依赖；我们只出 portable / nsis，不跑它的构建脚本
+  electron-winstaller: false
   koffi: set this to true or false
 minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-agent-default-model@0.2.0-rc.1'

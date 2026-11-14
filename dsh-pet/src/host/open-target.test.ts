@@ -68,7 +68,7 @@ describe('装配接线：宿主注入 → helper 解析 → 渲染端文案', ()
   test('宿主：桌面应用判定 + 三态注入', () => {
     assert.ok(
       /const isDesktopHost = \(\): boolean => Boolean\(process\.versions\.electron\)/.test(host),
-      '宿主必须用 process.versions.electron 判定形态（桌面应用以 ELECTRON_RUN_AS_NODE 跑，该字段仍在；Node 命令行没有该字段）',
+      '宿主必须用 process.versions.electron 判定形态（桌面应用以 ELECTRON_RUN_AS_NODE 跑，该字段仍在；dsh web 是纯 Node）',
     );
     assert.ok(
       /DSH_PET_OPEN_TARGET: resolveOpenTarget\(siteUrl, isDesktopHost\(\)\)/.test(host),
@@ -114,8 +114,6 @@ describe('装配接线：宿主注入 → helper 解析 → 渲染端文案', ()
       /label: OPEN_LABEL\[OPEN_TARGET\],\s*action: 'open-site'/.test(sprite),
       '文案由查表决定，但 action 仍是 open-site（另一端只认这个动作名；hint 只是视觉提示，允许夹在中间换行）',
     );
-    assert.ok(/const isOpenShortcut = \(e\) => !!\(e && \(e\.ctrlKey \|\| e\.metaKey\)\)/.test(sprite));
-    assert.ok(/if \(isOpenShortcut\(e\)\)[\s\S]*?openDshSite\(ORIGIN\)/.test(sprite));
   });
 
   test('独立模式：App 显式标 standalone，CLI 由地址判定，不另注入形态', () => {

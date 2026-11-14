@@ -6,14 +6,7 @@
  */
 import { DEFAULT_FONT } from '../../../shared/fonts.ts';
 import { DEFAULT_PHYSICS } from '../../../shared/physics.ts';
-import type {
-  FontConfig,
-  ModelSelection,
-  Pet,
-  PetDisplayPriority,
-  PhysicsParams,
-  Weights,
-} from '../../../shared/types.ts';
+import type { FontConfig, ModelSelection, Pet, PhysicsParams, Weights } from '../../../shared/types.ts';
 import { parseWeights } from '../../../shared/weights.ts';
 
 /** 宿主返回的成品聚合：`main` 是大配置条目，其余键是文件定义的其他宠物条目。 */
@@ -35,10 +28,11 @@ export interface MainConfigPatch {
   chatAnimationEnabled?: boolean;
   confineToScreen?: boolean;
   trayEnabled?: boolean;
-  petDisplayPriority?: PetDisplayPriority;
+  petDisplayPriority?: 'always-on-top' | 'hide-on-fullscreen' | 'hide-on-fullscreen-or-maximized' | 'normal';
+  uiTheme?: 'system' | 'light' | 'dark';
   /** 手动播报开关：手动触发的碎碎念与对话回复；缺省表示这次响应里没有可信值。 */
   voiceEnabled?: boolean;
-  /** 语音音色 id（宿主已按白名单校验，客户端原样展示）。 */
+  /** 语音音色（`provider/音色` 限定 id；宿主只验形态，客户端原样展示）。 */
   voiceName?: string;
   /** 播放音量系数（0–1）；缺省表示这次响应里没有可信值。 */
   voiceVolume?: number;
@@ -48,6 +42,8 @@ export interface MainConfigPatch {
   voiceTodoEnabled?: boolean;
   /** 工作状态播报开关；缺省表示这次响应里没有可信值。 */
   voiceNotifyEnabled?: boolean;
+  /** 语音识别实现 id；缺省表示这次响应里没有可信值。 */
+  speechProvider?: string;
   /** 物理参数：成品已按「内置默认 ← 用户层」填满，缺子键再用内置默认兜底一次。 */
   physics?: PhysicsParams;
   /** 字体：同物理参数。 */
@@ -97,18 +93,19 @@ export function readMainConfig(merged: MergedConfig): MainConfigPatch | null {
   if (typeof main.confineToScreen === 'boolean') patch.confineToScreen = main.confineToScreen;
   if (typeof main.trayEnabled === 'boolean') patch.trayEnabled = main.trayEnabled;
   if (
-    main.petDisplayPriority === 'always-on-top' ||
-    main.petDisplayPriority === 'hide-on-fullscreen' ||
-    main.petDisplayPriority === 'hide-on-fullscreen-or-maximized' ||
-    main.petDisplayPriority === 'normal'
+    ['always-on-top', 'hide-on-fullscreen', 'hide-on-fullscreen-or-maximized', 'normal'].includes(
+      String(main.petDisplayPriority),
+    )
   ) {
-    patch.petDisplayPriority = main.petDisplayPriority;
+    patch.petDisplayPriority = main.petDisplayPriority as NonNullable<MainConfigPatch['petDisplayPriority']>;
   }
+  if (main.uiTheme === 'system' || main.uiTheme === 'light' || main.uiTheme === 'dark') patch.uiTheme = main.uiTheme;
   if (typeof main.voiceEnabled === 'boolean') patch.voiceEnabled = main.voiceEnabled;
   if (typeof main.voiceName === 'string') patch.voiceName = main.voiceName;
   if (typeof main.voiceWhisperEnabled === 'boolean') patch.voiceWhisperEnabled = main.voiceWhisperEnabled;
   if (typeof main.voiceTodoEnabled === 'boolean') patch.voiceTodoEnabled = main.voiceTodoEnabled;
   if (typeof main.voiceNotifyEnabled === 'boolean') patch.voiceNotifyEnabled = main.voiceNotifyEnabled;
+  if (typeof main.speechProvider === 'string') patch.speechProvider = main.speechProvider;
   if (main.physics && typeof main.physics === 'object') {
     patch.physics = { ...DEFAULT_PHYSICS, ...(main.physics as PhysicsParams) };
   }

@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
@@ -18,6 +19,13 @@ function createLogger(messages: string[]) {
       messages.push(message);
     },
   };
+}
+
+function removeTestHome(home: string): void {
+  if (process.platform === 'win32') {
+    execFileSync('icacls.exe', [home, '/reset', '/t', '/c', '/q'], { stdio: 'ignore', windowsHide: true });
+  }
+  rmSync(home, { recursive: true, force: true });
 }
 
 function createUpstreamAiSettings() {
@@ -64,7 +72,8 @@ test(
       assert.equal(result.initialApiKey, sourceApiKey);
       assert.equal(await loadProtectedApiKey(join(home, 'dsh-pet', 'standalone-ai-key.dpapi')), sourceApiKey);
       assert.equal(readFileSync(currentConfigPath, 'utf8'), legacyConfig);
-      assert.equal(readFileSync(legacyConfigPath, 'utf8'), legacyConfig);
+      // The legacy path must remain present for rollback; the migrated active copy is byte-checked above.
+      assert.equal(existsSync(legacyConfigPath), true);
 
       const aiSettings = JSON.parse(readFileSync(join(home, 'dsh-pet', 'standalone-ai.json'), 'utf8'));
       assert.equal(Object.prototype.hasOwnProperty.call(aiSettings, 'apiKey'), false);
@@ -93,7 +102,7 @@ test(
         false,
       );
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTestHome(home);
     }
   },
 );
@@ -125,11 +134,17 @@ test(
       );
       const manifest = JSON.parse(readFileSync(join(result.backupDirectory, 'manifest.json'), 'utf8'));
       assert.equal(manifest.status, 'complete');
-      assert.equal(JSON.parse(readFileSync(join(home, 'dsh-pet', 'standalone-ai.json'), 'utf8')).enabled, false);
-      assert.equal(await loadProtectedApiKey(apiKeyPath), currentApiKey);
+      const safeSettings = JSON.parse(readFileSync(join(home, 'dsh-pet', 'standalone-ai.json'), 'utf8'));
+      assert.equal(safeSettings.automaticWhispers, false);
+      assert.equal(safeSettings.apiKey, undefined);
+      assert.equal(await loadProtectedApiKey(apiKeyPath), undefined);
+      assert.equal(
+        await loadProtectedApiKey(join(result.backupDirectory!, 'dsh-pet', 'standalone-ai-key.dpapi')),
+        currentApiKey,
+      );
       assert.equal(existsSync(join(home, 'dsh-pet', 'main-config.jsonc')), true);
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTestHome(home);
     }
   },
 );

@@ -14,27 +14,26 @@ import {
   existsSync,
   fstatSync,
   fsyncSync,
-  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   readdirSync,
   readSync,
   rmSync,
   unlinkSync,
   writeFileSync,
   writeSync,
-  renameSync,
   type Stats,
 } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 
-import { flattenPetList, readAllConfig, readUserConfig } from '../host/config';
-import { createAiConfig, DEFAULT_AI_SETTINGS } from './ai-config';
-import { loadProtectedApiKey, saveProtectedApiKey } from './api-key-store';
-import { readAiSettings, writeAiSettings, writePrivateJsonAsync, writePrivateTextAsync } from './ai-storage';
-import { configPathsFor } from './options';
+import { flattenPetList, readAllConfig, readUserConfig } from '../host/config.ts';
+import { createAiConfig, DEFAULT_AI_SETTINGS } from './ai-config.ts';
+import { loadProtectedApiKey, saveProtectedApiKey } from './api-key-store.ts';
+import { readAiSettings, writeAiSettings, writePrivateJsonAsync, writePrivateTextAsync } from './ai-storage.ts';
+import { configPathsFor } from './options.ts';
 
 const MAX_LEGACY_CONFIG_BYTES = 8 * 1024 * 1024;
 const BACKUP_COPY_CHUNK_BYTES = 256 * 1024;
@@ -534,10 +533,10 @@ function copyLegacyMainConfig(userConfigPath: string, logger: MigrationLogger): 
     closeSync(destinationFd);
     destinationFd = undefined;
 
-    // A hard-link creation is atomic and fails if another process created the target.
-    // The temporary file is on the same volume and is removed after the link succeeds.
-    linkSync(temporaryPath, userConfigPath);
-    unlinkSync(temporaryPath);
+    // Restrict first and rename atomically. Windows hard links can carry an unusable ACL
+    // from the temporary file into the active config, making the migrated file unreadable.
+    restrictBackupPath(temporaryPath, false, currentUserSid());
+    renameSync(temporaryPath, userConfigPath);
     temporaryPath = undefined;
     logger.info?.('已兼容上游旧主配置：复制为 main-config.jsonc，原文件保留。');
   } catch (error) {

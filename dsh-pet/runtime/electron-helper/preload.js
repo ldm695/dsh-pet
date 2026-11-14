@@ -1,18 +1,19 @@
-// preload 桥：只暴露窗口控制原语——
-//   - setBounds：宠物窗口逐帧跟随（renderer 上报包围盒的屏幕坐标，主进程 setContentBounds）。
-//     x/y/width/height = 窗口内容区坐标（用于移动窗口）；boxX/boxY = 宠物包围盒左上角
-//     （工作区坐标）——碰撞站场必须用包围盒坐标，不能用窗口坐标（窗口 = 包围盒 + 四周外扩 margin，
-//     差半只宠物宽，会让跨窗碰撞检测整体错位）。
-//     size/bottomPad = 碰撞站场登记用（静止宠物只发 set-bounds，靠它带上尺寸才能被其它
-//     飞行宠物撞到）；vx/vy = 当前速度（飞行中实时值，静止/拖拽 = 0）。
-//   - setInteractive：点击穿透翻转——窗口默认整窗穿透（透明像素不挡下层应用），
-//     renderer 在光标进/出宠物身体命中区时上报，主进程 setIgnoreMouseEvents 翻转。
-//   - 宠物间碰撞（跨窗，主进程 broker）：位置与速度随 setBounds 一起上报；
-//       onFlightStates：订阅主进程合并广播的全量宠物状态（碰撞检测用其它宠物的最新位置/速度）；
-//       reportCollide：本窗飞行方检测到撞到 targetId → 主进程把动量结果转发给目标窗；
-//       onPetHit：订阅「你被撞了」→ 用新初速 startThrow 抛出去（与浏览器 onHit 同语义）。
+/**
+ * preload 桥：向渲染端暴露窗口控制与跨窗碰撞的原语。
+ *
+ * 只做 IPC 转发，不持有状态、不做判定；翻转与判定都在主进程。依赖 Electron 的
+ * contextBridge/ipcRenderer，频道名必须与主进程逐字一致。
+ *
+ * @module dsh-pet/runtime/electron-helper/preload
+ */
 const { contextBridge, ipcRenderer } = require('electron');
-const { MOVE_TARGETS_CHANNELS } = require('./move-ipc.js');
+const MOVE_TARGET_CHANNELS = {
+  begin: 'pet:begin-move',
+  end: 'pet:end-move',
+  snapshot: 'pet:move-targets',
+  request: 'pet:request-move-targets',
+  forget: 'pet:forget-move-target',
+};
 
 contextBridge.exposeInMainWorld('petBridge', {
   // 宠物窗口逐帧跟随：x/y/width/height 是窗口内容区坐标（用于移动窗口），
@@ -20,7 +21,7 @@ contextBridge.exposeInMainWorld('petBridge', {
   // size/bottomPad 让静止宠物也登记进碰撞站场，vx/vy 是当前速度（静止/拖拽为 0）。
   // marginL/marginT 是窗口原点到本体原点的距离：上边距按气泡最大高度加高后四边不相等，
   // 窗口被系统钳回工作区后还会变大，主进程不能按「窗口宽/4」反推命中区，所以必须上报。
-  setBounds(x, y, width, height, boxX, boxY, size, bottomPad, vx, vy, marginL, marginT, freeMotion, positionClaim) {
+  setBounds(x, y, width, height, boxX, boxY, size, bottomPad, vx, vy, marginL, marginT) {
     ipcRenderer.send('pet:set-bounds', {
       x,
       y,
@@ -34,58 +35,19 @@ contextBridge.exposeInMainWorld('petBridge', {
       vy,
       marginL,
       marginT,
-      freeMotion: freeMotion === true,
-      positionClaim: positionClaim === true,
     });
   },
-  workStatusDiagnostic(record) {
-    ipcRenderer.send('pet:work-status-diagnostic', record);
-  },
-  showDshNotification(revision, data) {
-    ipcRenderer.send('pet:dsh-notification', { revision, data });
-  },
-  setReducedMotionPreference(reduced) {
-    ipcRenderer.send('pet:motion-preference', !!reduced);
-  },
-  onFullscreenVisibilityTransition(cb) {
-    const listener = (_event, payload) => cb(payload);
-    ipcRenderer.on('pet:fullscreen-visibility-transition', listener);
-    return () => ipcRenderer.removeListener('pet:fullscreen-visibility-transition', listener);
-  },
-  completeFullscreenVisibilityTransition(id) {
-    ipcRenderer.send('pet:fullscreen-transition-complete', id);
-  },
-  reconcileWorkStatus(agents, eligiblePetIds, stateCounter) {
-    ipcRenderer.send('pet:work-status-snapshot', { agents, eligiblePetIds, stateCounter });
-  },
-  onWorkStatusAssignments(cb) {
-    ipcRenderer.on('pet:work-status-assignments', (_event, result) => cb(result));
-  },
-  moveTargets: {
-    begin(petId, moveId, point, kind = 'claim', reason = 'movement') {
-      ipcRenderer.send(MOVE_TARGETS_CHANNELS.begin, { ...point, petId, moveId, kind, reason });
-    },
-    end(petId, moveId, point, reason) {
-      ipcRenderer.send(MOVE_TARGETS_CHANNELS.end, { ...point, petId, moveId, reason });
-    },
-    subscribe(cb) {
-      const listener = (_event, targets) => {
-        if (Array.isArray(targets)) cb(targets);
-      };
-      ipcRenderer.on(MOVE_TARGETS_CHANNELS.snapshot, listener);
-      ipcRenderer.send(MOVE_TARGETS_CHANNELS.requestSnapshot);
-      return () => ipcRenderer.removeListener(MOVE_TARGETS_CHANNELS.snapshot, listener);
-    },
-    forget(petId) {
-      ipcRenderer.send(MOVE_TARGETS_CHANNELS.forget, { petId });
-    },
-  },
+  // 点击穿透翻转：窗口默认整窗穿透，渲染端在光标进出身体命中区时上报。
   setInteractive(interactive) {
     ipcRenderer.send('pet:set-interactive', !!interactive);
   },
+  // 我正在用这个窗口的鼠标输入（拖拽中/菜单开/弹窗开）。主进程光看光标与窗口位移分不清
+  // 拖拽跟手与漫游/抛掷，而渲染端知道；busy 期间兜底通道绝不翻回穿透，否则输入链会断。
+  // 只在状态翻转时发一次，不逐帧。
   setInputBusy(busy) {
     ipcRenderer.send('pet:input-busy', !!busy);
   },
+  // 控件矩形：菜单/聊天框只让自己那块接收点击，其余透明区域继续穿透。
   setInputRegions(input) {
     ipcRenderer.send('pet:input-regions', input);
   },
@@ -118,8 +80,45 @@ contextBridge.exposeInMainWorld('petBridge', {
   onPetHit(cb) {
     ipcRenderer.on('pet:hit', (e, payload) => cb(payload));
   },
-  // 显示器热更新：分辨率/缩放变化、插拔屏、旋转后主进程重算桌面几何并推来
-  // （{hull, areas, workAreas, panels, primaryIndex}，屏幕坐标）——渲染端就地重挂视口与边界。
+  reconcileWorkStatus(agents, eligiblePetIds) {
+    return ipcRenderer.invoke('pet:work-status-reconcile', { agents, eligiblePetIds });
+  },
+  showDshNotification(revision, data) {
+    ipcRenderer.send('pet:dsh-notification', { revision, data });
+  },
+  setReducedMotionPreference(reduced) {
+    ipcRenderer.send('pet:motion-preference', !!reduced);
+  },
+  onFullscreenVisibilityTransition(callback) {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('pet:fullscreen-visibility-transition', listener);
+    return () => ipcRenderer.removeListener('pet:fullscreen-visibility-transition', listener);
+  },
+  completeFullscreenVisibilityTransition(id) {
+    ipcRenderer.send('pet:fullscreen-transition-complete', id);
+  },
+  // 移动落点协调由主进程仲裁；渲染端只提交移动租约并消费占位快照。
+  moveTargets: {
+    begin(petId, moveId, point, kind = 'claim') {
+      ipcRenderer.send(MOVE_TARGET_CHANNELS.begin, { ...point, petId, moveId, kind });
+    },
+    end(petId, moveId, point) {
+      ipcRenderer.send(MOVE_TARGET_CHANNELS.end, { ...point, petId, moveId });
+    },
+    subscribe(callback) {
+      const listener = (_event, targets) => {
+        if (Array.isArray(targets)) callback(targets);
+      };
+      ipcRenderer.on(MOVE_TARGET_CHANNELS.snapshot, listener);
+      ipcRenderer.send(MOVE_TARGET_CHANNELS.request);
+      return () => ipcRenderer.removeListener(MOVE_TARGET_CHANNELS.snapshot, listener);
+    },
+    forget(petId) {
+      ipcRenderer.send(MOVE_TARGET_CHANNELS.forget, { petId });
+    },
+  },
+  // 显示器热更新：分辨率/缩放变化、插拔屏、旋转后主进程重算并推来桌面几何（屏幕坐标），
+  // 渲染端就地重挂视口与边界。
   onDisplays(cb) {
     ipcRenderer.on('pet:displays', (e, geo) => cb(geo));
   },

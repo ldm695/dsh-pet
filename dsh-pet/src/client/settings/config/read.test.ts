@@ -67,6 +67,10 @@ describe('readMainConfig —— 成品聚合 → 表单补丁', () => {
     assert.equal('trayEnabled' in (patch ?? {}), false);
     const withFlag = readMainConfig({ main: { pets: [], trayEnabled: false } });
     assert.equal(withFlag?.trayEnabled, false);
+    assert.equal(
+      readMainConfig({ main: { pets: [], petDisplayPriority: 'hide-on-fullscreen' } })?.petDisplayPriority,
+      'hide-on-fullscreen',
+    );
   });
 
   test('语音细分开关：布尔原样带出，缺失或非布尔不进补丁', () => {

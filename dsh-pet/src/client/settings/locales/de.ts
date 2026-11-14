@@ -20,13 +20,6 @@ export const de: Record<Key, string> = {
   globalTitle: 'Globale Schalter',
   globalHint:
     'Gilt für alle Pets (ein Pet-Pack kann dies in seiner Art-Datei überschreiben). Diese Schalter ändern nur den lokalen Zustand und werden beim „Speichern" mit in die Benutzerkonfiguration geschrieben (kein sofortiges Schreiben); Systembenachrichtigungen werden nach dem Speichern sofort neu eingelesen, ohne Neuladen der Seite.',
-  displayPriorityLabel: 'Fensterpriorität des Pets',
-  displayPriorityHint:
-    'Globale Einstellung für den Desktopmodus. Windows erkennt aktive Vollbildfenster; Vollbild- oder Maximiert-Modus blendet Pets auf dem Monitor eines maximierten Fensters aus. macOS folgt Vollbild-Spaces; Linux erkennt keine Fenster anderer Anwendungen.',
-  'displayPriority.always-on-top': 'Immer im Vordergrund',
-  'displayPriority.hide-on-fullscreen': 'Bei Vollbild ausblenden',
-  'displayPriority.hide-on-fullscreen-or-maximized': 'Bei Vollbild oder maximierten Fenstern ausblenden',
-  'displayPriority.normal': 'Normale Fensterebene',
   cornerHint: 'An welcher Bildschirmecke das Pet klebt (im Desktop-Modus pro Monitor-Arbeitsbereich).',
   marginXHint: 'Horizontaler Abstand zur gewählten Ecke (px), beliebige Zahl.',
   marginYHint: 'Vertikaler Abstand zur gewählten Ecke (px), beliebige Zahl.',
@@ -88,7 +81,8 @@ export const de: Record<Key, string> = {
   fixedEnabledHint:
     'Wenn aktiv, dreht sich das Pet bei Zufallsanimationen nicht mehr selbst um und läuft nicht weg – es spielt nur Leerlauf und kleine Aktionen am Platz. Rechtsklick-Auswahl, API-Auslöser sowie Guthaben-/Flüstern-/Arbeitsstatus-Animationen sind nicht betroffen.',
   horizontalOnly: 'Nur horizontal bewegen',
-  horizontalOnlyHint: 'Automatische Bewegungen bleiben auf gleicher Höhe und neigen das Pet nicht.',
+  horizontalOnlyHint:
+    'Wenn aktiv, bleiben automatische Bewegung und Ausweichen an Bildschirmnähten auf gleicher Höhe. Deaktivieren erlaubt diagonale Bewegung.',
   displayLabel: 'Anzeige',
   displayHint: 'web = nur Browser / desktop = nur Desktop / both = beides / none = nichts',
   'display.web': 'Nur Browser',
@@ -164,6 +158,16 @@ export const de: Record<Key, string> = {
   confineToggle: 'Auf aktuellen Bildschirm begrenzen',
   confineToggleHint:
     'Mehrere Monitore: Wenn an, bleibt das Pet auf dem Bildschirm, auf dem es sich gerade befindet – ein geworfenes Pet prallt nur innerhalb des Bildschirms ab, auf dem es losgelassen wurde (Bildschirmfugen wirken als Wände, es fliegt nicht zum Nachbarmonitor), und autonomes Umherlaufen bleibt auf dem aktuellen Bildschirm (ein Schritt über die Fuge wird einfach verworfen). Aus = Überqueren der Bildschirme wie gewohnt. Nur Desktop-Modus – das Browser-Overlay bleibt ohnehin im Viewport.',
+  petDisplayPriority: 'Anzeigeverhalten',
+  uiThemeLabel: 'App-Design',
+  uiThemeSystem: 'System',
+  uiThemeLight: 'Hell',
+  uiThemeDark: 'Dunkel',
+  priorityAlwaysOnTop: 'Immer im Vordergrund',
+  priorityHideFullscreen: 'Bei Vollbild ausblenden',
+  priorityHideMaximized: 'Bei Vollbild oder Maximierung ausblenden',
+  priorityNormal: 'Normales Fenster',
+
   trayToggle: 'System-Tray',
   trayToggleHint:
     'Zeigt im Desktop-Modus ein Tray-Symbol (Windows: Infobereich, macOS: Menüleiste). Es listet alle Pets der Konfiguration und schaltet die Anzeige um – auch für Pets, die gerade nicht auf dem Desktop sind und kein Fenster zum Rechtsklicken haben. Ohne Tray lässt sich ein Pet nur über den Browser (Einstellungsseite oder Rechtsklick auf das Web-Pet) zurück auf den Desktop holen. Windows blendet das Symbol ohnehin in die „ausgeblendeten Symbole" aus. Nur Desktop-Modus.',
@@ -183,6 +187,11 @@ export const de: Record<Key, string> = {
   voiceNotifyEnabledHint:
     'Spricht eine konfigurierte Arbeitsstatus-Zeile, wenn eine Aufgabe abgeschlossen ist, fehlschlägt oder auf Ihre Bestätigung wartet. Wie Systembenachrichtigungen wird nur gesprochen, während Sie nicht auf dieser Seite sind (weggewechselt, ohne Fokus, minimiert) – keine Unterbrechung, während Sie auf den Bildschirm schauen. Nur die konfigurierte Zeile wird gesprochen, nie das Aufgabendetail. Standardmäßig aus.',
   voiceNameLabel: 'Stimme',
+  voiceNameHint:
+    'Welche Stimme den Text liest. Stimmen stammen von der Synthese-Implementierung; weitere erscheinen mit weiteren Implementierungen.',
+  speechProviderLabel: 'Spracherkennung',
+  speechProviderHint:
+    'Welche Implementierung die Aufnahme transkribiert. Mehrere Optionen erscheinen nur mit installiertem Spracheingabe-Plugin; die Auswahl wird gespeichert, ein fehlender Anbieter führt zu einem Fehler statt zu einem stillen Wechsel.',
   voiceVolumeLabel: 'Lautstärke',
   voiceVolumeHint:
     'Wiedergabelautstärke als Dezimalzahl 0–1: 1 ist die maximale Lautstärke (100 %), 0 ist stumm. Ändert nur die Lautheit und synthetisiert kein Audio neu, kostet also nichts extra. Alle vier Arten von Sprachausgabe teilen sich diese eine Lautstärke.',

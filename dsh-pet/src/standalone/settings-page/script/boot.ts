@@ -20,12 +20,35 @@ function mountProtocolSelect() {
     [
       { value: 'openai-compatible', label: 'OpenAI 兼容' },
       { value: 'anthropic', label: 'Anthropic' },
+      { value: 'deepseek-official', label: 'DeepSeek' },
     ],
     'openai-compatible',
-    () => forgetModelOptions(),
+    () => {
+      forgetModelOptions();
+      syncProtocolFields();
+    },
   );
   protocolSelect.root.firstElementChild.setAttribute('aria-labelledby', 'protocol-label');
   host.append(protocolSelect.root);
+}
+
+function syncProtocolFields() {
+  const deepseek = !!protocolSelect && protocolSelect.getValue() === 'deepseek-official';
+  const address = byId('baseUrl');
+  const note = byId('endpoint-note');
+  const label = byId('balance-provider-label');
+  const balanceField = typeof label?.closest === 'function' ? label.closest('.field') : null;
+  if (deepseek && address && !address.value) address.value = 'https://api.deepseek.com';
+  if (address) {
+    address.readOnly = deepseek;
+    address.placeholder = deepseek ? 'https://api.deepseek.com' : 'https://example.com/v1';
+  }
+  if (note) note.textContent = deepseek
+    ? 'DeepSeek 使用固定官方地址；保存官方密钥后可查询余额。'
+    : '服务商提供的基础接口地址，支持 HTTP 与 HTTPS，通常以 /v1 结尾。不要把密钥放进地址。';
+  if (balanceField) balanceField.hidden = !deepseek;
+  const offPeak = byId('whispersOnlyOffPeak');
+  if (offPeak) offPeak.disabled = !deepseek;
 }
 
 function mountBalanceSelect() {
@@ -84,6 +107,32 @@ function wireTabs() {
   });
 }
 
+async function loadVoiceCatalog() {
+  // 音色与识别实现都是宿主目录：注册了哪些实现，页面就列哪些。
+  // 拉不到就回落构建期注入的内置清单，至少内置实现还能选。
+  try {
+    const body = await callApi('GET', '/voice/voices');
+    if (body && Array.isArray(body.providers)) {
+      state.voiceOptions = body.providers.flatMap((group) =>
+        (group.voices || []).map((voice) => ({
+          id: voice.id,
+          name: voice.name,
+          tag: voice.tag || '',
+          provider: group.name,
+        })),
+      );
+    }
+  } catch {
+    /* 回落内置清单 */
+  }
+  try {
+    const body = await callApi('GET', '/voice/hear-providers');
+    if (body && Array.isArray(body.providers)) state.speechProviders = body.providers;
+  } catch {
+    /* 回落空列表：下拉只显示当前值 */
+  }
+}
+
 async function loadPets() {
   const status = byId('pet-status');
   setStatus(status, '正在读取本机配置…');
@@ -138,9 +187,9 @@ async function loadMigrationRecovery() {
     byId('migration-recovery-restore').addEventListener('click', async (event) => {
       const button = event.currentTarget;
       const confirmed = window.confirm(
-        '还原原配置会移除当前桌宠配置、恢复迁移前备份，并立即退出桌宠进程。备份目录：\n' +
+        '还原原配置会移除当前桌宠配置、恢复迁移前备份，并立即退出桌宠进程。备份目录：\\n' +
           recovery.backupDirectory +
-          '\n\n确定继续吗？',
+          '\\n\\n确定继续吗？',
       );
       if (!confirmed) return;
       button.disabled = true;
@@ -153,7 +202,7 @@ async function loadMigrationRecovery() {
       }
     }, { once: true });
   } catch {
-    // 没有迁移备份时，设置页不显示此卡片。
+    // 无备份时不显示恢复入口。
   }
 }
 
@@ -164,14 +213,16 @@ function boot() {
   // cookie 也没了的时候，各面板自己的请求会失败并显示重新打开设置的提示。
   mountProtocolSelect();
   mountBalanceSelect();
+  syncProtocolFields();
   wireAiPanel();
-  byId('pet-save').addEventListener('click', savePets);
+  if (!byId('pet-cards')?.dataset.reactMounted) byId('pet-save').addEventListener('click', savePets);
   window.addEventListener('beforeunload', (event) => {
     if (!state.dirty) return;
     event.preventDefault();
     event.returnValue = '';
   });
-  loadPets();
+  // 目录先于配置渲染：voiceCard 要用它决定下拉里有哪些音色与识别实现
+  if (!byId('pet-cards')?.dataset.reactMounted) loadVoiceCatalog().then(loadPets);
   loadAi();
   loadMigrationRecovery();
 }

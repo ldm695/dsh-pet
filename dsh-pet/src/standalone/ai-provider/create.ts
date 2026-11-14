@@ -13,6 +13,7 @@ import { discoverModels } from './list-models.ts';
 import { queryStandaloneBalance } from './balance.ts';
 import { createTextStream } from './stream.ts';
 import { testAiConnection } from './test-connection.ts';
+import { isDeepSeekOffPeak } from '../../host/whisper-policy.ts';
 
 /**
  * 保存设置：单飞、先中止在途请求，失败即暂停，等下一次保存成功才恢复。
@@ -91,7 +92,15 @@ export function createStandaloneAi(
     getSettings: () => store.publicSettings(),
     saveSettings: (input) => saveSettings(runtime, store, input),
     isReady: () => runtime.ready(),
+    allowsAutomaticWhisper: () => {
+      const settings = store.current();
+      return (
+        settings.automaticWhispers &&
+        (settings.protocol !== 'deepseek-official' || !settings.whispersOnlyOffPeak || isDeepSeekOffPeak())
+      );
+    },
     balanceAuth: () => ({ provider: store.current().balanceProvider, apiKey: store.current().apiKey }),
+    deepseekKey: () => store.current().deepseekApiKey,
     testConnection: (input) =>
       runtime.disposed
         ? Promise.resolve({ ok: false, message: '服务已关闭' })

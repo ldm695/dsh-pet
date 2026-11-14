@@ -1,36 +1,49 @@
+/**
+ * 桌面 Helper 的置顶看门狗（纯判定，可被 node:test 直接加载）。
+ * `WS_EX_TOPMOST` 只是样式位：不经 SetWindowPos(HWND_TOPMOST) 就不算真的落带，而点击穿透的读-改-写
+ * 又会把位写回来——查位永远得 true，宠物却已经沉底。看门狗按节拍重钉一次，不移动、不缩放、不重绘、
+ * 不抢焦点；代价是会把宠物抬到所有置顶窗口之上，打断全屏游戏与截图。
+ * 默认关闭：成因未查明前不长时间挂一个高副作用的后台动作，重开前先接受上述代价。
+ * @module dsh-pet/runtime/electron-helper/topmost-watchdog
+ */
+
 'use strict';
 
-/** Windows 置顶层级检查频率。判定只读窗口状态，不会操作窗口。 */
+/** 看门狗节拍（ms）：多久做一次判定。判定本身不碰窗口，只决定这一拍要不要重钉 */
 const TOPMOST_WATCHDOG_TICK_MS = 1000;
 
-/** 距上次设为置顶至少经过此时间后，才允许恢复一次。 */
+/** 重新置顶的最小间隔（ms）：真正的 SetWindowPos 至多这么频繁（避开与别的置顶窗抢带） */
 const TOPMOST_REASSERT_MS = 5000;
 
-/** macOS 使用普通悬浮层；其它平台使用 Electron 的 screen-saver 层级。 */
+/** macOS 使用普通悬浮层，为更高层级的截图窗口让位；其它平台保持原行为 */
 function topmostLevel(platform) {
   return platform === 'darwin' ? 'floating' : 'screen-saver';
 }
 
 /**
- * 置顶层级恢复开关。
+ * 置顶看门狗总开关（唯一开关）。当前关闭：一次 SetWindowPos 都不发。
  *
- * 实际调用还受平台和显示策略限制：仅 Windows 的全屏隐藏策略会启用，且隐藏窗口不恢复。
- * 当前前台若已经是置顶窗口，也会跳过，避免周期性重置把截图浮层等前台置顶窗口盖住。
+ * 关闭后定时器仍按节拍空转（每秒一次纯判定，开销可忽略），因为源码守卫测试锚在
+ * `topmostTimer = setInterval(...)` 上。
  */
-const TOPMOST_WATCHDOG_ENABLED = true;
+const TOPMOST_WATCHDOG_ENABLED = false;
 
 /**
- * 判断这一拍是否可以恢复窗口的置顶层级。
+ * 这一拍要不要重新置顶。
  *
- * @param {{nowMs:number,lastAssertMs:number,destroyed:boolean,visible:boolean,paused:boolean,foregroundTopmost:boolean}} state
- * @param {boolean} [enabled]
- * @returns {boolean}
+ * 只在窗口健在、可见、未被冒烟自检挂起且距上次重钉已够久时返回 true：隐藏期间钉了没意义，
+ * 自检期间钉了会干扰断言；这些条件随时会变，所以每秒判定一次、这一拍被拦就下一拍补上。
+ *
+ * @param state - nowMs/lastAssertMs/destroyed/visible/paused。
+ * @param enabled - 默认 true，是判定逻辑本身的口径；生产由 main.js 显式传入总开关。
+ * @returns 是否重钉。
  */
 function shouldReassertTopmost(state, enabled = true) {
   if (!enabled) return false;
-  const { nowMs, lastAssertMs, destroyed, visible, paused, foregroundTopmost } = state || {};
-  if (destroyed || !visible || paused || foregroundTopmost) return false;
+  const { nowMs, lastAssertMs, destroyed, visible, paused } = state || {};
+  if (destroyed || !visible || paused) return false;
   const elapsed = nowMs - lastAssertMs;
+  // 只有「时间正常流逝且还没到点」才不钉；时钟回拨/时间戳异常一律按到点处理（重钉无副作用）
   return !(elapsed >= 0 && elapsed < TOPMOST_REASSERT_MS);
 }
 

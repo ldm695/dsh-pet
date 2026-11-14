@@ -5,7 +5,7 @@
  */
 'use strict';
 
-const { HIT_BOX, STAGE_W, CANVAS_H, FEET_Y } = require('./pet-geometry.js');
+const { HIT_BOX, STAGE_W, CANVAS_H, FEET_Y } = require('./pointer-target.js');
 
 /**
  * 由显示器列表算出桌面几何（屏幕坐标）。

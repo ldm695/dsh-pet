@@ -19,7 +19,7 @@ Object.assign(PetSprite.prototype, {
     if (d.active || d.dragging || this.justDragged || this.menuOpen) return;
     e.preventDefault();
     this.stopThrow(); // 菜单弹出前停住飞行中的宠物
-    this.interruptMoveForMenu(); // 菜单悬停期间停止移动；关闭后恢复被打断的动画链
+    this.stopMove(); // 菜单悬停期间宠物不漫游
     // 桌面专属工具根项 + 共享菜单树（动作 → 分类 → 具体动画）。碎碎念/对话无条件显示：手动触发
     // 不受 whisperEnabled 限制（该字段只影响自动轮询）。首项文案与去向随宿主形态变，见 OPEN_LABEL。
     // 顺序：打开软件 / 余额 / 待办 / 碎碎念 / 对话 / 配图 / 睡觉 → 动作树 → 显示位置 / 重载配置 / 回到初始位置。
@@ -38,6 +38,15 @@ Object.assign(PetSprite.prototype, {
       { label: '碎碎念', action: 'whisper' },
       { label: '对话', action: 'chat', hint: S.CHAT_HOTKEY_HINT },
     ];
+    const aiCapabilities = window.__dshPetMenuCapabilities;
+    if (aiCapabilities?.balanceSupported === false) {
+      const index = tools.findIndex((item) => item.action === 'show-balance');
+      if (index >= 0) tools.splice(index, 1);
+    }
+    if (aiCapabilities?.chatEnabled === false) {
+      const index = tools.findIndex((item) => item.action === 'chat');
+      if (index >= 0) tools.splice(index, 1);
+    }
     // 「配图」：与浏览器端同一份分支（纳入对话的配图 / 其他），点一张就用它说一句；没有可用图时
     // 返回 null，整项不出现。数据来自拍平层吹入的条目级字段（this.pet.memes / chatImageEnabled /
     // chatImageLimit），与网页端同一个 flattenConfigPets；缩略图走 BASE 的 /pic/memes 绝对地址
@@ -65,10 +74,7 @@ Object.assign(PetSprite.prototype, {
     // 放在最后——「更多」不插在工具项与动作之间。
     const more = S.buildMoreBranch(this.menuItems);
     const tree = tools.concat(S.buildMenuTree(this.animations), tail, more ? [more] : []);
-    if (!tree.length) {
-      this.resumeMenuInterruptedAnimation();
-      return;
-    }
+    if (!tree.length) return;
     this.menuOpen = true;
     this.setInteractive(true); // 菜单是窗口内 DOM：悬停期间整窗保持可交互，关闭后恢复命中区穿透
     this.syncInputBusy();
@@ -86,7 +92,6 @@ Object.assign(PetSprite.prototype, {
         window.__dshPetDebug.menuOpen = false;
         this.syncInputBusy();
         if (!this.inputBusy()) this.setInteractive(false);
-        this.resumeMenuInterruptedAnimation();
       },
     });
     this.menuClose = m.close;
@@ -165,8 +170,8 @@ Object.assign(PetSprite.prototype, {
       this.facing = 'left';
     }
     // 点播移动动画：走真实移动（与随机游走同一套），只有「选哪个动画」由菜单决定；挪不动则退化纯播放。
-    if (this.animations.moves.actions.some((a) => a.name === leaf.anim) || this.animations.drag.includes(leaf.anim)) {
-      const moved = this.tryMove(leaf.anim, playbackId, { manualMove: fromHost !== true });
+    if (this.animations.moves.actions.some((a) => a.name === leaf.anim)) {
+      const moved = this.tryMove(leaf.anim, playbackId);
       if (moved === false) this.playOnce(leaf.anim, playbackId);
       // moved === true = 已有移动/抛掷在进行中（没换源）：本段不会真的播起来 → 如实回 failed/busy
       else if (moved === true && playbackId) this.reportPlayback(playbackId, 'failed', 'busy');

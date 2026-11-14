@@ -1,73 +1,27 @@
 /**
- * dsh-pet desktop helper renderer —— 启动入口。
- *
- * 依赖链（index.html 顺序加载）：shared-core.js → constants.js → sprite.js →
- * events.js → renderer.js（本文件）。本文件只做：配置加载 / 错误处理 / 启动装配 / 素材注入。
- *
- * 负责桌面宠物的渲染与交互：
- *   - 纯逻辑（常量/选择器/移动几何/余额折算/拍平）来自 shared-core.js
- *     （= src/shared 的构建产物，window.PetShared）——与浏览器 bundle 共用同一份源码；
- *   - 配置唯一来源 = 宿主 /dsh-pet-7340/config 的**成品聚合**（host readAllConfig 合并，
- *     绝对正确、字段填满）：一步 fetch → S.flattenConfigPets 拍平，加载失败**大声报错**
- *     并显示红色错误条（每 5s 自动重试），绝无静默兜底池；
- *   - 动画素材经宿主 /dsh-pet-7340/thumb/<素材根>/<name>.<webm|mov>（素材根 = 条目 key；扩展名由共享常量 ANIMATION_EXT 决定）；
- *   - 几何模型：每只桌宠在独立透明小窗口内渲染；petBridge.setBounds 上报位置，主进程跟随移动窗口并更新碰撞状态。
- *   - 右键级联菜单（与浏览器共用同一份组件：树+渲染+样式来自 shared-core 的 menu 模块）：
- *     右键宠物弹出，桌面端工具根项「打开网站 / 打开软件（宿主是 DSH 桌面应用时的同一项）/ 查看余额 / 回到初始位置 / 重载配置」+ 动作点播；
- *     菜单开启期间整窗保持可交互（悬停菜单不触发穿透翻转），关闭/离开窗口即恢复穿透。
- *   - 独立模式的桌面通知由 events.js 在对话回复到达且窗口失焦时发出；不依赖 DSH 会话事件。
+ * 桌面 Helper 渲染端入口：配置加载、错误处理、启动装配与素材注入。
+ * 依赖链（index.html 顺序加载）：shared-core.js → constants.js → sprite.js → events.js → 本文件。
+ * 配置唯一来源是宿主 /config 的成品聚合（一步 fetch → S.flattenConfigPets 拍平），失败大声报错并每 5s
+ * 重试，没有静默兜底。窗口 = 宠物包围盒 + 四周外扩余量，宠物移动由本页逐帧上报给主进程。
+ * 不实现宠物行为与系统通知（见 sprite.js）。
+ * @module dsh-pet/runtime/electron-helper/renderer
  */
 'use strict';
 
-const fullscreenMotionPreference = window.matchMedia('(prefers-reduced-motion: reduce)');
-const reportFullscreenMotionPreference = () =>
-  window.petBridge?.setReducedMotionPreference?.(fullscreenMotionPreference.matches);
-reportFullscreenMotionPreference();
-if (fullscreenMotionPreference.addEventListener) {
-  fullscreenMotionPreference.addEventListener('change', reportFullscreenMotionPreference);
-} else {
-  fullscreenMotionPreference.addListener?.(reportFullscreenMotionPreference);
-}
-
-let activeFullscreenTransition = null;
-function acknowledgeFullscreenTransition(id) {
-  if (activeFullscreenTransition?.id !== id) return;
-  if (activeFullscreenTransition.timer) clearTimeout(activeFullscreenTransition.timer);
-  activeFullscreenTransition = null;
-  document.body.classList.remove('dsh-pet-fullscreen-transition');
-  window.petBridge?.completeFullscreenVisibilityTransition?.(id);
-}
-
-window.petBridge?.onFullscreenVisibilityTransition?.((payload) => {
-  if (!payload || !Number.isSafeInteger(payload.id)) return;
-  if (activeFullscreenTransition) {
-    const previous = activeFullscreenTransition;
-    clearTimeout(previous.timer);
-    activeFullscreenTransition = null;
-    // Reverse from the current opacity instead of letting the unfinished fade snap to its endpoint.
-    window.petBridge?.completeFullscreenVisibilityTransition?.(previous.id);
-  }
-
-  const durationMs = Math.max(0, Number(payload.durationMs) || 0);
-  document.body.style.setProperty('--dsh-pet-fullscreen-fade-duration', `${durationMs}ms`);
-  document.body.classList.toggle('dsh-pet-fullscreen-transition', payload.transitioning === true && durationMs > 0);
-  document.body.classList.toggle('dsh-pet-fullscreen-hidden', payload.hidden === true);
-
-  const transition = { id: payload.id, timer: null };
-  activeFullscreenTransition = transition;
-  const waitMs = payload.transitioning === true && durationMs > 0 ? durationMs + 80 : 0;
-  transition.timer = setTimeout(() => {
-    acknowledgeFullscreenTransition(payload.id);
-  }, waitMs);
-});
-
-document.body.addEventListener('transitionend', (event) => {
-  if (event.target === document.body && event.propertyName === 'opacity' && activeFullscreenTransition) {
-    acknowledgeFullscreenTransition(activeFullscreenTransition.id, 'transitionend');
+const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+window.petBridge.setReducedMotionPreference(reducedMotionQuery.matches);
+reducedMotionQuery.addEventListener?.('change', (event) => window.petBridge.setReducedMotionPreference(event.matches));
+window.petBridge.onFullscreenVisibilityTransition(({ id, hidden, transitioning, durationMs }) => {
+  document.body.classList.toggle('dsh-pet-fullscreen-transition', transitioning);
+  document.body.classList.toggle('dsh-pet-fullscreen-hidden', hidden);
+  if (transitioning && durationMs > 0) {
+    setTimeout(() => window.petBridge.completeFullscreenVisibilityTransition(id), durationMs);
+  } else {
+    requestAnimationFrame(() => window.petBridge.completeFullscreenVisibilityTransition(id));
   }
 });
 
-// ---------- 配置（大声报错；失败 5s 重试） ----------
+// 配置（大声报错；失败 5s 重试）
 function showError(message) {
   console.error('[dsh-pet] ' + message);
   window.__dshPetDebug.configOk = false;
@@ -78,7 +32,6 @@ function hideError() {
   errorEl.classList.remove('visible');
   errorEl.textContent = '';
 }
-let bootFailures = 0;
 function scheduleReboot() {
   if (bootTimer) return;
   bootTimer = setTimeout(() => {
@@ -87,29 +40,44 @@ function scheduleReboot() {
   }, 5000);
 }
 
+/**
+ * 连续启动失败次数（成功一次即清零）。首次失败多半是启动竞态：主进程不等 bridge 回调服务就绪
+ * 就建窗，首帧 fetch 会打空；5s 重试就自愈，不该闪红条。持续失败才是真配置错误，照旧大声报。
+ */
+let bootFailures = 0;
+
 async function loadConfig() {
-  // 唯一配置入口：宿主 /config 的成品聚合（host readAllConfig 已合并并保证绝对正确），
-  // 一步拉取 → 拍平成渲染列表，零校验零兜底
+  // 唯一配置入口：宿主 /config 的成品聚合（已合并并保证绝对正确），一步拉取 → 拍平，零校验零兜底
   const res = await fetch(BASE + '/config', { cache: 'no-store' });
   if (!res.ok) throw new Error(`config http ${res.status}`);
   const merged = await res.json();
   // 接口统一 200 + 实体：失败时状态码仍是 200，得看体里的 ok。
   if (merged && merged.ok === false) throw new Error('config ' + String(merged.reason ?? 'failed'));
+  const theme = merged && merged.main && merged.main.uiTheme;
+  document.documentElement.dataset.dshPetTheme = theme === 'light' || theme === 'dark' ? theme : 'system';
+  try {
+    const capabilities = await fetch(BASE + '/menu/capabilities', { cache: 'no-store' });
+    if (capabilities.ok) {
+      const value = await capabilities.json();
+      window.__dshPetMenuCapabilities = {
+        chatEnabled: value.chatEnabled !== false,
+        balanceSupported: value.balanceSupported !== false,
+      };
+    }
+  } catch {
+    // Other host modes do not expose standalone AI settings; their menu remains unchanged.
+  }
   return {
     pets: S.flattenConfigPets(merged),
-    notificationsEnabled: !(merged && merged.main && merged.main.notificationsEnabled === false),
     // 拖拽抛掷物理参数（顶层全局，所有宠物共用；合并器已填内置默认）
     physics: (merged && merged.main && merged.main.physics) || S.DEFAULT_PHYSICS,
     // 抛掷锁定在当前屏幕（根字段；合并器已填内置默认 false）
     confineToScreen: (merged && merged.main && merged.main.confineToScreen) === true,
+    notificationsEnabled: !(merged && merged.main && merged.main.notificationsEnabled === false),
+    notifyWhenFocused: merged && merged.main && merged.main.notifyWhenFocused === true,
+    // 点击音效开关（全局一份，只读 main 条目；合并器已填内置默认 false = 静音）
     clickSoundEnabled: (merged && merged.main && merged.main.clickSoundEnabled) === true,
-    voiceName: (merged && merged.main && merged.main.voiceName) || 'zh-CN-XiaoyiNeural',
-    voiceVolume: (merged && merged.main && Number.isFinite(merged.main.voiceVolume)) ? merged.main.voiceVolume : 1,
-    voiceEnabled: (merged && merged.main && merged.main.voiceEnabled) === true,
-    voiceWhisperEnabled: (merged && merged.main && merged.main.voiceWhisperEnabled) === true,
-    voiceNotifyEnabled: (merged && merged.main && merged.main.voiceNotifyEnabled) === true,
-    // 字体（全局一份，合并器已填内置默认）：字体族在此取一次、注入全局变量；字号由每只宠物
-    // 按自己的尺寸算（见 PetSprite 注入的 --dsh-pet-font-bubble / --dsh-pet-font-tip）
+    // 字体（全局一份，合并器已填内置默认）：字体族在此注入全局变量，字号由每只宠物按自己的尺寸算
     font: (merged && merged.main && merged.main.font) || S.DEFAULT_FONT,
     // 语音：音色与音量（缺省由共享层按默认音色 / 最大音量处理）
     voiceName: (merged && merged.main && merged.main.voiceName) || '',
@@ -118,7 +86,7 @@ async function loadConfig() {
   };
 }
 
-// ---------- 启动（配置校验通过才建 sprite；失败大声报错 + 5s 自动重试） ----------
+// 启动（配置校验通过才建 sprite；失败大声报错 + 5s 自动重试）
 async function boot() {
   try {
     const cfg = await loadConfig();
@@ -130,22 +98,22 @@ async function boot() {
     S.setVoiceConfig(cfg.voiceName, cfg.voiceVolume);
     bootFailures = 0;
     hideError();
-    // 字体族（全局配置 font.family）→ documentElement：对话窗/得分弹窗挂在 body 下、继承不到
-    // 宠物根容器，只能走全局变量；气泡与提示也从这里继承样式变量。
-    // 放在这里而不是 injectAssets()：字体族来自配置，必须等 /config 拉回来之后才有效。
+    // 字体族进 documentElement：对话窗/得分弹窗挂在 body 下、继承不到宠物根容器，只能走全局变量。
+    // 必须等 /config 拉回来之后才设（字体族来自配置）。
     document.documentElement.style.setProperty('--dsh-pet-font-family', S.fontStackOf(cfg.font.family));
     const pets = CONFIG.notificationWorker ? [] : cfg.pets.filter((p) => S.isDesktopVisible(p.display));
     if (pets.length === 0) {
-      // 托盘「全部隐藏」会把桌面宠物列表合法地变成空列表。Helper 仍需保留，
-      // 以便托盘之后能重新显示宠物；这不是配置错误，也不应显示错误条或每 5 秒重试。
-      for (const sprite of sprites) sprite.dispose();
-      sprites = [];
+      // 全部宠物只在网页显示是合法状态，不是配置错误：没有桌面宠物就表示本窗口没活儿干，
+      // 安静关掉、不弹条、不重试。托盘是否还在看 main 条目的 trayEnabled，与这里无关。
+      // 宿主流由 syncDesktop() 在配置变化时重建 Helper；手动流需自行重启。
+      hideError();
+      // Hidden worker pages keep consuming DSH notifications while every pet is hidden.
       window.__dshPetDebug.configOk = true;
       window.__dshPetDebug.spriteCount = 0;
-      // 保留宿主状态轮询，例如桌面宠物隐藏时仍可接收 DSH 系统通知。
       startLoops();
       return;
     }
+    // 本窗口只承载一只宠物：petIndex 由主进程按 DSH_PET_PETS 顺序注入
     const pet = pets[CONFIG.petIndex];
     if (!pet) {
       showError('petIndex=' + CONFIG.petIndex + ' 超出桌面宠物列表（共 ' + pets.length + ' 只），本窗口不创建宠物');
@@ -153,7 +121,7 @@ async function boot() {
       return;
     }
     for (const s of sprites) s.dispose();
-    sprites = [new PetSprite(pet, CONFIG.petIndex)];
+    sprites = [new PetSprite(pet)];
     if (Array.isArray(window.__dshPetMoveTargets)) {
       for (const sprite of sprites) sprite.updateMoveTargets(window.__dshPetMoveTargets);
     }
@@ -162,15 +130,16 @@ async function boot() {
     for (const s of sprites) s.playIdle();
     startLoops();
   } catch (e) {
-    const message = '配置加载失败：' + (e && e.message ? String(e.message) : String(e));
+    const msg = '配置加载失败：' + (e && e.message ? String(e.message) : String(e));
+    // 首次失败先静默（多半是启动竞态，见 bootFailures 的说明），下一次 5s 重试仍失败才报。
     bootFailures += 1;
-    if (bootFailures > 1) showError(message);
-    else console.error('[dsh-pet] ' + message + ' (first boot, retrying)');
+    if (bootFailures > 1) showError(msg);
+    else console.error('[dsh-pet] ' + msg + ' (first boot, retrying)');
     scheduleReboot();
   }
 }
 
-// 注入气泡字体与点击/拖拽光标图标；素材由 host 经 /dsh-pet-7340/ 提供。
+// 注入打字资源：气泡字体 + 点击/拖拽光标图标（与浏览器同一套素材，host 经 /dsh-pet-7340/ 提供）
 function injectAssets() {
   const style = document.createElement('style');
   style.textContent =
@@ -190,24 +159,24 @@ function injectAssets() {
   const menuStyle = document.createElement('style');
   menuStyle.textContent = S.MENU_CSS;
   document.head.appendChild(menuStyle);
-  // 悬浮提示样式（与浏览器注入同一份 TOOLTIP_CSS；替代原先挂在命中层 title 上的原生提示）
+  // 悬浮提示样式（与浏览器注入同一份 TOOLTIP_CSS，取代命中层上的原生 title 提示）
   const tipStyle = document.createElement('style');
   tipStyle.textContent = S.TOOLTIP_CSS;
   document.head.appendChild(tipStyle);
 }
 
 // 显示器几何变化（改分辨率/缩放、插拔屏、旋转）：主进程重算后推来，渲染端就地重挂视口与边界。
-// 这条通道是必需的——桌面几何原先只在窗口创建时经 URL query 注入一次，运行期永不更新。
 if (window.petBridge && window.petBridge.onDisplays) {
   window.petBridge.onDisplays((geo) => {
+    // 变化前的视口原点必须在 applyDeskGeometry 之前取：relayout 靠它把旧视口相对坐标还原成
+    // 世界坐标，否则合盖/开盖时视口原点一平移，宠物就会被误判越界。
     const prevView = { x: VIEW.x, y: VIEW.y, w: VIEW.w, h: VIEW.h };
     if (!applyDeskGeometry(geo)) return;
     for (const s of sprites) s.relayout(prevView);
   });
 }
 
-// The broker serializes endpoint claims across all pets, including manual and API moves.
-// Cache snapshots that arrive during boot so newly created sprites inherit their O flags.
+// 主进程在全部独立窗口之间仲裁移动落点；启动早于配置的快照会暂存，供新建精灵立即继承。
 const stopMoveTargetSubscription = window.petBridge?.moveTargets?.subscribe?.((targets) => {
   window.__dshPetMoveTargets = targets;
   for (const sprite of sprites) sprite.updateMoveTargets(targets);
@@ -217,9 +186,8 @@ if (typeof stopMoveTargetSubscription === 'function') {
 }
 
 // 窗口内容区尺寸异常时按当前位置重新规整。
-// 守卫：拖拽/飞行/漫游中**绝不**重设位置——这三种状态下位置由输入或物理驱动，而 position()
-// 会把宠物拉回 customPos（上一次的落点）。跨屏时 Windows 会因 WM_DPICHANGED 主动改窗口尺寸，
-// 那正好落在拖拽/飞行过程中，不设防就会看到宠物瞬间跳回上一个落点。
+// 守卫：拖拽/飞行/漫游中绝不重设位置——这三种状态下位置由输入或物理驱动，而 position() 会把
+// 宠物拉回 customPos。跨屏时 Windows 会因 WM_DPICHANGED 主动改窗口尺寸，不设防就会看到宠物跳回上一个落点。
 window.addEventListener('resize', () => {
   for (const s of sprites) {
     if (s.dragState.active || s.throwRef !== null || s.moveRef !== null) continue;

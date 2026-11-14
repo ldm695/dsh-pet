@@ -21,13 +21,6 @@ export const fr: Record<Key, string> = {
   globalTitle: 'Interrupteurs globaux',
   globalHint:
     "Partagés par tous les compagnons (un pet pack peut les remplacer dans son propre fichier de type). Ces interrupteurs ne modifient que l'état local et sont écrits dans la configuration utilisateur lors de l'enregistrement (jamais immédiatement) ; les notifications système sont relues juste après l'enregistrement, sans rafraîchir la page.",
-  displayPriorityLabel: 'Priorité de la fenêtre',
-  displayPriorityHint:
-    'Réglage global du mode bureau. Windows détecte les applications en plein écran ; le mode maximisé masque aussi les compagnons sur l’écran de la fenêtre maximisée. macOS suit les espaces plein écran ; Linux ne détecte pas les fenêtres des autres applications.',
-  'displayPriority.always-on-top': 'Toujours au premier plan',
-  'displayPriority.hide-on-fullscreen': 'Masquer en plein écran',
-  'displayPriority.hide-on-fullscreen-or-maximized': 'Masquer en plein écran ou si maximisée',
-  'displayPriority.normal': 'Niveau de fenêtre normal',
   cornerHint: "Le coin de l'écran auquel le compagnon se colle (par zone de travail de chaque écran en mode bureau).",
   marginXHint: "Distance horizontale au coin choisi (px) ; n'importe quel nombre.",
   marginYHint: "Distance verticale au coin choisi (px) ; n'importe quel nombre.",
@@ -89,7 +82,8 @@ export const fr: Record<Key, string> = {
   fixedEnabledHint:
     "Une fois activé, la chaîne aléatoire ne fait plus se retourner ni s'éloigner le compagnon — seules les actions sur place sont jouées. Les déclenchements par menu contextuel et par API, ainsi que les animations solde / murmure / état de travail, ne sont pas affectés.",
   horizontalOnly: 'Mouvement horizontal uniquement',
-  horizontalOnlyHint: 'Les déplacements automatiques restent à la même hauteur et sans inclinaison.',
+  horizontalOnlyHint:
+    'Activé, les déplacements automatiques et l’évitement des jonctions restent à la même hauteur. Désactivez-le pour autoriser les diagonales.',
   displayLabel: 'Affichage',
   displayHint: 'web = navigateur seul / desktop = bureau seul / both = les deux / none = aucun',
   'display.web': 'Navigateur seul',
@@ -165,6 +159,16 @@ export const fr: Record<Key, string> = {
   confineToggle: "Limiter à l'écran actuel",
   confineToggleHint:
     "Multi-écrans : une fois activé, le compagnon reste sur l'écran où il se trouve — un compagnon lancé ne rebondit que sur l'écran du relâchement (les jointures d'écrans font office de murs, il ne passe pas sur l'écran voisin) et l'errance autonome ne se fait que sur l'écran actuel (tout pas qui franchirait la jointure est annulé). Désactivé, il traverse les écrans comme d'habitude. Mode bureau uniquement — l'overlay du navigateur reste de toute façon dans la zone visible.",
+  petDisplayPriority: 'Comportement d’affichage',
+  uiThemeLabel: 'Thème de l’application',
+  uiThemeSystem: 'Système',
+  uiThemeLight: 'Clair',
+  uiThemeDark: 'Sombre',
+  priorityAlwaysOnTop: 'Toujours au premier plan',
+  priorityHideFullscreen: 'Masquer en plein écran',
+  priorityHideMaximized: 'Masquer en plein écran ou fenêtre maximisée',
+  priorityNormal: 'Fenêtre normale',
+
   trayToggle: 'Zone de notification',
   trayToggleHint:
     "Affiche une icône dans la zone de notification (barre de menus sur macOS) dès que le mode bureau démarre. Elle liste tous les compagnons de la configuration et permet de basculer chacun entre bureau et web / aucun — y compris ceux qui ne sont pas sur le bureau et n'ont donc aucune fenêtre à cliquer droit. Une fois désactivée, ramener un compagnon sur le bureau exige d'ouvrir le navigateur (la page de configuration, ou un clic droit sur le compagnon web). Windows range déjà ces icônes dans le panneau « icônes masquées ». Mode bureau uniquement.",
@@ -184,6 +188,11 @@ export const fr: Record<Key, string> = {
   voiceNotifyEnabledHint:
     "Lit une réplique d'état de travail configurée quand une tâche se termine, échoue ou attend votre confirmation. Comme les notifications système, elle n'est lue que lorsque vous n'êtes pas sur cette page (autre application, sans focus, réduite) — aucune interruption pendant que vous regardez l'écran. Seule la réplique configurée est lue, jamais le détail de la tâche. Désactivé par défaut.",
   voiceNameLabel: 'Voix',
+  voiceNameHint:
+    "Quelle voix lit le texte. Les voix viennent de l'implémentation de synthèse ; d'autres apparaissent avec une autre implémentation.",
+  speechProviderLabel: 'Reconnaissance vocale',
+  speechProviderHint:
+    "Quelle implémentation transcrit l'enregistrement. Plusieurs options n'apparaissent qu'avec un plugin de saisie vocale installé ; le choix est enregistré et un fournisseur absent échoue au lieu de basculer.",
   voiceVolumeLabel: 'Volume',
   voiceVolumeHint:
     'Volume de lecture en décimal 0–1 : 1 correspond au volume maximal (100 %), 0 coupe le son. Seule l’intensité change et l’audio n’est pas resynthétisé, donc le régler ne coûte rien de plus. Les quatre types de parole partagent ce même volume.',

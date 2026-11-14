@@ -58,10 +58,11 @@ describe('configPathsFor —— 配置路径推导（host/index.ts 那份的镜�
   // 这里钉住"拼接口径"本身，改动时能一眼看出动了哪条路径。
   const paths = configPathsFor('/pkg', '/home/.dsh');
 
-  test('内置默认 / 用户主配置 / 文件宠物目录', () => {
+  test('内置默认 / 用户主配置 / 旧版回落 / 文件宠物目录', () => {
     assert.deepEqual(paths, {
       defaultFile: join('/pkg', 'assets', 'config.jsonc'),
       userFile: join('/home/.dsh', 'dsh-pet', 'main-config.jsonc'),
+      legacyUserFile: join('/home/.dsh', 'dsh-pet', 'main-config.json'),
       petDir: join('/home/.dsh', 'dsh-pet', 'pet'),
     });
   });
@@ -72,10 +73,10 @@ describe('describePets —— 启动横幅与体检报告共用的展示串', ()
     assert.match(describePets([]), /pets 为空/);
   });
 
-  test('id/size/display 原样打印（仅桌面/隐藏）', () => {
-    const text = describePets([{ id: 'main', size: 462, display: 'desktop' }]);
+  test('id/size/display 原样打印（独立模式不替用户判断 display）', () => {
+    const text = describePets([{ id: 'main', size: 462, display: 'both' }]);
     assert.match(text, /main/);
     assert.match(text, /size=462/);
-    assert.match(text, /display=desktop/);
+    assert.match(text, /display=both/);
   });
 });

@@ -29,4 +29,26 @@ describe('toWorkStatus —— sessionId 解析', () => {
   test('空闲快照也带 sessionId: null', () => {
     assert.deepEqual(toWorkStatus({ state: null, task: null }), { state: null, task: null, sessionId: null });
   });
+
+  test('解析多来源快照并丢弃非法 agent', () => {
+    const snapshot = toWorkStatus({
+      state: 'working',
+      task: null,
+      agents: [
+        { key: 'codex:client', state: 'thinking', revision: 2, startedAt: 10, eventAt: 12, sourceName: 'Codex' },
+        { key: 'bad', state: 'unknown', revision: 1, startedAt: 1, eventAt: 1 },
+      ],
+    });
+    assert.deepEqual(snapshot?.agents, [
+      {
+        key: 'codex:client',
+        state: 'thinking',
+        task: null,
+        sourceName: 'Codex',
+        revision: 2,
+        startedAt: 10,
+        eventAt: 12,
+      },
+    ]);
+  });
 });

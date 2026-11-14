@@ -20,13 +20,6 @@ export const ja: Record<Key, string> = {
   globalTitle: 'グローバルスイッチ',
   globalHint:
     'すべてのペットに共通です（pet pack は自身の種類ファイルで個別に上書きできます）。これらのスイッチはローカル状態のみを変更し、「保存」時にまとめてユーザー設定へ書き込みます（即時書き込みはしません）。システム通知の設定は保存後すぐに再読み込みされ、ページの更新は不要です。',
-  displayPriorityLabel: 'ペットウィンドウの表示優先度',
-  displayPriorityHint:
-    'デスクトップモード全体の設定です。Windows は前面の全画面アプリを検出し、最大化モードではそのモニターのペットも隠します。macOS は全画面 Spaces に従い、Linux は他アプリのウィンドウを検出しません。',
-  'displayPriority.always-on-top': '常に最前面',
-  'displayPriority.hide-on-fullscreen': '全画面時に隠す',
-  'displayPriority.hide-on-fullscreen-or-maximized': '全画面または最大化時に隠す',
-  'displayPriority.normal': '通常のウィンドウ階層',
   cornerHint: 'ペットが画面のどの隅に貼り付くかを指定します（デスクトップでは各ディスプレイのワークエリア基準）。',
   marginXHint: '選択した隅からの水平距離（px）。任意の数値が使えます。',
   marginYHint: '選択した隅からの垂直距離（px）。任意の数値が使えます。',
@@ -88,7 +81,8 @@ export const ja: Record<Key, string> = {
   fixedEnabledHint:
     '有効にすると、ランダムアニメーションでペットが方向転換したり歩き去ったりしなくなり、その場の待機とランダムな小さな動作だけを再生します。右クリックメニューからの再生、API トリガー、残高 / ひとりごと / 作業状態のアニメーションには影響しません。',
   horizontalOnly: '横方向のみ移動',
-  horizontalOnlyHint: '自動移動は同じ高さを保ち、傾きも付きません。',
+  horizontalOnlyHint:
+    '有効にすると、自動移動と画面の継ぎ目からの回避で高さを変えません。無効にすると斜め移動できます。',
   displayLabel: '表示位置',
   displayHint: 'web=ブラウザのみ / desktop=デスクトップのみ / both=両方 / none=どちらも非表示',
   'display.web': 'ブラウザのみ',
@@ -162,6 +156,16 @@ export const ja: Record<Key, string> = {
   confineToggle: '現在の画面に固定',
   confineToggleHint:
     'マルチディスプレイの場合：オンにすると、ペットは現在いる画面の中だけで動きます。投げたペットは離したときの画面内でだけ跳ね（画面の境目は壁として扱われ、隣の画面へは飛びません）、自動での徘徊も現在いる画面内だけを歩きます（境目を越える一歩はその場でキャンセル）。オフにすると従来どおり画面をまたいで飛んだり歩いたりします。デスクトップモードのみに影響します。ブラウザのオーバーレイは元々ビューポート内だけで動きます。',
+  petDisplayPriority: '表示方法',
+  uiThemeLabel: 'アプリのテーマ',
+  uiThemeSystem: 'システムに合わせる',
+  uiThemeLight: 'ライト',
+  uiThemeDark: 'ダーク',
+  priorityAlwaysOnTop: '常に最前面',
+  priorityHideFullscreen: '全画面時に隠す',
+  priorityHideMaximized: '全画面または最大化時に隠す',
+  priorityNormal: '通常のウィンドウ',
+
   trayToggle: 'システムトレイ',
   trayToggleHint:
     'デスクトップモード起動後、通知領域（macOS ではメニューバー）にアイコンを常駐させ、設定に含まれるすべてのペットを一覧表示します。チェックを入れると、そのペットの表示位置を切り替えられます——現在デスクトップに表示されておらず、右クリックできるウィンドウがないペットも含みます。オフにすると、ペットをデスクトップに戻すにはブラウザで設定ページを開くか、Web 側のペットを右クリックするしかありません。Windows では元々「隠れたアイコン」に折りたたまれます。デスクトップモードのみに影響します。',
@@ -181,6 +185,10 @@ export const ja: Record<Key, string> = {
   voiceNotifyEnabledHint:
     'タスクの完了・失敗・確認待ちのときに、設定された作業状態のセリフを読み上げます。システム通知と同じ考え方で、このページを見ていないとき（別のアプリに切り替え・フォーカスなし・最小化）にだけ読み上げます——画面を見ている間は邪魔しません。読み上げるのは設定されたセリフだけで、タスクの詳細は読みません。デフォルトはオフです。',
   voiceNameLabel: '声質',
+  voiceNameHint: '読み上げに使う声。声質は音声合成の実装が提供し、別の実装を入れると選択肢が増えます。',
+  speechProviderLabel: '音声認識',
+  speechProviderHint:
+    '録音をどの実装で文字起こしするか。対応する音声入力プラグインを入れたときだけ複数の選択肢が出ます。選んだ値は設定に保存され、見つからない場合は別の実装に切り替えずエラーになります。',
   voiceVolumeLabel: '音量',
   voiceVolumeHint:
     '読み上げの音量（0〜1 の小数）。1 が最大音量（100%）、0 は消音です。変わるのは再生の大きさだけで、音声の再合成は行いません。4種類の音声はこの1つの音量を共有します。',

@@ -56,12 +56,11 @@ Object.assign(PetSprite.prototype, {
     this.moveRef = null;
     this.moveToken = 0;
     this.pendingMove = null;
+    this.gapEscapePending = false;
     this.moveTargets = [];
+    this.needsRelocation = false;
     this.moveTargetId = null;
     this.expectedFinalPosition = null;
-    this.needsRelocation = false;
-    this.moveDestination = null;
-    this.menuInterruptedMove = false;
     this.customPos = null; // 拖拽后的会话内位置（{rx, ry} 比例）；restart 回角落
   },
 
@@ -174,8 +173,14 @@ Object.assign(PetSprite.prototype, {
     this.hit.setAttribute('aria-label', this.pet.name);
     this.bubble = document.createElement('div');
     this.bubble.className = 'pet-bubble';
-    // 气泡点击按当前槽位分流：工作气泡跳会话，余额气泡切页。都就地吞掉事件，别落到下面的本体命中层。
+    // 气泡点击按当前槽位分流：说话气泡戳破、工作气泡跳会话、余额气泡切页。都就地吞掉事件，别落到下面的本体命中层。
     this.bubble.addEventListener('click', (e) => {
+      if (this.whisperClickable()) {
+        e.stopPropagation();
+        e.preventDefault();
+        this.popWhisper();
+        return;
+      }
       if (this.workClickable()) {
         e.stopPropagation();
         e.preventDefault();

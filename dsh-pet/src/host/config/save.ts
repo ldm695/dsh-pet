@@ -58,7 +58,6 @@ export function saveUserConfig(
     // 传了必须是布尔，没传则走下面的读取侧默认值（内置默认 false = 不固定）。
     const fixedEnabled = pp.fixedEnabled;
     if (fixedEnabled !== undefined && typeof fixedEnabled !== 'boolean') return null;
-    // 仅横向漫游：与宠物固定同语义——可选，传了必须是布尔，缺省读取内置默认 false。
     const horizontalOnly = pp.horizontalOnly;
     if (horizontalOnly !== undefined && typeof horizontalOnly !== 'boolean') return null;
     const display = String(pp.display ?? '');
@@ -109,12 +108,15 @@ export function saveUserConfig(
   if (cae !== undefined && typeof cae !== 'boolean') return null;
   const cts = o.confineToScreen;
   if (cts !== undefined && typeof cts !== 'boolean') return null;
-  // 语音播报开关与音色（全局）：与上面几个布尔同语义；音色必须落在白名单内，
+  // 语音播报开关与音色（全局）：与上面几个布尔同语义；音色只验 `provider/音色` 形态，
   // 校验直接复用读取侧的 topFieldValid，读写同一份规则。
   const ve = o.voiceEnabled;
   if (ve !== undefined && typeof ve !== 'boolean') return null;
   const vn = o.voiceName;
   if (vn !== undefined && !topFieldValid('voiceName', vn)) return null;
+  // 识别实现（全局）：只验形态，存在性由 hear 解析时判——配置校验拿不到运行时注册表
+  const sp = o.speechProvider;
+  if (sp !== undefined && !topFieldValid('speechProvider', sp)) return null;
   // 播放音量（全局系数，0–1）：与上面同一套语义——传了必须合法，没传走透传保留。
   const vv = o.voiceVolume;
   if (vv !== undefined && !topFieldValid('voiceVolume', vv)) return null;
@@ -129,8 +131,8 @@ export function saveUserConfig(
   // 系统托盘开关（全局，仅桌面模式）：与上面几个全局布尔同语义——传了必须是布尔，没传走透传保留。
   const te = o.trayEnabled;
   if (te !== undefined && typeof te !== 'boolean') return null;
-  const priority = o.petDisplayPriority;
-  if (priority !== undefined && !topFieldValid('petDisplayPriority', priority)) return null;
+  const pdp = o.petDisplayPriority;
+  if (pdp !== undefined && !topFieldValid('petDisplayPriority', pdp)) return null;
   // physics（拖拽抛掷手感，设置页「物理」区可图形化编辑）：整段校验——physicsValid 与读取侧
   // 是同一份规则（gravity/groundFriction ≥ 0、restitution ∈ [0,1]、throwPower > 0、两个布尔）。
   // 传了就按白名单写入；没传则走下面的透传保留（用户手改的值原样不动）。
@@ -146,6 +148,8 @@ export function saveUserConfig(
   // 校验直接复用读取侧的 fontValid（family 白名单 / size 4~200 / followPet 布尔），读写同一份规则。
   const fo = o.font;
   if (fo !== undefined && !fontValid(fo)) return null;
+  const uiTheme = o.uiTheme;
+  if (uiTheme !== undefined && !topFieldValid('uiTheme', uiTheme)) return null;
   // whisperModel / chatModel（碎碎念 / 对话各自的服务商 + 模型；设置页两个下拉框写的就是它们）：
   // 与 physics 同一套语义——传了就整段校验后进白名单，没传则走下面的透传保留。
   // 落盘时归一化成 { provider, model } 两个 trim 过的字符串（请求体多带的键不写进用户层）。
@@ -187,11 +191,13 @@ export function saveUserConfig(
   if (vwe !== undefined) outConfig.voiceWhisperEnabled = vwe;
   if (vte !== undefined) outConfig.voiceTodoEnabled = vte;
   if (vne !== undefined) outConfig.voiceNotifyEnabled = vne;
+  if (sp !== undefined) outConfig.speechProvider = sp;
   if (te !== undefined) outConfig.trayEnabled = te;
-  if (priority !== undefined) outConfig.petDisplayPriority = priority;
+  if (pdp !== undefined) outConfig.petDisplayPriority = pdp;
   if (ph !== undefined) outConfig.physics = ph;
   if (aw !== undefined) outConfig.animationWeights = cleanWeights(aw as Record<string, unknown>);
   if (fo !== undefined) outConfig.font = fo;
+  if (uiTheme !== undefined) outConfig.uiTheme = uiTheme;
   if (wm !== undefined) outConfig.whisperModel = cleanModel(wm as Record<string, unknown>);
   if (cm !== undefined) outConfig.chatModel = cleanModel(cm as Record<string, unknown>);
   // 数值归一化落盘：请求体传 "9" 也存成 9（与读取侧 topFieldValid 的 Number() 口径一致）
@@ -215,11 +221,13 @@ export function saveUserConfig(
   if (vwe !== undefined) bodyOwned.add('voiceWhisperEnabled');
   if (vte !== undefined) bodyOwned.add('voiceTodoEnabled');
   if (vne !== undefined) bodyOwned.add('voiceNotifyEnabled');
+  if (sp !== undefined) bodyOwned.add('speechProvider');
   if (te !== undefined) bodyOwned.add('trayEnabled');
-  if (priority !== undefined) bodyOwned.add('petDisplayPriority');
+  if (pdp !== undefined) bodyOwned.add('petDisplayPriority');
   if (ph !== undefined) bodyOwned.add('physics');
   if (aw !== undefined) bodyOwned.add('animationWeights');
   if (fo !== undefined) bodyOwned.add('font');
+  if (uiTheme !== undefined) bodyOwned.add('uiTheme');
   if (wm !== undefined) bodyOwned.add('whisperModel');
   if (cm !== undefined) bodyOwned.add('chatModel');
   if (cmr !== undefined) bodyOwned.add('chatMemoryRounds');

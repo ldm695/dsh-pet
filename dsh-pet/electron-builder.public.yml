@@ -1,36 +1,37 @@
-appId: cloud.pc2005.dsh-pet.public
+extends: electron-builder.yml
+appId: cloud.ldm695.dsh-pet.public
 productName: DSH Pet
-electronVersion: 43.3.0
-asar: false
 directories:
-  output: portable-dist/public
+  output: dist-app/public
 extraMetadata:
-  main: desktop-main.cjs
+  main: lib/app.js
   dshPetEdition: public
+  dshPetDisplayName: DSH Pet
+  dshPetAppUserModelId: cloud.ldm695.dsh-pet.public
+  dshPetTrayIcon: logo.png
+  description: DSH Pet 桌面宠物
 files:
-  - desktop-main.cjs
-  - package.json
-  - lib/standalone.js
-  - lib/standalone-settings.js
-  - lib/*.js
-  - runtime/electron-helper/**
-  - assets/config.jsonc
-  - assets/dsh-pet-icon-public.ico
-  - assets/logo-rounded.png
+  - lib/**
+  - runtime/**
   - assets/webm/**
   - assets/fonts/**
   - assets/pic/**
   - assets/memes/**
   - assets/sound/**
-  - node_modules/@electron/get/**
-  - node_modules/@electron-internal/extract-zip/**
-  - '!**/*.map'
-  - '!**/*.test.*'
+  - assets/config.jsonc
+  - assets/logo.png
+  - assets/dsh-pet-icon-public.ico
+  - package.json
+  - from: node_modules/.pnpm/koffi@3.3.3/node_modules/koffi
+    to: node_modules/koffi
+  - from: node_modules/.pnpm/@koromix+koffi-win32-x64@3.3.3/node_modules/@koromix/koffi-win32-x64
+    to: node_modules/@koromix/koffi-win32-x64
+asarUnpack:
+  - node_modules/koffi/**
+  - node_modules/@koromix/koffi-win32-x64/**
 win:
   icon: assets/dsh-pet-icon-public.ico
   target:
-    - target: portable
-      arch:
-        - x64
+    - dir
 portable:
   artifactName: DSH-Pet-${version}-portable.${ext}

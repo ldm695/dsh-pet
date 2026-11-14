@@ -20,13 +20,6 @@ export const pt: Record<Key, string> = {
   globalTitle: 'Interruptores globais',
   globalHint:
     'Compartilhados por todos os pets (um pet pack pode sobrescrevê-los no arquivo do próprio tipo). Estes interruptores só mudam o estado local e são gravados na configuração do usuário ao "Salvar" (nunca na hora); as notificações do sistema são relidas logo após salvar, sem recarregar a página.',
-  displayPriorityLabel: 'Prioridade da janela',
-  displayPriorityHint:
-    'Configuração global do modo desktop. O Windows detecta aplicativos em tela cheia; o modo maximizado também oculta os pets no monitor da janela maximizada. O macOS segue os Spaces em tela cheia; o Linux não detecta janelas de outros aplicativos.',
-  'displayPriority.always-on-top': 'Sempre no topo',
-  'displayPriority.hide-on-fullscreen': 'Ocultar em tela cheia',
-  'displayPriority.hide-on-fullscreen-or-maximized': 'Ocultar em tela cheia ou maximizada',
-  'displayPriority.normal': 'Nível normal da janela',
   cornerHint: 'Em qual canto da tela o pet fica (no desktop, conforme a área de trabalho de cada monitor).',
   marginXHint: 'Distância horizontal até o canto escolhido (px); qualquer número.',
   marginYHint: 'Distância vertical até o canto escolhido (px); qualquer número.',
@@ -88,7 +81,8 @@ export const pt: Record<Key, string> = {
   fixedEnabledHint:
     'Quando ativado, a cadeia aleatória não gira nem afasta mais este pet — só tocam as ações de espera no lugar. Escolhas pelo menu de contexto, gatilhos da API e animações de saldo / sussurro / status de trabalho não são afetadas.',
   horizontalOnly: 'Mover apenas na horizontal',
-  horizontalOnlyHint: 'O movimento automático mantém a mesma altura e não inclina o mascote.',
+  horizontalOnlyHint:
+    'Ativado, o movimento automático e a saída de junções entre ecrãs mantêm a mesma altura. Desative para permitir diagonais.',
   displayLabel: 'Exibição',
   displayHint: 'web = só no navegador / desktop = só no desktop / both = nos dois / none = em nenhum',
   'display.web': 'Só no navegador',
@@ -164,6 +158,16 @@ export const pt: Record<Key, string> = {
   confineToggle: 'Fixar na tela atual',
   confineToggleHint:
     'Vários monitores: quando ligado, o pet fica dentro da tela em que está — um pet arremessado quica só na tela onde foi solto (as emendas entre telas viram paredes, ele não voa para a tela vizinha), e o passeio autônomo só anda dentro da tela atual (o passo que cruzaria a emenda é cancelado). Desligado, ele cruza telas normalmente. Só afeta o modo desktop — o overlay do navegador já fica dentro da viewport.',
+  petDisplayPriority: 'Comportamento de exibição',
+  uiThemeLabel: 'Tema do aplicativo',
+  uiThemeSystem: 'Adaptável',
+  uiThemeLight: 'Claro',
+  uiThemeDark: 'Escuro',
+  priorityAlwaysOnTop: 'Sempre no topo',
+  priorityHideFullscreen: 'Ocultar em tela cheia',
+  priorityHideMaximized: 'Ocultar em tela cheia ou maximizada',
+  priorityNormal: 'Janela normal',
+
   trayToggle: 'Bandeja do sistema',
   trayToggleHint:
     'Mostra um ícone na área de notificação (barra de menus no macOS) quando o modo desktop inicia. Ele lista todos os pets da configuração e alterna a exibição de cada um — inclusive os que estão fora do desktop agora e não têm janela para clicar com o botão direito. Sem ele, para trazer um pet de volta ao desktop é preciso abrir o navegador (a página de configuração, ou clicar com o botão direito no pet na web). O Windows já esconde ícones de terceiros na gaveta "ícones ocultos". Só afeta o modo desktop.',
@@ -183,6 +187,10 @@ export const pt: Record<Key, string> = {
   voiceNotifyEnabledHint:
     'Fala uma frase configurada de estado de trabalho quando uma tarefa termina, falha ou aguarda sua confirmação. Como as notificações do sistema, só fala enquanto você não está nesta página (outro aplicativo, sem foco, minimizado) — sem interromper enquanto você olha para a tela. Só a frase configurada é falada, nunca o detalhe da tarefa. Desligado por padrão.',
   voiceNameLabel: 'Voz',
+  voiceNameHint: 'Qual voz lê o texto. As vozes vêm da implementação de síntese; mais aparecem ao instalar outra.',
+  speechProviderLabel: 'Reconhecimento de voz',
+  speechProviderHint:
+    'Qual implementação transcreve a gravação. Mais de uma opção aparece apenas com o plugin de entrada de voz instalado; a escolha é salva e um provedor ausente falha em vez de trocar sozinho.',
   voiceVolumeLabel: 'Volume',
   voiceVolumeHint:
     'Volume de reprodução em decimal 0–1: 1 é o volume máximo (100%) e 0 silencia. Altera apenas a intensidade e não sintetiza o áudio de novo, então ajustá-lo não custa nada extra. Os quatro tipos de fala compartilham este mesmo volume.',

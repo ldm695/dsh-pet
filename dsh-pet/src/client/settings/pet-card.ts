@@ -113,7 +113,7 @@ export function makePetCard(rt: SettingsRuntime): FunctionComponent<PetCardProps
         h(PositionFields, { pet, busy, onChange: props.onChange }),
 
         h('div', {
-          className: 'dsh-pet-cfg__grid5',
+          className: 'dsh-pet-cfg__grid3',
           children: [
             toggleCell('balanceEnabled', !!pet.balanceEnabled, busy, (v) => props.onChange({ balanceEnabled: v })),
             toggleCell('whisperEnabled', !!pet.whisperEnabled, busy, (v) => props.onChange({ whisperEnabled: v })),
