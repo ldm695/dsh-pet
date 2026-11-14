@@ -44,9 +44,14 @@ interface ElectronApp {
   on(event: 'second-instance', listener: () => void): void;
   on(event: 'will-quit', listener: () => void): void;
 }
-const { app, session } = createRequire(import.meta.url)('electron') as {
+interface ElectronWindow {
+  isDestroyed(): boolean;
+  webContents: { isDestroyed(): boolean; reload(): void };
+}
+const { app, session, BrowserWindow } = createRequire(import.meta.url)('electron') as {
   app: ElectronApp;
   session: { defaultSession: DesktopSession };
+  BrowserWindow: { getAllWindows(): ElectronWindow[] };
 };
 
 /** 包根目录：与 helper-process.ts 的 packageRoot 同一口径（模块所在目录的上一级） */
@@ -134,7 +139,21 @@ async function boot(): Promise<void> {
     authenticatedUrl: security.authenticatedUrl,
   });
 
-  const server = await startRouter(routes, { security, ai, log, status, landingPage });
+  const server = await startRouter(routes, {
+    security,
+    ai,
+    log,
+    status,
+    landingPage,
+    onAiSettingsSaved: () => {
+      // Only pet windows live in this process. Reload them after the settings response has been written.
+      setTimeout(() => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.reload();
+        }
+      }, 100).unref();
+    },
+  });
   port = server.port;
   const origin = `http://127.0.0.1:${port}`;
   log(`本机服务 ${origin}`);

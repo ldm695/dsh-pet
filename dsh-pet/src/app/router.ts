@@ -21,10 +21,9 @@ import {
   type StandaloneServerOptions,
 } from '../standalone/server.ts';
 import { sendIcon } from '../standalone/server/respond.ts';
-import { readChatPanelScript } from '../standalone/chat-panel-asset.ts';
-import { readPetConfigScript } from '../standalone/pet-config-asset.ts';
+import { readSettingsAppScript } from '../standalone/settings-app-asset.ts';
 import { readSettingsIcon } from '../standalone/icon.ts';
-import { settingsPage, settingsScript, standaloneSettingsStyle } from '../standalone/settings-page.ts';
+import { settingsPage, standaloneSettingsStyle } from '../standalone/settings-page.ts';
 
 /** 路由依赖：安全校验、AI 处理器与两个页面的数据源，全部注入以脱离 Electron 测试。 */
 interface RouterDeps {
@@ -33,10 +32,10 @@ interface RouterDeps {
   log(message: string): void;
   status(port: number): unknown;
   landingPage(port: number): string;
-  /** 对话面板脚本来源；缺省读包内 `lib/chat-panel.js`，测试可注入。 */
-  chatPanelScript?: () => string | undefined;
-  /** 桌宠配置 React 脚本来源；缺省读包内 `lib/pet-config.js`，测试可注入。 */
-  petConfigScript?: () => string | undefined;
+  /** 完整 React 设置应用脚本来源；测试可注入。 */
+  settingsAppScript?: () => string | undefined;
+  /** Reload desktop pet renderers after an AI settings save so menu capabilities refresh immediately. */
+  onAiSettingsSaved?: () => void;
 }
 
 /**
@@ -49,8 +48,7 @@ export function startRouter(
   deps: RouterDeps,
 ): Promise<{ port: number; close: () => Promise<void> }> {
   const settings = settingsHandler(deps.ai);
-  const chatPanelScript = deps.chatPanelScript ?? readChatPanelScript;
-  const petConfigScript = deps.petConfigScript ?? readPetConfigScript;
+  const settingsAppScript = deps.settingsAppScript ?? readSettingsAppScript;
   const tester = testHandler(deps.ai);
   const models = modelsHandler(deps.ai);
   const balance = balanceHandler(deps.ai);
@@ -88,7 +86,6 @@ export function startRouter(
     const dispatch = async (request: IncomingMessage): Promise<void> => {
       const assets: Record<string, readonly [string, string]> = {
         '/standalone-ai/': [settingsPage, 'text/html'],
-        '/standalone-ai/settings.js': [settingsScript, 'text/javascript'],
         '/standalone-ai/settings.css': [standaloneSettingsStyle, 'text/css'],
       };
       if (url.pathname === '/standalone-ai/icon.png') {
@@ -104,31 +101,17 @@ export function startRouter(
         sendIcon(res, icon);
         return;
       }
-      if (url.pathname === '/standalone-ai/chat-panel.js') {
+      if (url.pathname === '/standalone-ai/settings.js') {
         if (method !== 'GET' && method !== 'HEAD') {
           rejectRequest(res, 405, '仅支持 GET');
           return;
         }
-        // 与 CLI 侧共用同一份产物：设置页固定引用它，打包应用里缺这条路由会让对话区空白。
-        const chatPanel = chatPanelScript();
-        if (chatPanel === undefined) {
-          rejectRequest(res, 404, '对话面板脚本缺失，请重新构建（npm run bundle）');
+        const appScript = settingsAppScript();
+        if (appScript === undefined) {
+          rejectRequest(res, 404, 'React 设置页面脚本缺失，请重新构建（npm run bundle）');
           return;
         }
-        sendText(res, 200, 'text/javascript', chatPanel);
-        return;
-      }
-      if (url.pathname === '/standalone-ai/pet-config.js') {
-        if (method !== 'GET' && method !== 'HEAD') {
-          rejectRequest(res, 405, '仅支持 GET');
-          return;
-        }
-        const petConfig = petConfigScript();
-        if (petConfig === undefined) {
-          rejectRequest(res, 404, '桌宠设置脚本缺失，请重新构建（npm run bundle）');
-          return;
-        }
-        sendText(res, 200, 'text/javascript', petConfig);
+        sendText(res, 200, 'text/javascript', appScript);
         return;
       }
       const asset = assets[url.pathname];
@@ -146,6 +129,9 @@ export function startRouter(
       const aiHandler = aiRoutes[url.pathname];
       if (aiHandler) {
         await aiHandler(request, res);
+        if (url.pathname === '/standalone-ai/settings' && method === 'POST' && res.statusCode === 200) {
+          deps.onAiSettingsSaved?.();
+        }
         return;
       }
       if (!route) {

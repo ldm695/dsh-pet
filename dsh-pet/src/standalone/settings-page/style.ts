@@ -3,7 +3,7 @@
  *
  * 令牌值取自 dsh-client-ui-theme 与 dsh-client-ui-settings-general 的浅色主题，
  * 名字保持 `--dsw-*` 原样，改版时能对着上游逐项核对。
- * 不内联样式、不引 CDN：页面 CSP 是 default-src 'none'。
+ * 样式表由同源资源提供，不引 CDN；少量 React 布局属性由 CSP 的 style-src inline 支持。
  * @module dsh-pet/src/standalone/settings-page/style
  */
 import { PANEL_CSS } from '../../client/chat/panel-css.ts';
@@ -94,6 +94,8 @@ a{color:var(--dsw-static-blue-500)}
 .field{margin:12px 0 0}
 .field>label,.fieldLabel{display:block;margin:0 0 6px;font-size:13px;font-weight:500;color:var(--dsw-alias-label-secondary)}
 .fieldHint{margin:6px 0 0;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-tertiary)}
+.row{display:flex;gap:8px;align-items:center}
+.row>input{flex:1;min-width:0}
 input[type=text],input[type=url],input[type=password],input[type=number],select,textarea{display:block;width:100%;min-height:36px;padding:7px 10px;border:1px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:inherit;font-size:14px}
 textarea{min-height:72px;resize:vertical;line-height:1.6}
 input:hover,select:hover,textarea:hover{border-color:var(--dsw-static-neutral-bluish-300)}
@@ -171,6 +173,8 @@ input:disabled,select:disabled,textarea:disabled{background:var(--dsw-static-neu
 .btn.danger{background:var(--dsw-static-red-500);border-color:transparent;color:#fff}
 .btn.danger:hover{opacity:.9}
 .petBar .select{flex:1;min-width:0}
+.standalone-pet-settings{max-width:720px!important}
+.checkHint{display:block;margin-top:3px}
 .empty{padding:16px 0;font-size:13px;color:var(--dsw-alias-label-tertiary)}
 @media(max-width:767px){
   .shell{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}

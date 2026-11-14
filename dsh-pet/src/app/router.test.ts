@@ -9,8 +9,9 @@ import { startRouter } from './router.ts';
 async function start(
   routes: RegisteredRoute[] = [],
   log: (message: string) => void = () => {},
-  chatPanelScript?: () => string | undefined,
-  petConfigScript?: () => string | undefined,
+  settingsAppScript?: () => string | undefined,
+  onAiSettingsSaved?: () => void,
+  ai?: import('../standalone/server.ts').StandaloneServerOptions['ai'],
 ) {
   const security = createRequestSecurity();
   const server = await startRouter(routes, {
@@ -18,8 +19,9 @@ async function start(
     log,
     status: (port) => ({ audit: true, port }),
     landingPage: () => '<html>local app</html>',
-    ...(chatPanelScript ? { chatPanelScript } : {}),
-    ...(petConfigScript ? { petConfigScript } : {}),
+    ...(settingsAppScript ? { settingsAppScript } : {}),
+    ...(onAiSettingsSaved ? { onAiSettingsSaved } : {}),
+    ...(ai ? { ai } : {}),
   });
   return { ...server, security, base: `http://127.0.0.1:${server.port}` };
 }
@@ -170,15 +172,15 @@ test('app caps request bodies before plugins/settings and catches synchronous an
   }
 });
 
-test('设置页对话面板脚本：有产物时由 app 路由提供 → 200 且类型与内容正确', async () => {
-  const script = 'window.__CHAT_PANEL__ = 1;';
+test('设置页 React 应用脚本：有产物时由 app 路由提供 → 200 且类型与内容正确', async () => {
+  const script = 'window.__SETTINGS_APP__ = 1;';
   const server = await start(
     [],
     () => {},
     () => script,
   );
   try {
-    const response = await fetch(server.base + '/standalone-ai/chat-panel.js');
+    const response = await fetch(server.base + '/standalone-ai/settings.js');
     assert.equal(response.status, 200);
     assert.match(response.headers.get('content-type') ?? '', /^text\/javascript/);
     assert.equal(await response.text(), script);
@@ -187,14 +189,14 @@ test('设置页对话面板脚本：有产物时由 app 路由提供 → 200 且
   }
 });
 
-test('设置页对话面板脚本：产物缺失时 → 404 并提示重新构建，而不是静默回空脚本', async () => {
+test('设置页 React 应用脚本缺失时 → 404 并提示重新构建', async () => {
   const server = await start(
     [],
     () => {},
     () => undefined,
   );
   try {
-    const response = await fetch(server.base + '/standalone-ai/chat-panel.js');
+    const response = await fetch(server.base + '/standalone-ai/settings.js');
     assert.equal(response.status, 404);
     assert.match(await response.text(), /重新构建/);
   } finally {
@@ -202,34 +204,52 @@ test('设置页对话面板脚本：产物缺失时 → 404 并提示重新构�
   }
 });
 
-test('设置页桌宠配置 React 脚本：通过 app 静态路由提供', async () => {
+test('AI 设置只在成功保存后触发桌宠窗口重载回调', async () => {
+  let reloads = 0;
+  const ai = {
+    getSettings: () => ({
+      protocol: 'openai-compatible',
+      baseUrl: '',
+      model: '',
+      balanceProvider: '',
+      chatEnabled: true,
+    }),
+    saveSettings: async () => ({
+      protocol: 'openai-compatible',
+      baseUrl: '',
+      model: '',
+      balanceProvider: '',
+      chatEnabled: true,
+    }),
+  };
   const server = await start(
     [],
     () => {},
     undefined,
-    () => 'window.__PET_CONFIG__ = 1;',
+    () => {
+      reloads += 1;
+    },
+    ai,
   );
   try {
-    const response = await fetch(server.base + '/standalone-ai/pet-config.js');
-    assert.equal(response.status, 200);
-    assert.match(response.headers.get('content-type') ?? '', /^text\/javascript/);
-    assert.equal(await response.text(), 'window.__PET_CONFIG__ = 1;');
-  } finally {
-    await server.close();
-  }
-});
-
-test('设置页桌宠配置 React 脚本缺失时明确返回 404', async () => {
-  const server = await start(
-    [],
-    () => {},
-    undefined,
-    () => undefined,
-  );
-  try {
-    const response = await fetch(server.base + '/standalone-ai/pet-config.js');
-    assert.equal(response.status, 404);
-    assert.match(await response.text(), /重新构建/);
+    const headers = {
+      'X-DSH-Pet-Token': server.security.token,
+      'Content-Type': 'application/json',
+    };
+    const invalid = await fetch(server.base + '/standalone-ai/settings', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ protocol: 'invalid' }),
+    });
+    assert.equal(invalid.status, 400, '校验失败时不会触发重载');
+    assert.equal(reloads, 0);
+    const saved = await fetch(server.base + '/standalone-ai/settings', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ protocol: 'openai-compatible', baseUrl: 'https://example.test/v1', model: 'model' }),
+    });
+    assert.equal(saved.status, 200);
+    assert.equal(reloads, 1);
   } finally {
     await server.close();
   }

@@ -16,6 +16,8 @@ export interface SettingsRuntime {
   useEffect: (effect: ReactNS.EffectCallback, deps?: ReactNS.DependencyList) => void;
   useRef: <T>(initial: T) => ReactNS.MutableRefObject<T>;
   useCallback: typeof ReactNS.useCallback;
+  /** Standalone page links the shared stylesheet under a strict CSP instead of injecting a style element. */
+  stylesInjected?: boolean;
   /** 文案翻译；键取自本页字典的 `zh`。 */
   t: (key: string) => string;
 }

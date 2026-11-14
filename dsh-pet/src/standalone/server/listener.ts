@@ -8,9 +8,8 @@
 import { createRequestSecurity, rejectRequest, secureResponse, type RequestSecurity } from '../request-security.ts';
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
-import { settingsPage, settingsScript, standaloneSettingsStyle } from '../settings-page.ts';
-import { readChatPanelScript } from '../chat-panel-asset.ts';
-import { readPetConfigScript } from '../pet-config-asset.ts';
+import { settingsPage, standaloneSettingsStyle } from '../settings-page.ts';
+import { readSettingsAppScript } from '../settings-app-asset.ts';
 import { readSettingsIcon } from '../icon.ts';
 import { MAX_REQUEST_BYTES, MAX_SETTINGS_BYTES, boundedRequest } from '../request-body.ts';
 import { type StandaloneLogger } from '../context.ts';
@@ -65,7 +64,6 @@ function dispatch(
     }
     const assets: Record<string, readonly [string, string]> = {
       '/standalone-ai/': [settingsPage, 'text/html'],
-      '/standalone-ai/settings.js': [settingsScript, 'text/javascript'],
       '/standalone-ai/settings.css': [standaloneSettingsStyle, 'text/css'],
     };
     if (pathname === '/standalone-ai/icon.png') {
@@ -81,31 +79,17 @@ function dispatch(
       sendIcon(res, icon);
       return;
     }
-    if (pathname === '/standalone-ai/chat-panel.js') {
+    if (pathname === '/standalone-ai/settings.js') {
       if (method !== 'GET' && method !== 'HEAD') {
         rejectRequest(res, 405, '仅支持 GET');
         return;
       }
-      // 构建产物随包发布；缺失只可能是没跑 bundle，明确回 404 而不是给空脚本。
-      const chatPanel = readChatPanelScript();
-      if (chatPanel === undefined) {
-        rejectRequest(res, 404, '对话面板脚本缺失，请重新构建（npm run bundle）');
+      const appScript = readSettingsAppScript();
+      if (appScript === undefined) {
+        rejectRequest(res, 404, 'React 设置页面脚本缺失，请重新构建（npm run bundle）');
         return;
       }
-      sendAsset(res, chatPanel, 'text/javascript');
-      return;
-    }
-    if (pathname === '/standalone-ai/pet-config.js') {
-      if (method !== 'GET' && method !== 'HEAD') {
-        rejectRequest(res, 405, '仅支持 GET');
-        return;
-      }
-      const petConfig = readPetConfigScript();
-      if (petConfig === undefined) {
-        rejectRequest(res, 404, '桌宠设置脚本缺失，请重新构建（npm run bundle）');
-        return;
-      }
-      sendAsset(res, petConfig, 'text/javascript');
+      sendAsset(res, appScript, 'text/javascript');
       return;
     }
     const asset = assets[pathname];
