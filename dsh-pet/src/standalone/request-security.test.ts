@@ -158,7 +158,6 @@ test('only minimal health, settings shell and known media GET are public; public
     '/health',
     '/standalone-ai/',
     '/standalone-ai/settings.js',
-    '/standalone-ai/pet-config.js',
     '/dsh-pet-7340/thumb/main/idle.webm',
     '/dsh-pet-7340/pic/memes/main/a.png',
   ]) {

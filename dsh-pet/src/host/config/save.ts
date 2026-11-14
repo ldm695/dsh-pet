@@ -117,6 +117,10 @@ export function saveUserConfig(
   // 识别实现（全局）：只验形态，存在性由 hear 解析时判——配置校验拿不到运行时注册表
   const sp = o.speechProvider;
   if (sp !== undefined && !topFieldValid('speechProvider', sp)) return null;
+  // 天气城市覆盖（全局，只读 main）：空串是有效值（= 跟随 IP 自动定位），
+  // 因此这里与其它可选字段不同——判的是 undefined 而不是真值，清空输入框必须能写回空串。
+  const ec = o.environmentCity;
+  if (ec !== undefined && !topFieldValid('environmentCity', ec)) return null;
   // 播放音量（全局系数，0–1）：与上面同一套语义——传了必须合法，没传走透传保留。
   const vv = o.voiceVolume;
   if (vv !== undefined && !topFieldValid('voiceVolume', vv)) return null;
@@ -192,6 +196,7 @@ export function saveUserConfig(
   if (vte !== undefined) outConfig.voiceTodoEnabled = vte;
   if (vne !== undefined) outConfig.voiceNotifyEnabled = vne;
   if (sp !== undefined) outConfig.speechProvider = sp;
+  if (ec !== undefined) outConfig.environmentCity = String(ec).trim();
   if (te !== undefined) outConfig.trayEnabled = te;
   if (pdp !== undefined) outConfig.petDisplayPriority = pdp;
   if (ph !== undefined) outConfig.physics = ph;
@@ -222,6 +227,7 @@ export function saveUserConfig(
   if (vte !== undefined) bodyOwned.add('voiceTodoEnabled');
   if (vne !== undefined) bodyOwned.add('voiceNotifyEnabled');
   if (sp !== undefined) bodyOwned.add('speechProvider');
+  if (ec !== undefined) bodyOwned.add('environmentCity');
   if (te !== undefined) bodyOwned.add('trayEnabled');
   if (pdp !== undefined) bodyOwned.add('petDisplayPriority');
   if (ph !== undefined) bodyOwned.add('physics');

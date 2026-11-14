@@ -25,7 +25,7 @@ export function sendJson(res: ServerResponse, status: number, body: unknown, cor
   res.end(payload);
 }
 
-/** 回静态资源，附带只允许同源脚本、样式与同源 blob 图片的 CSP。 */
+/** 回静态资源，附带同源脚本与资源 CSP；React 配置卡片需要动态样式属性。 */
 export function sendAsset(res: ServerResponse, body: string, type: string): void {
   res.writeHead(200, {
     'content-type': `${type}; charset=utf-8`,
@@ -36,7 +36,7 @@ export function sendAsset(res: ServerResponse, body: string, type: string): void
     // base-uri 取 'self'：设置页要用 <base href="/"> 把文档基准纠正到站点根，插件路由在根下而不在
     // /standalone-ai/ 目录里；仍限定同源，外部 base 一律不允许。
     'content-security-policy':
-      "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src 'self' blob:; connect-src 'self'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'",
+      "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob:; media-src 'self' blob:; connect-src 'self'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'",
     'x-frame-options': 'DENY',
   });
   res.end(body);

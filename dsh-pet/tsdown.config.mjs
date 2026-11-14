@@ -118,8 +118,7 @@ export default defineConfig([
     platform: 'browser',
     target: 'es2020',
     entry: {
-      'chat-panel': 'src/standalone/settings-page/chat-mount.ts',
-      'pet-config': 'src/standalone/settings-page/pet-config-mount.ts',
+      'settings-app': 'src/standalone/settings-page/settings-app-mount.ts',
     },
     noExternal: [/^react(\/|$)/, /^react-dom(\/|$)/],
     external: [/^node:/],
