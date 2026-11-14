@@ -6,11 +6,11 @@
  */
 /** thumb 画布高度。 */
 export const CANVAS_H = 360;
-/** thumb 画布上「脚底」的 y 坐标（人物站在 y=330 线上） */
+/** thumb 画布上脚底的 y 坐标（人物站在 y=330 线上）。 */
 export const FEET_Y = 330;
-/** 点击/拖拽命中矩形（thumb 640×360 像素坐标） */
+/** 点击与拖拽的命中矩形（thumb 640×360 像素坐标）。 */
 export const HIT_BOX = { x0: 200, y0: 50, x1: 440, y1: 335 };
-/** 拖拽判定阈值（px） */
+/** 拖拽判定阈值（px）。 */
 export const DRAG_THRESHOLD = 5;
 /** 越界摆放的可见下限（px）：命中区至少留这么多在可视区内，右键才点得到。
  *  网页端由 clampReachableBox 在提交位置时夹取，桌面端由窗口落位按同一条规则留边界。 */
@@ -18,8 +18,8 @@ export const MIN_REACHABLE_PX = 24;
 /** 弹弓窗口（ms）：两次按下之间的间隔小于它即按弹弓算，与这次拖了多久、何时松手无关。
  *  只认左键，没有待拉状态（换算见 physics.ts）。 */
 export const SLINGSHOT_DOUBLE_MS = 200;
-/** 移动距离缩放基准（px）：config.jsonc 的 moves.minDist/maxDist 是「基准宠物宽 462px」下的绝对像素，
- *  运行时乘以 实际size/基准 等比缩放 —— 任何缩放下，行进距离与人物自身大小成比例（小宠物挪小步、大宠物挪大步） */
+/** 移动距离的缩放基准（px）：配置里的 minDist/maxDist 是基准宠物宽 462px 下的像素，
+ *  运行时按「实际 size / 基准」等比缩放，任何缩放下行进距离都与人物自身大小成比例。 */
 export const PET_REF_WIDTH = 462;
 
 /**

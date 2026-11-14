@@ -12,8 +12,8 @@
 /** 设置页 HTML。 */
 export const settingsPage = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><base href="/"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>桌宠设置</title><link rel="icon" type="image/png" href="/standalone-ai/icon.png"><link rel="stylesheet" href="/standalone-ai/settings.css">
-<script src="/standalone-ai/settings.js" defer></script><script src="/standalone-ai/chat-panel.js" defer></script></head><body>
+<title>桌宠设置</title><link rel="icon" type="image/png" href="/standalone-ai/icon.png"><link rel="stylesheet" href="/standalone-ai/settings.css" data-dsh-pet-settings-css>
+<script src="/standalone-ai/pet-config.js" defer></script><script src="/standalone-ai/settings.js" defer></script><script src="/standalone-ai/chat-panel.js" defer></script></head><body>
 <main class="shell">
 <aside class="side">
 <div class="brand"><img class="brandLogo" src="/standalone-ai/icon.png" alt=""><span>桌宠</span></div>
@@ -35,7 +35,7 @@ export const settingsPage = `<!doctype html>
 <div class="testRow"><button class="btn ghost" id="migration-recovery-open" type="button">打开原配置文件夹</button><button class="btn danger" id="migration-recovery-restore" type="button">还原原配置</button><span class="status" id="migration-recovery-status" role="status" aria-live="polite"></span></div>
 </section>
 <div id="pet-cards"><p class="empty">正在读取本机配置…</p></div>
-<div class="footer"><p class="status" id="pet-status" role="status" aria-live="polite"></p><button class="btn primary" id="pet-save" type="button" disabled>保存</button></div>
+<div class="footer" id="legacy-pet-footer"><p class="status" id="pet-status" role="status" aria-live="polite"></p><button class="btn primary" id="pet-save" type="button" disabled>保存</button></div>
 <form id="settings" aria-describedby="privacy">
 <div class="card"><div class="cardHead"><h2 class="cardTitle">模型连接</h2></div>
 <p class="cardHint">独立模式自己连服务商，不经过 DSH；所有配置只保存在当前机器。</p>
@@ -43,8 +43,16 @@ export const settingsPage = `<!doctype html>
 <div class="field"><label for="baseUrl">接口地址（Base URL）</label><input id="baseUrl" name="baseUrl" type="url" placeholder="https://example.com/v1" maxlength="2048" spellcheck="false" aria-describedby="endpoint-note"><p class="fieldHint" id="endpoint-note">服务商提供的基础接口地址，支持 HTTP 与 HTTPS，通常以 /v1 结尾。不要把密钥放进地址。</p></div>
 <div class="field"><label for="model">模型名称</label><div class="combo" id="model-combo"><input id="model" name="model" type="text" maxlength="200" placeholder="填写或拉取服务商的模型 ID，例如 deepseek-chat" spellcheck="false" aria-describedby="model-note"><button id="model-toggle" class="comboToggle" type="button" aria-label="拉取并选择模型" aria-haspopup="listbox" aria-expanded="false"></button></div><p class="fieldHint" id="model-note">可以直接手填；点右侧箭头向端点拉取可用列表后选择。拉取只用本次填写的地址与密钥，不会保存。</p><p class="status" id="model-result" role="status" aria-live="polite"></p></div>
 <div class="field"><label for="apiKey">API 密钥 <span class="hintInline" id="key-state">尚未读取</span></label><input id="apiKey" name="apiKey" type="password" autocomplete="new-password" maxlength="8192" placeholder="留空保留已保存的密钥" aria-describedby="key-note"><div class="keyActions" id="key-actions" hidden><button id="key-delete" class="btn ghost" type="button">删除已保存的密钥</button></div><p id="key-note" class="fieldHint">密钥只写入本机配置，不会回显。留空会保留旧密钥，要彻底删除请点上面的按钮。</p></div>
+<div class="field"><label for="deepseekApiKey">DeepSeek 语音密钥 <span class="hintInline" id="deepseek-key-state">尚未读取</span></label><input id="deepseekApiKey" name="deepseekApiKey" type="password" autocomplete="new-password" maxlength="4096" placeholder="留空保留已保存的密钥" aria-describedby="deepseek-key-note"><div class="keyActions" id="deepseek-key-actions" hidden><button id="deepseek-key-delete" class="btn ghost" type="button">删除已保存的语音密钥</button></div><p id="deepseek-key-note" class="fieldHint">只给 DeepSeek 语音合成与识别用，和上面的对话密钥分开存——对话走别家服务商时也能单独用 DeepSeek 语音。留空则依次沿用「余额选 DeepSeek 时的那把密钥」。</p></div>
 <div class="field"><span class="fieldLabel" id="balance-provider-label">余额查询服务商</span><div id="balance-provider-host"></div><p class="fieldHint" id="balance-provider-note">可选：选定后可用上面保存的密钥查询余额，不选则不查询。余额接口只有 DeepSeek 官方、opencode Go 与 commandcode 提供，且密钥必须属于所选服务商。</p><div class="testRow"><button id="balance-btn" class="btn ghost" type="button" disabled>查询余额</button><span id="balance-result" class="status" role="status" aria-live="polite"></span></div></div>
 <div class="testRow"><button id="test-btn" class="btn" type="button">测试连接</button><span id="test-result" class="status" role="status" aria-live="polite"></span></div>
+<label class="checkRow"><input id="chatEnabled" name="chatEnabled" type="checkbox"><span>启用 AI 对话</span></label>
+</div>
+<div class="card"><div class="cardHead"><h2 class="cardTitle">定时自动碎碎念</h2></div>
+<label class="checkRow"><input id="automaticWhispers" name="automaticWhispers" type="checkbox"><span>开启自动碎碎念</span></label>
+<p class="fieldHint">开启后，桌宠按各自配置的间隔调用模型生成气泡；手动触发不受此开关限制。</p>
+<label class="checkRow"><input id="whispersOnlyOffPeak" name="whispersOnlyOffPeak" type="checkbox"><span>仅在谷价时执行碎碎念</span></label>
+<p class="fieldHint" id="off-peak-note">此规则使用北京时间：工作日 09:00–12:00、14:00–18:00 为峰价，其余时段及周末为谷价；只控制自动碎碎念。</p>
 </div>
 <p id="privacy" class="fineprint">所有配置与密钥仅保存在当前机器。</p>
 <div class="footer"><p class="status" id="status" role="status" aria-live="polite">正在读取本机设置…</p><button id="save" class="btn primary" type="submit" disabled>保存</button></div>

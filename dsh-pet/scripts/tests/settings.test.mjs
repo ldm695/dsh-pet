@@ -13,7 +13,8 @@ const pet = {
   id: 'pet-1',
   name: 'Blue',
   size: 240,
-  display: 'desktop',
+  assetRoot: 'main',
+  display: 'web',
   position: { corner: 'top-right', marginX: 20, marginY: 20 },
 };
 const defaults = {
@@ -23,9 +24,6 @@ const defaults = {
     whisperImageEnabled: false,
     chatImageEnabled: false,
     confineToScreen: false,
-    trayEnabled: true,
-    petDisplayPriority: 'always-on-top',
-    uiTheme: 'system',
     physics: {
       gravity: 2400,
       restitution: 0.6,
@@ -33,7 +31,14 @@ const defaults = {
       throwPower: 1,
       ceilingBounce: false,
       petCollision: false,
+      hapticEnabled: true,
+      tiltGravity: true,
+      shakeThrow: true,
     },
+    whisperModel: { provider: '', model: '' },
+    chatModel: { provider: '', model: '' },
+    chatMemoryRounds: 5,
+    chatImageLimit: 10,
   },
 };
 const customized = {
@@ -43,9 +48,10 @@ const customized = {
     whisperImageEnabled: true,
     chatImageEnabled: true,
     confineToScreen: true,
-    trayEnabled: false,
-    petDisplayPriority: 'hide-on-fullscreen',
-    uiTheme: 'dark',
+    chatMemoryRounds: 19,
+    chatImageLimit: 2,
+    whisperModel: { provider: 'test', model: 'model' },
+    chatModel: { provider: 'test', model: 'model' },
     physics: { ...defaults.main.physics, gravity: 1200, throwPower: 2, ceilingBounce: true, petCollision: true },
   },
 };
@@ -66,7 +72,7 @@ before(async () => {
     }
     res.setHeader('content-type', 'text/html; charset=utf-8');
     res.end(
-      `<html><head><style>:root{--dsw-alias-bg-layer-1:#fff;--dsw-alias-label-primary:#202020;--dsw-alias-label-secondary:#444;--dsw-alias-label-tertiary:#666;--dsw-alias-border-l2:#bbb;--dsw-alias-state-business-primary:#245eea;--dsw-alias-button-info-fill:#245eea;--dsw-alias-state-error-primary:#c22}body{margin:16px;font-family:sans-serif}</style></head><body><div id="root"></div><script>window.initialConfig=${JSON.stringify(defaults)};</script><script src="/fixture.js"></script></body></html>`,
+      `<html><head><style>:root{--dsw-alias-bg-layer-1:#fff;--dsw-alias-label-primary:#202020;--dsw-alias-label-secondary:#444;--dsw-alias-label-tertiary:#666;--dsw-alias-border-l2:#bbb;--dsw-alias-state-business-primary:#245eea;--dsw-alias-button-info-fill:#245eea;--dsw-alias-state-error-primary:#c22}html,body{height:100%;margin:0;font-family:sans-serif}#scroll{height:100%;overflow:auto}#root{padding:16px}</style></head><body><div id="scroll"><div id="root"></div></div><script>window.initialConfig=${JSON.stringify(defaults)};</script><script src="/fixture.js"></script></body></html>`,
     );
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -78,7 +84,7 @@ after(async () => {
   if (server) await new Promise((resolve) => server.close(resolve));
 });
 
-async function open(t, { get = customized, viewport = { width: 900, height: 900 }, lang = 'en' } = {}) {
+async function open(t, { get = customized, put, post, viewport = { width: 900, height: 900 }, lang = 'en' } = {}) {
   const context = await browser.newContext({ viewport });
   t.after(() => context.close());
   const page = await context.newPage();
@@ -92,9 +98,10 @@ async function open(t, { get = customized, viewport = { width: 900, height: 900 
     if (new URL(request.url()).pathname === '/dsh-pet-7340/config') {
       if (request.method() === 'PUT') {
         writes.push(request.postDataJSON());
+        if (put) return put(route);
         return route.fulfill({ json: customized });
       }
-      if (request.method() === 'POST') return route.fulfill({ json: defaults });
+      if (request.method() === 'POST') return post ? post(route) : route.fulfill({ json: defaults });
       if (typeof get === 'function') return get(route);
       return route.fulfill({ json: get });
     }
@@ -119,9 +126,71 @@ async function open(t, { get = customized, viewport = { width: 900, height: 900 
 async function save(page) {
   await Promise.all([
     page.waitForResponse((response) => response.request().method() === 'PUT'),
-    page.getByRole('button', { name: 'Save settings', exact: true }).click(),
+    page.getByRole('button', { name: 'Save', exact: true }).first().click(),
   ]);
 }
+
+test('config save errors: write failures keep edits visible and allow a retry', async (t) => {
+  let attempts = 0;
+  const { page, writes } = await open(t, {
+    put: (route) =>
+      ++attempts === 1
+        ? route.fulfill({ status: 500, json: { error: 'failed to save config' } })
+        : route.fulfill({ json: customized }),
+  });
+  const size = page.locator('input[type="number"]').first();
+  await page.getByRole('button', { name: 'Save', exact: true }).first().waitFor({ state: 'visible' });
+  await size.fill('320');
+  await save(page);
+  await page
+    .getByText(
+      'Failed to save config. Check the server connection, configuration directory write permissions and server log.',
+      { exact: true },
+    )
+    .first()
+    .waitFor();
+  assert.equal(await page.getByText('Failed to load config', { exact: true }).count(), 0);
+  assert.equal(await size.inputValue(), '320');
+  await save(page);
+  await page.getByText('Saved — the pets updated instantly.', { exact: true }).first().waitFor();
+  assert.equal(writes[1].pets[0].size, 320);
+});
+
+test('config save errors: validation failures explain the rejected configuration', async (t) => {
+  const { page } = await open(t, {
+    put: (route) => route.fulfill({ json: { ok: false, reason: 'bad-request' } }),
+  });
+  await save(page);
+  await page
+    .getByText('Failed to save config: invalid configuration. Check the values and try again.', { exact: true })
+    .first()
+    .waitFor();
+});
+
+test('config save errors: network failures display a save error and release the button', async (t) => {
+  const { page } = await open(t, { put: (route) => route.abort('failed') });
+  await page.getByRole('button', { name: 'Save', exact: true }).first().click();
+  await page
+    .getByText(
+      'Failed to save config. Check the server connection, configuration directory write permissions and server log.',
+      { exact: true },
+    )
+    .first()
+    .waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Save', exact: true }).first().isEnabled(), true);
+});
+
+test('config save errors: sync failures use the sync message', async (t) => {
+  const { page } = await open(t, { post: (route) => route.fulfill({ status: 500, json: { error: 'write failed' } }) });
+  await page.getByRole('button', { name: 'Sync', exact: true }).click();
+  await page.getByRole('button', { name: 'Sync', exact: true }).last().click();
+  await page
+    .getByText('Failed to sync config. Check the server connection and configuration directory write permissions.', {
+      exact: true,
+    })
+    .first()
+    .waitFor();
+});
 
 test('pending config prevents editing and saving placeholder defaults', async (t) => {
   let release;
@@ -135,7 +204,7 @@ test('pending config prevents editing and saving placeholder defaults', async (t
     },
   });
   try {
-    assert.equal(await page.locator('.dsh-pet-cfg__btn.is-primary').isDisabled(), true);
+    assert.equal(await page.getByRole('button', { name: 'Save', exact: true }).first().isDisabled(), true);
     assert.equal(await page.locator('input[type=text]').first().isDisabled(), true);
     assert.deepEqual(writes, []);
   } finally {
@@ -157,7 +226,7 @@ for (const failure of ['http', 'network', 'malformed', 'null']) {
               ),
     });
     await page.getByRole('alert').waitFor();
-    assert.equal(await page.locator('.dsh-pet-cfg__btn.is-primary').isDisabled(), true);
+    assert.equal(await page.getByRole('button', { name: 'Save', exact: true }).first().isDisabled(), true);
     assert.deepEqual(writes, []);
     fail = false;
     await page.getByRole('button', { name: 'Retry', exact: true }).click();
@@ -167,12 +236,12 @@ for (const failure of ['http', 'network', 'malformed', 'null']) {
   });
 }
 
-test('restoring defaults refreshes editable controls before the next save', async (t) => {
+test('Sync updates all controls so a subsequent Save preserves the restored defaults', async (t) => {
   const { page, writes } = await open(t);
   await save(page);
-  await page.getByRole('button', { name: 'Global settings', exact: true }).click();
-  await page.getByRole('button', { name: 'Restore defaults', exact: true }).click();
-  await page.getByRole('button', { name: 'Restore defaults', exact: true }).last().click();
+  assert.equal(writes[0].chatMemoryRounds, 19);
+  await page.getByRole('button', { name: 'Sync', exact: true }).click();
+  await page.getByRole('button', { name: 'Sync', exact: true }).last().click();
   await save(page);
   assert.equal(writes.length, 2);
   for (const [key, value] of Object.entries(defaults.main)) assert.deepEqual(writes[1][key], value, key);
@@ -207,13 +276,14 @@ for (const lang of ['en', 'zh']) {
   }
 }
 
-test('global settings tab exposes app-wide controls and saves their values', async (t) => {
+test('model picker opens in the responsive settings view and persists the selected model mode', async (t) => {
   const { page, writes } = await open(t, { viewport: { width: 900, height: 700 } });
-  const tab = page.getByRole('button', { name: 'Global settings', exact: true });
-  await tab.click();
-  assert.equal(await tab.getAttribute('aria-pressed'), 'true');
+  const trigger = page.locator('.dsh-pet-mp__trigger').first();
+  await trigger.click();
+  const panel = page.getByRole('menu');
+  await panel.waitFor();
+  assert.equal(await panel.isVisible(), true);
+  await page.getByRole('menuitemradio', { name: 'Follow current conversation' }).click();
   await save(page);
-  assert.equal(writes.length, 1);
-  assert.equal(writes[0].trayEnabled, false);
-  assert.equal(writes[0].uiTheme, 'dark');
+  assert.deepEqual(writes[0].whisperModel, { provider: '', model: '' });
 });

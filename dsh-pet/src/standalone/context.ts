@@ -9,6 +9,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { createLlmFacade, createOfflineLlm, type StandaloneModelService } from './llm-facade.ts';
+import type { StandaloneWorkStatusBridge } from './work-status-bridge.ts';
 
 /** 独立模式下余额路由报出的未登记服务商 id。 */
 export const STANDALONE_PROVIDER = 'standalone';
@@ -41,6 +42,8 @@ export interface StandaloneContextOptions {
   routes?: RegisteredRoute[];
   /** 可选的 AI 服务，缺失时模型能力明确不可用。 */
   ai?: StandaloneModelService;
+  /** DSH、Codex、Claude Code 桌面状态文件读取器。 */
+  workStatusBridge?: StandaloneWorkStatusBridge;
   /** 给地址附加访问凭据的包装。 */
   authenticatedUrl?: (baseUrl: string) => string;
   /**
@@ -158,11 +161,17 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
       ? {
           standaloneAi: {
             isReady: () => ai.isReady(),
+            getSettings: () => ai.getSettings?.() ?? { protocol: '', balanceProvider: '', chatEnabled: true },
+            isChatEnabled: () => ai.getSettings?.()?.chatEnabled !== false,
+            allowsAutomaticWhisper: () => ai.allowsAutomaticWhisper?.() ?? true,
             // 余额走独立模式自己的服务商与密钥：DSH 的 credential store 与账号服务在这里都不在场。
             balanceAuth: () => ai.balanceAuth(),
+            // 语音专用密钥单独存：对话密钥属于用户选的任意服务商，不一定能用来调 DeepSeek 语音。
+            deepseekKey: () => ai.deepseekKey(),
           },
         }
       : {}),
+    ...(options.workStatusBridge ? { standaloneWorkStatus: options.workStatusBridge } : {}),
     // 托盘退出的能力开关：宿主路由只看这个字段在不在，停机实现由 cli.ts 提供。
     ...(options.shutdown ? { shutdownApp: options.shutdown } : {}),
     commands: { register: (): (() => void) => () => {} },

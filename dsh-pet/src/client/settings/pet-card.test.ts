@@ -55,7 +55,6 @@ const pet = {
   whisperEnabled: false,
   workStatusEnabled: true,
   fixedEnabled: false,
-  horizontalOnly: false,
   position: { corner: 'bottom-left', marginX: 40, marginY: 60 },
   whisperPrompt: '你是一只猫',
 } as unknown as Pet;

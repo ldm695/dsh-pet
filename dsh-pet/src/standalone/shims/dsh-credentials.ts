@@ -1,14 +1,13 @@
 /**
  * `@deepseek-ai/dsh-credentials` 的独立模式替身。
  *
- * 插件用 `credentialRef()` 构造交给 `ctx.credentials.resolve()` 的引用（DeepSeek 余额查询）。
- * 独立模式 context 只解析 DEEPSEEK_API_KEY：优先使用 DeepSeek 官方协议下的独立 AI 密钥，
- * 再回退到应用专用环境变量；不会读取或暴露其他凭据。
- *
- * 只在独立模式构建里生效：`tsdown.config.mjs` 用 alias 把该包名指向本文件。
+ * 插件只用 credentialRef 构造引用，而独立模式的凭证解析恒为空，
+ * 因此引用本身无需结构，原样返回即可；余额路由会走明确失败分支。
+ * 只在独立模式构建里生效，由 alias 指向本文件。
+ * @module dsh-pet/src/standalone/shims/dsh-credentials
  */
 
-/** 引用原样返回；实际解析由独立 context 的凭据适配器负责 */
+/** 原样返回引用：独立模式不解析凭证，只保证模块图能加载。 */
 export function credentialRef(ref: unknown): unknown {
   return ref;
 }

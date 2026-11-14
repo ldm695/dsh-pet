@@ -23,6 +23,7 @@ import type { TodoStore } from '../todo/store.ts';
 import type { HearService } from '../voice/hear.ts';
 import type { VoiceService } from '../voice/speak.ts';
 import type { WorkStatusStore } from '../work-status.ts';
+import type { StandaloneWorkStatusBridge } from '../../standalone/work-status-bridge.ts';
 
 /** 一次路由调用的输入：URL 已解析，`rest` 是去掉前缀并解码后的路径。 */
 export interface RouteInput {
@@ -78,6 +79,8 @@ export interface PetRouteDeps {
   readonly todos: TodoStore;
   /** 工作状态联动快照。 */
   readonly workStatus: WorkStatusStore;
+  /** 独立模式桥接文件读取器；DSH 插件宿主不启用。 */
+  readonly standaloneWorkStatus: () => StandaloneWorkStatusBridge | undefined;
   /** 外部写入用的固定会话 id。 */
   readonly EXTERNAL_WORK_SESSION: string;
   /** 占用锁拦截：被别的会话占着时直接给出应答。 */
@@ -111,7 +114,14 @@ export interface PetRouteDeps {
   /** 插件日志出口（文件 + 终端）。 */
   readonly log: FileLogger;
   /** 宿主上下文的最小结构：路由只用到 logger 与 llm 服务。 */
-  readonly ctx: { logger?: { warn?(message: string): void }; llm?: unknown };
+  readonly ctx: {
+    logger?: { warn?(message: string): void };
+    llm?: unknown;
+    standaloneAi?: {
+      isChatEnabled?(): boolean;
+      getSettings?(): { protocol?: string; balanceProvider?: string };
+    };
+  };
   /** 文件宠物目录（`pet/`）。 */
   readonly petConfigDir: string;
   /** 把最新工作状态写进轮询快照。 */

@@ -1,12 +1,12 @@
 'use strict';
 
-/** Claim a shared state counter once per helper process, regardless of renderer count. */
+/** A shared state revision can be claimed only once by the Electron helper process. */
 function createNotificationRevisionGate() {
-  const seen = new Set();
+  let lastRevision = 0;
   return {
     claim(revision) {
-      if (!Number.isSafeInteger(revision) || revision <= 0 || seen.has(revision)) return false;
-      seen.add(revision);
+      if (!Number.isSafeInteger(revision) || revision <= lastRevision) return false;
+      lastRevision = revision;
       return true;
     },
   };

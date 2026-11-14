@@ -20,6 +20,7 @@ import { registerPetChatTab, openPetChatTab } from './chat/register.ts';
 import { PET_CHAT_COMMAND_ID, registerPetChatShortcut } from './chat/shortcut.ts';
 import { dicts as chatDicts, NS as CHAT_NS } from './chat/locales/index.ts';
 import { registerPetCardShortcuts } from './pet/card/shortcut.ts';
+import { ROUTE_PATH } from '../shared/constants.ts';
 import type * as ReactNS from 'react';
 import type * as PrimitivesNS from '@deepseek-ai/dsh-client-ui-primitives';
 
@@ -75,6 +76,27 @@ export function makeFactory(): (require: (mod: string) => any) => any {
       // 设置页文案字典。
       ctx.effect(() => ctx.locale.register(NS, dicts), 'dsh-pet: dictionaries');
       const t = ctx.locale.bind(NS);
+      ctx.effect(() => {
+        let disposed = false;
+        const syncTheme = async (): Promise<void> => {
+          try {
+            const response = await fetch(ROUTE_PATH + '/config', { cache: 'no-store' });
+            if (!response.ok || disposed) return;
+            const merged = (await response.json()) as { main?: { uiTheme?: unknown } };
+            if (disposed) return;
+            const value = merged.main?.uiTheme;
+            document.documentElement.dataset.dshPetTheme = value === 'light' || value === 'dark' ? value : 'system';
+          } catch {
+            // 配置服务暂不可用时保留上一次主题，菜单仍可使用系统媒体查询。
+          }
+        };
+        void syncTheme();
+        const timer = window.setInterval(() => void syncTheme(), 5000);
+        return () => {
+          disposed = true;
+          window.clearInterval(timer);
+        };
+      }, 'dsh-pet: menu theme');
       // 侧栏对话的文案独立成命名空间：只覆盖对话面板，不与设置页字典混在一起。
       ctx.effect(() => ctx.locale.register(CHAT_NS, chatDicts), 'dsh-pet: chat dictionaries');
       const chatT = ctx.locale.bind(CHAT_NS);

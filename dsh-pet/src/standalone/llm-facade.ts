@@ -14,6 +14,10 @@ export interface StandaloneModelService {
   resolveModelInfo(provider?: string, model?: string, signal?: AbortSignal): Promise<unknown>;
   stream(options: unknown): AsyncIterable<unknown>;
   isReady(): boolean;
+  getSettings?(): { protocol?: string; balanceProvider?: string; chatEnabled?: boolean };
+  isChatEnabled?(): boolean;
+  /** 独立模式的自动碎碎念授权，DSH llm 契约之外的本机能力。 */
+  allowsAutomaticWhisper?(): boolean;
   /**
    * 余额查询要用的服务商与密钥。
    *
@@ -22,6 +26,13 @@ export interface StandaloneModelService {
    * 混在一起会让模型解析认不出自己的 provider。
    */
   balanceAuth(): { provider: string; apiKey: string };
+  /**
+   * 单独保存的 DeepSeek 语音密钥；空串表示没单独配。
+   *
+   * 对话密钥属于用户选的任意服务商，只有它恰好是 DeepSeek 时才能给语音用；
+   * 这个字段让「对话走别家、语音仍用 DeepSeek」成立。
+   */
+  deepseekKey(): string;
   dispose(): void;
 }
 

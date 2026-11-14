@@ -19,13 +19,6 @@ export const zh = {
   globalTitle: '全局开关',
   globalHint:
     '所有宠物共用（pet pack 可在自己种类文件里单独覆盖）。这几个开关只改本地状态，随「保存」整包写入用户配置（不做即时写入）；系统通知在保存后即时重读，无需刷新页面。',
-  displayPriorityLabel: '桌宠显示层级',
-  displayPriorityHint:
-    '全局设置，只影响桌面模式。Windows 可检测前台全屏应用；全屏或最大化模式也会隐藏最大化窗口所在显示器上的桌宠。macOS 跟随全屏空间隐藏，Linux 暂不支持检测其它应用窗口。',
-  'displayPriority.always-on-top': '始终置顶',
-  'displayPriority.hide-on-fullscreen': '全屏时自动隐藏',
-  'displayPriority.hide-on-fullscreen-or-maximized': '全屏或最大化时自动隐藏',
-  'displayPriority.normal': '不置顶',
   cornerHint: '宠物贴着屏幕的哪个角（桌面端按各自显示器的工作区算）。',
   marginXHint: '距所选角落的水平距离（px），可为任意数字。',
   marginYHint: '距所选角落的垂直距离（px），可为任意数字。',
@@ -84,7 +77,7 @@ export const zh = {
   fixedEnabledHint:
     '启用后随机动画不再让宠物自己转向或走开，只播原地待机与随机小动作；右键菜单点播、接口触发、余额/碎碎念/工作状态动画不受影响。',
   horizontalOnly: '仅允许横向移动',
-  horizontalOnlyHint: '启用后，自动漫游和移动动画只沿水平方向移动，不改变高度，也不倾斜。',
+  horizontalOnlyHint: '开启后，自动移动和屏缝避让只沿水平方向，不改变高度；关闭后允许斜向移动。',
   displayLabel: '显示位置',
   displayHint: 'web=仅浏览器 / desktop=仅桌面 / both=两者都显示 / none=都不显示',
   'display.web': '仅浏览器',
@@ -155,6 +148,16 @@ export const zh = {
   confineToggle: '锁定在当前屏幕',
   confineToggleHint:
     '多屏用户：开了之后宠物只在当前所在那块屏幕内活动——甩出去的宠物只在松手时所在那块屏内弹（屏缝当墙，不飞到隔壁屏），自主漫游也只在当前所在那块屏内走（越出屏缝的那一步直接取消）。关掉则照常跨屏飞行 / 跨屏行走。只影响桌面模式——浏览器 overlay 本来就只在视口内活动。',
+  petDisplayPriority: '宠物显示方式',
+  uiThemeLabel: '应用主题',
+  uiThemeSystem: '自适应主题',
+  uiThemeLight: '白天',
+  uiThemeDark: '黑夜',
+  priorityAlwaysOnTop: '始终置顶',
+  priorityHideFullscreen: '全屏时隐藏',
+  priorityHideMaximized: '全屏或最大化时隐藏',
+  priorityNormal: '普通窗口',
+
   trayToggle: '系统托盘',
   trayToggleHint:
     '桌面模式启动后在通知区域（macOS 为菜单栏）常驻一个图标，列出配置里的全部宠物，勾选就能切换显示位置——包括当前不在桌面、没有窗口可右键的那些。关掉之后要把宠物叫回桌面，只能开浏览器用设置页，或在网页端那只宠物身上右键。Windows 本来就会把它折叠进「隐藏的图标」面板。仅影响桌面模式。',
@@ -172,6 +175,10 @@ export const zh = {
   voiceNotifyEnabledHint:
     '任务完成、出错、等你确认时念一句该档位配置的工作状态文案。和系统通知同一取向：用户不在本页（切走、失焦、最小化）时才念，正看着屏幕时不打扰。只念配置里的台词，不念任务详情。默认关闭。',
   voiceNameLabel: '音色',
+  voiceNameHint: '播报时用哪种声音。音色由语音合成实现提供，装了别的实现才会出现更多选项。',
+  speechProviderLabel: '语音识别',
+  speechProviderHint:
+    '按住录音后交给哪个实现转写。只有装了对应的语音输入插件才会出现多个选项；选中的值写进用户配置，识别不到就报错，不会自动换一个。',
   voiceVolumeLabel: '音量',
   voiceVolumeHint:
     '播报音量，0–1 的小数：1 是最大音量（100%），0 是静音。只改播放响度，不会重新合成音频，调它不额外花钱。四类语音共用这一个音量。',

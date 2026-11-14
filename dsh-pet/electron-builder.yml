@@ -1,13 +1,22 @@
-appId: cloud.pc2005.dsh-pet
-productName: 哦鲸鲸
-electronVersion: 43.3.0
-asar: false
+# electron-builder 配置 —— 把「单进程桌宠」打成双击可运行的 Windows 应用。
+#
+# 关键取舍：
+#   1. 桌面应用只需保留 Koffi 与 Windows 原生绑定；其余运行时逻辑已打进 `lib/app.js`，
+#      `@electron/get` 与 `@electron-internal/extract-zip` 只会在下载 Electron 的开发分支动态调用。
+#   2. electronDist 指向本机已解压的 Electron（默认 ~/.dsh/electron），由 scripts/dist.mjs 注入，
+#      避免每次打包都从 GitHub 重新下一套 110 MB —— 这台机器 github.com 不通。
+#   3. asar 打开：素材（webm 51 MB）留在包内由主进程 fs 读取；没有原生模块需要 unpack。
+appId: com.pc2005.dsh-pet
+productName: dsh-pet
+copyright: dsh-pet contributors
+
 directories:
-  output: portable-dist/personal
+  output: dist-app
+
+# 应用主进程入口不是插件入口（package.json 的 main 必须留给 DSH 插件加载），所以在打包元数据里覆盖
 extraMetadata:
-  main: desktop-main.cjs
-  dshPetEdition: personal
-  description: 哦鲸鲸
+  main: lib/app.js
+
 files:
   - lib/**
   - runtime/**
@@ -23,7 +32,6 @@ files:
   - assets/config.jsonc
   - assets/logo.png
   - package.json
-  - '!node_modules/**'
 
 asar: true
 npmRebuild: false
@@ -37,10 +45,6 @@ electronVersion: 43.3.0
 # 不做 portable（每次启动自解压，慢）也不做 nsis（安装包对自用场景没有增量价值）——
 # 真要回归安装包，把 target 改回 [nsis] 并补回 nsis 段（向导/快捷方式/卸载登记）即可。
 win:
-  icon: assets/dsh-pet-icon.ico
+  icon: assets/logo.png
   target:
-    - target: portable
-      arch:
-        - x64
-portable:
-  artifactName: 哦鲸鲸-${version}-portable-personal.${ext}
+    - dir

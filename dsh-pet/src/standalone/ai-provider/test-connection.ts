@@ -47,16 +47,22 @@ export async function testAiConnection(
   current: StandaloneAiSettings,
   input: TestConnectionInput,
 ): Promise<TestConnectionResult> {
-  const protocol = input.protocol === 'anthropic' ? 'anthropic' : (input.protocol ?? current.protocol);
+  const protocol =
+    input.protocol === 'anthropic' || input.protocol === 'deepseek-official'
+      ? input.protocol
+      : (input.protocol ?? current.protocol);
   const baseUrl = (input.baseUrl !== undefined ? input.baseUrl : current.baseUrl).trim();
   const model = (input.model !== undefined ? input.model : current.model).trim();
   const apiKey = (input.apiKey !== undefined && input.apiKey !== '' ? input.apiKey : current.apiKey).trim();
   const missing = missingField(baseUrl, model, apiKey);
   if (missing !== null) return { ok: false, message: missing };
+  if (protocol === 'deepseek-official' && baseUrl.replace(/\/+$/, '') !== 'https://api.deepseek.com') {
+    return { ok: false, message: 'DeepSeek 官方协议使用固定官方地址 https://api.deepseek.com' };
+  }
 
   const settings: StandaloneAiSettings = {
     ...DEFAULT_AI_SETTINGS,
-    protocol: protocol as 'openai-compatible' | 'anthropic',
+    protocol: protocol as 'openai-compatible' | 'anthropic' | 'deepseek-official',
     baseUrl,
     model,
     apiKey,

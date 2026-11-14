@@ -149,13 +149,18 @@ export async function discoverModels(
   input: ModelDiscoveryInput,
 ): Promise<ModelDiscoveryResult> {
   const protocol =
-    input.protocol === 'anthropic' || input.protocol === 'openai-compatible' ? input.protocol : current.protocol;
+    input.protocol === 'anthropic' || input.protocol === 'openai-compatible' || input.protocol === 'deepseek-official'
+      ? input.protocol
+      : current.protocol;
   const rawBase = (input.baseUrl !== undefined ? input.baseUrl : current.baseUrl).trim();
   const apiKey = (input.apiKey !== undefined && input.apiKey !== '' ? input.apiKey : current.apiKey).trim();
   if (rawBase === '') return failure('input', '请先填写接口地址（Base URL）');
   if (apiKey === '') return failure('input', '请先填写 API 密钥');
   const base = parseEndpoint(rawBase);
   if (base === undefined) return failure('input', '接口地址必须是 HTTP(S) 地址，且不能含账号、查询参数或片段');
+  if (protocol === 'deepseek-official' && base !== 'https://api.deepseek.com') {
+    return failure('input', 'DeepSeek 官方协议使用固定官方地址 https://api.deepseek.com');
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DISCOVERY_TIMEOUT_MS);

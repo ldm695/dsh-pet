@@ -48,8 +48,8 @@ export function runCheck(logger: StandaloneLogger): number {
     `内置默认配置    ${paths.defaultFile}${existsSync(paths.defaultFile) ? '' : '  ✗ 缺失'}`,
     `Electron        ${electron ?? `未发现（首次运行会下载到 ${electronLandingDir()}）`}`,
     `图形显示环境    ${hasGraphicalDisplay() ? '有' : '无（桌面小窗会跳过；远程桌面/Xvfb 可设 DSH_PET_DESKTOP_FORCE=1）'}`,
-    '独立 AI         密钥、模型端点与模型由本机设置页管理；此体检不会读取密钥或测试连接',
   ];
+
   const fail = (message: string): number => {
     // 先打完整报告再报错，读者能一次看到全部环境信息。
     for (const line of lines) logger.info(line);
@@ -81,7 +81,7 @@ export function runCheck(logger: StandaloneLogger): number {
     // 只有 display 为 desktop 或 both 的宠物会真的出现在桌面上。
     lines.push(
       `桌面小窗        ${desktopVisible.length} 只${
-        desktopVisible.length === 0 ? '（display 需要设为 desktop 才会显示）' : ''
+        desktopVisible.length === 0 ? '（display 需要 desktop 或 both，否则独立模式没有可显示的宠物）' : ''
       }`,
     );
     for (const line of lines) logger.info(line);

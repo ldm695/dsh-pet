@@ -7,7 +7,9 @@
  * @module dsh-pet/src/standalone/settings-page
  */
 import { CORNER_SET } from '../host/config/constants.ts';
-import { VOICES } from '../host/voice/voices.ts';
+import { EDGE_PROVIDER, EDGE_PROVIDER_ID } from '../host/voice/builtin-edge.ts';
+import { limitedVoiceId } from '../host/voice/types.ts';
+import { VOICES, DEFAULT_VOICE } from '../host/voice/voices.ts';
 import { LOGO_URL } from '../shared/avatar.ts';
 import { PET_DISPLAYS } from '../shared/config.ts';
 import { ROUTE_SEGMENT } from '../shared/constants.ts';
@@ -26,8 +28,11 @@ import { petsScript } from './settings-page/script/pets.ts';
 import { widgetsScript } from './settings-page/script/widgets.ts';
 import { settingsPage } from './settings-page/chrome.ts';
 import { settingsStyle } from './settings-page/style.ts';
+import { SETTINGS_CSS } from '../client/settings/css.ts';
 
-export { settingsPage, settingsStyle };
+export { settingsPage };
+export { settingsStyle };
+export const standaloneSettingsStyle = settingsStyle + SETTINGS_CSS;
 
 /** 头像长边上限：与 client/settings/avatar-upload.ts 的 AVATAR_MAX_SIDE 对齐；页面脚本 import 不到，由测试钉住。 */
 export const AVATAR_MAX_SIDE_PX = 512;
@@ -36,7 +41,13 @@ export const AVATAR_MAX_SIDE_PX = 512;
 export const settingsScript = [
   '(function () {',
   coreScript(ROUTE_SEGMENT, {
-    voices: VOICES.map((voice) => ({ id: voice.id, name: voice.name, tag: voice.tag })),
+    voices: VOICES.map((voice) => ({
+      id: limitedVoiceId(EDGE_PROVIDER_ID, voice.id),
+      name: voice.name,
+      tag: voice.tag,
+      provider: EDGE_PROVIDER.name,
+    })),
+    defaultVoice: limitedVoiceId(EDGE_PROVIDER_ID, DEFAULT_VOICE),
     fonts: FONT_PRESETS.map((preset) => preset.id),
     displays: PET_DISPLAYS,
     corners: [...CORNER_SET],

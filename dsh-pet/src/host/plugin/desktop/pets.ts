@@ -39,18 +39,6 @@ function readDecision(configPaths: ConfigPaths): DesktopDecision {
 export function createDesktopPets(deps: DesktopPetsInput) {
   const { configPaths, effectivePetList, log } = deps;
 
-  /** Application-wide topmost policy is read with the same merged config as the desktop pet list. */
-  const getDisplayPriority = (): string => {
-    try {
-      const value = readAllConfig(configPaths).main?.petDisplayPriority;
-      return value === 'hide-on-fullscreen' || value === 'hide-on-fullscreen-or-maximized' || value === 'normal'
-        ? value
-        : 'always-on-top';
-    } catch {
-      return 'always-on-top';
-    }
-  };
-
   /** 现在有没有桌面宠物；读配置失败按「没有」处理——宁可不起 helper，也不起一个没有宠物的空进程。 */
   const getHasDesktopPet = (): boolean => {
     try {
@@ -66,6 +54,16 @@ export function createDesktopPets(deps: DesktopPetsInput) {
       return readAllConfig(configPaths).main?.trayEnabled !== false;
     } catch {
       return true;
+    }
+  };
+
+  /** 桌宠与全屏窗口的显示优先级；非法或读取失败时沿用置顶默认行为。 */
+  const getDisplayPriority = (): string => {
+    try {
+      const value = readAllConfig(configPaths).main?.petDisplayPriority;
+      return typeof value === 'string' ? value : 'always-on-top';
+    } catch {
+      return 'always-on-top';
     }
   };
 
@@ -98,7 +96,7 @@ export function createDesktopPets(deps: DesktopPetsInput) {
   // 装配时先打一行，便于对照「这次进程起来时判定成了什么」。
   logDesktopDecision();
 
-  return { getHasDesktopPet, getTrayOn, desktopPetList, getDisplayPriority, logDesktopDecision };
+  return { getHasDesktopPet, getTrayOn, getDisplayPriority, desktopPetList, logDesktopDecision };
 }
 
 /** DesktopPets的产出。 */

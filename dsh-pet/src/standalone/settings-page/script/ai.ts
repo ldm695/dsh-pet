@@ -43,6 +43,15 @@ function populateAi(data) {
   byId('key-actions').hidden = data.hasKey !== true;
   byId('apiKey').value = '';
   byId('apiKey').disabled = false;
+  byId('deepseek-key-state').textContent = data.hasDeepseekKey ? '已保存 · 不回显' : '尚未设置';
+  byId('deepseek-key-actions').hidden = data.hasDeepseekKey !== true;
+  byId('deepseekApiKey').value = '';
+  byId('deepseekApiKey').disabled = false;
+  byId('automaticWhispers').checked = data.automaticWhispers === true;
+  byId('chatEnabled').checked = data.chatEnabled !== false;
+  byId('whispersOnlyOffPeak').checked = data.whispersOnlyOffPeak === true;
+  byId('whispersOnlyOffPeak').disabled = data.protocol !== 'deepseek-official';
+  if (typeof syncProtocolFields === 'function') syncProtocolFields();
 }
 
 /** 把余额结果翻成一行可读文案；失败一律说明原因，不显示伪造数字。 */
@@ -115,6 +124,25 @@ function wireKeyDelete(status) {
   });
 }
 
+function wireDeepseekKeyDelete(status) {
+  byId('deepseek-key-delete').addEventListener('click', async () => {
+    const confirmed = await confirmDialog({
+      title: '删除已保存的语音密钥',
+      text: '删除后 DeepSeek 语音将不可用，直到重新填写密钥。',
+      confirmLabel: '删除',
+      danger: true,
+    });
+    if (!confirmed) return;
+    setStatus(status, '正在删除语音密钥…');
+    try {
+      populateAi(await aiRequest('POST', { clearDeepseekKey: true }));
+      setStatus(status, '已删除保存的语音密钥。', 'ok');
+    } catch (error) {
+      setStatus(status, error && error.message ? error.message : String(error), 'error');
+    }
+  });
+}
+
 function wireTest(testBtn, testResult) {
   testBtn.addEventListener('click', async () => {
     testBtn.disabled = true;
@@ -167,8 +195,13 @@ function wireSave(form, save, status) {
       model: byId('model').value.trim(),
       balanceProvider: balanceSelect ? balanceSelect.getValue() : '',
       apiKey: byId('apiKey').value,
+      deepseekApiKey: byId('deepseekApiKey').value,
+      automaticWhispers: byId('automaticWhispers').checked,
+      chatEnabled: byId('chatEnabled').checked,
+      whispersOnlyOffPeak: byId('whispersOnlyOffPeak').checked,
     };
     byId('apiKey').value = '';
+    byId('deepseekApiKey').value = '';
     try {
       populateAi(await aiRequest('POST', input));
       setStatus(status, '已保存到本机。', 'ok');
@@ -184,6 +217,7 @@ function wireAiPanel() {
   wireModelPicker();
   const status = byId('status');
   wireKeyDelete(status);
+  wireDeepseekKeyDelete(status);
   wireTest(byId('test-btn'), byId('test-result'));
   wireBalanceQuery();
   wireSave(byId('settings'), byId('save'), status);

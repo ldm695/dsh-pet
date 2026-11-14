@@ -1951,10 +1951,9 @@ paths:
         有以下几点必须知道：
 
         - **只白名单字段会被保留**：`pets[]` 的 `id`/`name`/`size`/`sizePercent`/`balanceEnabled`/
-          `whisperEnabled`/`workStatusEnabled`/`fixedEnabled`/`horizontalOnly`/`display`/`position`，以及顶层
+          `whisperEnabled`/`workStatusEnabled`/`fixedEnabled`/`display`/`position`，以及顶层
           `notificationsEnabled`/`notifyWhenFocused`/`clickSoundEnabled`/`whisperImageEnabled`/`chatImageEnabled`/
-          `chatAnimationEnabled`/`confineToScreen`/`trayEnabled`/`petDisplayPriority`/`voiceEnabled`/`voiceName`/
-          `voiceWhisperEnabled`/
+          `chatAnimationEnabled`/`confineToScreen`/`trayEnabled`/`voiceEnabled`/`voiceName`/`voiceWhisperEnabled`/
           `voiceTodoEnabled`/`voiceNotifyEnabled`/`physics`/`font`/`whisperModel`/`chatModel`/`chatMemoryRounds`/
           `chatImageLimit`。
           其余字段会沿用磁盘上用户文件里的原值（透传保留），所以设置页保存
@@ -2439,15 +2438,18 @@ paths:
       description: |
         与 `/voice/speak` 反向：音频进、文字出。
 
-        - 能力来自宿主的语音识别服务；宿主没启用语音输入插件时返回 `unsupported`，
-          不把它当成识别失败。
+        - **多实现并存**：宿主插件可经 Cordis 服务 `petApi7340.speech.register` 注册自己的识别实现；
+          `/voice/hear-providers` 列出全部可用实现。
+        - `provider` 不传时用配置里的 `main.speechProvider`；解析不到按 `bad-request` 拒绝，
+          不会静默换成别的实现。
         - 音频必须是 **16kHz / 单声道 / PCM16 的 WAV**，base64 后放在 `audio` 字段。
-          其它容器（mp3/webm/ogg）或其它采样率一律拒绝。格式由宿主识别器校验，
+          其它容器（mp3/webm/ogg）或其它采样率一律拒绝。格式由实现校验，
           不合规时返回 `generate-error` 并附原始说明。
-        - 解码后不得超过 768 KiB（约 24 秒）：请求体上限是 1 MiB，base64 会再放大三分之一。
+        - 语言由实现自动检测，请求不带语言参数。
+        - 解码后不得超过 7 MiB（约 200 秒 16kHz 单声道）：请求体上限是 10 MiB，base64 会再放大三分之一。
         - 整段一次性识别，不做流式。
-        - 参数问题返回 `bad-request`，能力缺失返回 `unsupported`，识别器报错返回
-          `generate-error`；三者都是 HTTP 200 + `{ ok: false, reason, message }`。
+        - 参数问题返回 `bad-request`，能力缺失（插件没装、没配 key）返回 `unsupported`，
+          识别失败返回 `generate-error`；三者都是 HTTP 200 + `{ ok: false, reason, message }`。
           只有请求体不是合法 JSON 才是 400，方法不对是 405。
       requestBody:
         required: true
@@ -2460,16 +2462,16 @@ paths:
               properties:
                 audio:
                   type: string
-                  description: 16kHz/单声道/PCM16 WAV 的 base64；解码后上限 768 KiB。
-                language:
+                  description: 16kHz/单声道/PCM16 WAV 的 base64；解码后上限 7 MiB（约 200 秒）。
+                provider:
                   type: string
-                  description: 语言提示，如 `zh` / `en`；缺省由宿主识别器决定。
+                  description: 识别实现 id，取值见 `/voice/hear-providers`；缺省用配置 `main.speechProvider`。
       responses:
         "200":
           description: |
             成功时是 `{ ok: true, text }`；失败时是 `{ ok: false, reason, message }`，
-            reason 取值 `bad-request`（参数非法）/ `unsupported`（宿主没有可用识别器）/
-            `generate-error`（识别器失败或超时）。
+            reason 取值 `bad-request`（参数非法）/ `unsupported`（实现不可用：插件没装、没配 key
+            或模型未就绪）/ `generate-error`（识别失败或超时）。
           content:
             application/json:
               schema:
@@ -2492,22 +2494,54 @@ paths:
         "405":
           description: 方法不是 POST。
 
+  /dsh-pet-7340/voice/hear-providers:
+    get:
+      tags: [Voice]
+      operationId: getHearProviders
+      summary: 列出可用的语音识别实现
+      description: 与 `/voice/hear` 的 `provider` 字段同源；前端据此渲染选择器，不要硬编码 id。
+      responses:
+        "200":
+          description: 识别实现目录，按注册顺序。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, providers]
+                properties:
+                  ok:
+                    type: boolean
+                    const: true
+                  providers:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name]
+                      properties:
+                        id:
+                          type: string
+                          description: provider id，如 `dsh`；写进配置 `main.speechProvider` 的就是它。
+                        name:
+                          type: string
+                          description: 展示名，如 `DSH 语音插件`。
+        "405":
+          description: 方法不是 GET。
+
   /dsh-pet-7340/voice/speak:
     post:
       tags: [Voice]
       operationId: synthesizeVoice
       summary: 合成一段语音
       description: |
-        把一段中文文本合成为 mp3，成功时直接返回文件本体。
+        把一段中文文本合成为 mp3 或 wav，成功时直接返回文件本体。
 
-        - **合成源可被第三方覆盖**：宿主插件可经 Cordis 服务 `petApi7340.voice.register`
-          注册自己的实现；注册后本端点改走该实现，未注册时走内置实现。两边返回的都是 mp3，
-          调用方无需区分。
-        - 覆盖期间 `voice` 参数不生效（音色由第三方实现自己决定），但校验口径不变：
-          非法值仍按 `bad-request` 拒绝。
-        - 第三方实现必须返回 mp3 字节；返回其它格式浏览器播不出来，空字节按 `generate-error` 处理。
-        - 同一「来源 + 音色 + 语速 + 文本」只会合成一次，命中缓存时不再联网；来源即内置实现
-          或第三方 id，因此切换实现后不会命中旧音频。
+        - **多实现并存**：宿主插件可经 Cordis 服务 `petApi7340.voice.register` 注册自己的实现，
+          每个实现声明自己的音色清单；`/voice/voices` 按 provider 分组列出全部音色。
+        - 音色 id 是 `provider/音色` 的限定形态；`voice` 不传时用配置里的 `main.voiceName`。
+          解析不到按 `bad-request` 拒绝，不会替换成另一个音色。
+        - 输出格式由实现声明（mp3 / wav），应答的 `Content-Type` 与之一致。
+        - 同一「限定音色 + 语速 + 文本」只会合成一次，命中缓存时不再调用实现；限定 id 含
+          provider，因此换实现或换音色都不会命中旧音频。
         - 合成串行执行，同时最多排队 3 个；超出返回 `voice-busy`，调用方可稍后重试。
         - 参数问题、队列满、上游失败都是业务失败：HTTP 200 + `{ ok: false, reason, message }`。
         只有请求体不是合法 JSON 才是 400，方法不对是 405。
@@ -2526,7 +2560,9 @@ paths:
                   maxLength: 500
                 voice:
                   type: string
-                  description: 音色 id，必须来自 `/voice/voices`；缺省 `zh-CN-XiaoxiaoNeural`。
+                  description: |
+                    音色限定 id（`provider/音色`），取值见 `/voice/voices`；
+                    缺省用配置里的 `main.voiceName`，两者都没有或解析不到时按 `bad-request` 拒绝。
                 rate:
                   type: string
                   description: prosody 语速表达式，如 `+0%` / `-10%`；允许 -50%..+100%，缺省 `+0%`。
@@ -2534,10 +2570,14 @@ paths:
       responses:
         "200":
           description: |
-            成功时是 mp3 音频；失败时是 JSON `{ ok: false, reason, message }`，
+            成功时是 mp3 或 wav 音频（由实现声明）；失败时是 JSON `{ ok: false, reason, message }`，
             reason 取值 `bad-request`（参数非法）/ `voice-busy`（队列已满）/ `generate-error`（上游失败或超时）。
           content:
             audio/mpeg:
+              schema:
+                type: string
+                format: binary
+            audio/wav:
               schema:
                 type: string
                 format: binary
@@ -2563,33 +2603,47 @@ paths:
       tags: [Voice]
       operationId: getVoices
       summary: 列出可用音色
-      description: 与 `/voice/speak` 的白名单同源；前端据此渲染音色选择器，不要硬编码 id。
+      description: |
+        按 provider 分组列出所有已注册实现的音色；前端据此渲染音色选择器，不要硬编码 id。
+        音色 `id` 是限定形态，写进配置 `main.voiceName` 的就是它。
       responses:
         "200":
-          description: 音色列表。
+          description: 音色目录，按注册顺序分组。
           content:
             application/json:
               schema:
                 type: object
-                required: [ok, voices]
+                required: [ok, providers]
                 properties:
                   ok:
                     type: boolean
                     const: true
-                  voices:
+                  providers:
                     type: array
                     items:
                       type: object
-                      required: [id, name, tag, default]
+                      required: [id, name, voices]
                       properties:
                         id:
                           type: string
+                          description: provider id，如 `edge`。
                         name:
                           type: string
-                        tag:
-                          type: string
-                        default:
-                          type: boolean
+                          description: 展示名，设置页用作分组标题。
+                        voices:
+                          type: array
+                          items:
+                            type: object
+                            required: [id, name]
+                            properties:
+                              id:
+                                type: string
+                                description: 限定 id，如 `edge/zh-CN-XiaoyiNeural`。
+                              name:
+                                type: string
+                              tag:
+                                type: string
+                                description: 展示用副标题，如「女 · 活泼」；可能缺省。
         "405":
           description: 方法不是 GET。
 
@@ -2722,7 +2776,7 @@ paths:
 
         - **只属于 pet pack**：`root=main`（内置条目）直接拒绝——`pet/` 目录不接内置的头像，
           内置永远用插件默认 logo。
-        - **上限 768 KiB（解码后）**：请求体上限 1 MiB，base64 膨胀 4/3，所以原图约 750 KB 封顶；
+        - **上限 768 KiB（解码后）**：按头像尺寸独立定，与请求体上限无关；
           设置页会先把图缩到长边 512 再上传。
         - **只校验「文件头像图片 + 在预算内」**：不裁剪、不重编码，尺寸与画质由调用方担保。
         - 落盘后**立即生效**：不是配置字段，不需要 `PUT /config`，也不重启桌面 Helper。
@@ -4523,10 +4577,6 @@ components:
             由模型在语境贴合时挑一个当场表演；关掉则纯文字。设置页「全局开关」卡里的「对话动作联动」写的就是它。
         confineToScreen:
           type: boolean
-        petDisplayPriority:
-          type: string
-          enum: [always-on-top, hide-on-fullscreen, hide-on-fullscreen-or-maximized, normal]
-          description: 桌面宠物显示层级（全局设置）
         voiceEnabled:
           type: boolean
           description: |
@@ -4536,8 +4586,13 @@ components:
         voiceName:
           type: string
           description: |
-            音色 id，白名单为 `/voice/voices` 里的四个中文音色之一；写错或留空即配置错误，
-            告警并回落到 `zh-CN-XiaoyiNeural`。设置页「语音播报」卡的音色下拉写的就是它。
+            音色限定 id（`provider/音色`），取值见 `/voice/voices`；写错或留空即解析不到，
+            合成按 `bad-request` 失败并告警，不会回落到另一个音色。设置页「语音播报」卡的音色下拉写的就是它。
+        speechProvider:
+          type: string
+          description: |
+            语音识别实现 id（如 `dsh`），取值见 `/voice/hear-providers`；写错或留空即解析不到，
+            识别按 `bad-request` 失败并告警，不会回落到另一个实现。设置页「语音播报」卡的语音识别下拉写的就是它。
         voiceVolume:
           type: number
           minimum: 0
@@ -4601,9 +4656,6 @@ components:
         fixedEnabled:
           type: boolean
           description: 宠物固定（随机链不再抽「转向 / 移动」两档；主动触发不受影响）
-        horizontalOnly:
-          type: boolean
-          description: 仅允许横向移动；关闭纵向位移并移除横向移动角度
         display:
           type: string
           enum: [web, desktop, both, none]

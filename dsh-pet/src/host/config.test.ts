@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
+  migrateUserConfig,
   readAllConfig,
   readUserConfig,
   removeRoundsByTs,
@@ -36,8 +37,8 @@ const BASE = {
       whisperEnabled: false,
       workStatusEnabled: false,
       fixedEnabled: false,
-      horizontalOnly: false,
-      display: 'desktop',
+      horizontalOnly: true,
+      display: 'web',
       position: { corner: 'bottom-right', marginX: 40, marginY: 40 },
     },
   ],
@@ -123,28 +124,6 @@ describe('readAllConfig —— events 槽位 string | string[] 校验', () => {
       },
       expectWorkStatus: [['工作思考', '开始工作'], '认真工作', '长时间工作看表', '工作被打扰', '工作结束', '摸鱼被抓'],
     });
-  });
-
-  test('.11 未落盘的显示值会在 .12 首次读取时一次性转换并保存', () => {
-    const legacyPets = [
-      { ...BASE.pets[0], id: 'browser-only', display: 'web' },
-      { ...BASE.pets[0], id: 'both-ends', display: 'both' },
-    ];
-    const paths = withBase({}, { pets: legacyPets });
-    try {
-      const pets = readAllConfig(paths).main.pets as Array<{ id: string; display: string }>;
-      assert.deepEqual(
-        pets.map(({ id, display }) => [id, display]),
-        [
-          ['browser-only', 'none'],
-          ['both-ends', 'desktop'],
-        ],
-      );
-      const persisted = JSON.parse(readFileSync(paths.userFile, 'utf8')) as { pets: Array<{ display: string }> };
-      assert.deepEqual(persisted.pets.map((pet) => pet.display), ['none', 'desktop']);
-    } finally {
-      rmSync(dirname(paths.defaultFile), { recursive: true, force: true });
-    }
   });
 
   test('空字符串槽位非法 → animations 整段回退默认', () => {
@@ -298,12 +277,72 @@ function pathsWithUser(raw: string | null): { paths: ConfigPaths; dir: string } 
   const paths: ConfigPaths = {
     defaultFile: join(dir, 'default.jsonc'),
     userFile: join(dir, 'main-config.jsonc'),
+    legacyUserFile: join(dir, 'main-config.json'),
     petDir: join(dir, 'pet'),
   };
   writeFileSync(paths.defaultFile, JSON.stringify(BASE));
   if (raw !== null) writeFileSync(paths.userFile, raw);
   return { paths, dir };
 }
+
+describe('migrateUserConfig —— 老用户 main-config.json → main-config.jsonc', () => {
+  /** 只在旧路径写一份用户层（模拟升级前的老用户） */
+  function legacyOnly(raw: string): { paths: ConfigPaths; dir: string } {
+    const { paths, dir } = pathsWithUser(null);
+    writeFileSync(paths.legacyUserFile as string, raw);
+    return { paths, dir };
+  }
+
+  test('旧文件存在、新文件不存在 → 重命名（内容一字不动），旧文件消失', () => {
+    const raw = '// 老用户的配置\n{\n  "physics": ' + JSON.stringify(BASE.physics) + '\n}\n';
+    const { paths, dir } = legacyOnly(raw);
+    try {
+      const logs: string[] = [];
+      assert.equal(
+        migrateUserConfig(paths, (m) => logs.push(m)),
+        true,
+      );
+      assert.equal(existsSync(paths.legacyUserFile as string), false, '旧文件应已重命名走');
+      assert.equal(readFileSync(paths.userFile, 'utf8'), raw, '新文件内容必须与旧文件逐字节一致');
+      assert.equal(logs.length, 1, '迁移应留一条日志');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('新文件已存在 → 什么都不做（绝不用旧文件覆盖新文件）', () => {
+    const { paths, dir } = pathsWithUser('{ "physics": ' + JSON.stringify(BASE.physics) + ' }\n');
+    try {
+      writeFileSync(paths.legacyUserFile as string, '{ "physics": { "gravity": 1 } }');
+      assert.equal(migrateUserConfig(paths), false);
+      assert.equal(existsSync(paths.legacyUserFile as string), true, '旧文件保持原样');
+      assert.equal(readUserConfig(paths)?.physics !== undefined, true, '生效的仍是新文件');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('旧文件不存在 → 什么都不做（首次使用）', () => {
+    const { paths, dir } = pathsWithUser(null);
+    try {
+      assert.equal(migrateUserConfig(paths), false);
+      assert.equal(existsSync(paths.userFile), false, '不凭空造文件');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('未迁移（迁移失败/未跑）时读取回落旧路径：配置照样生效', () => {
+    const { paths, dir } = legacyOnly('{ "physics": ' + JSON.stringify(BASE.physics) + ' }\n');
+    try {
+      assert.equal(readUserConfig(paths)?.physics !== undefined, true, '读回落旧 .json');
+      assert.equal(userConfigUnparsable(paths), false, '旧路径合法 → 不是损坏');
+      assert.deepEqual(readAllConfig(paths).main.physics, BASE.physics);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('userConfigUnparsable —— 保存前的损坏预检（损坏时必须弹窗，不许静默丢配置）', () => {
   test('真损坏（语法错误）→ true：宿主据此回 409，不写盘', () => {
@@ -386,6 +425,39 @@ describe('readUserConfig —— 用户层读取必须容忍 JSONC 注释（保�
     } finally {
       rmSync(broken.dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('saveUserConfig —— 系统托盘开关（trayEnabled）', () => {
+  test('非法值整包拒绝（与其它全局布尔同口径，不静默丢用户输入）', () => {
+    assert.equal(saveUserConfig({ pets: PETS, trayEnabled: 'false' }, undefined), null);
+    assert.equal(saveUserConfig({ pets: PETS, trayEnabled: 0 }, undefined), null);
+  });
+
+  test('请求体没带 → 透传磁盘旧值（不得把用户关掉的托盘又打开）', () => {
+    const out = saveUserConfig({ pets: PETS }, { trayEnabled: false }) as Record<string, unknown>;
+    assert.equal(out.trayEnabled, false);
+  });
+
+  test('请求体带了 → 以请求体为准', () => {
+    const out = saveUserConfig({ pets: PETS, trayEnabled: false }, { trayEnabled: true }) as Record<string, unknown>;
+    assert.equal(out.trayEnabled, false);
+  });
+});
+
+describe('saveUserConfig —— 桌宠显示优先级', () => {
+  test('只接受四种受支持的显示模式，并在请求体缺省时保留磁盘值', () => {
+    assert.equal(saveUserConfig({ pets: PETS, petDisplayPriority: 'unknown' }, undefined), null);
+    const preserved = saveUserConfig({ pets: PETS }, { petDisplayPriority: 'hide-on-fullscreen' }) as Record<
+      string,
+      unknown
+    >;
+    assert.equal(preserved.petDisplayPriority, 'hide-on-fullscreen');
+    const saved = saveUserConfig(
+      { pets: PETS, petDisplayPriority: 'hide-on-fullscreen-or-maximized' },
+      undefined,
+    ) as Record<string, unknown>;
+    assert.equal(saved.petDisplayPriority, 'hide-on-fullscreen-or-maximized');
   });
 });
 
@@ -634,28 +706,6 @@ describe('saveUserConfig —— 抛掷锁定开关（白名单 + 透传保留）
     assert.equal(overwritten?.confineToScreen, true); // 请求体优先
     const kept = saveOnce({ pets: PETS }, { pets: PETS, confineToScreen: true });
     assert.equal(kept?.confineToScreen, true); // 未传的旧值仍透传保留
-  });
-});
-
-describe('saveUserConfig —— 系统托盘开关 trayEnabled', () => {
-  test('设置页提交的布尔值写入用户配置', () => {
-    const out = saveOnce({ pets: PETS, trayEnabled: false });
-    assert.equal(out?.trayEnabled, false);
-  });
-
-  test('未提交时保留已有值；没有旧值时不凭空创建', () => {
-    const kept = saveOnce({ pets: PETS }, { pets: PETS, trayEnabled: false });
-    assert.equal(kept?.trayEnabled, false);
-    assert.equal('trayEnabled' in (saveOnce({ pets: PETS }) ?? {}), false);
-  });
-
-  test('拒绝非布尔值', () => {
-    assert.equal(saveOnce({ pets: PETS, trayEnabled: 'false' }), null);
-  });
-
-  test('读取侧从默认配置取得默认托盘状态', () => {
-    const merged = readAllConfig(withBase({ trayEnabled: true }));
-    assert.equal(merged.main.trayEnabled, true);
   });
 });
 
@@ -1116,14 +1166,6 @@ describe('saveUserConfig —— 对话配图张数上限 chatImageLimit（白名
   });
 });
 
-describe('saveUserConfig —— 只接受当前显示位置', () => {
-  test('旧值不再被静默归一化', () => {
-    const savePet = (display: string) => saveOnce({ pets: [{ ...(PETS[0] as Record<string, unknown>), display }] });
-    assert.equal(savePet('both'), null);
-    assert.equal(savePet('web'), null);
-  });
-});
-
 describe('readAllConfig —— 模型选择合并（缺失取默认 / 非法回退默认）', () => {
   const WM = { provider: 'deepseek', model: 'deepseek-chat' };
 
@@ -1300,7 +1342,7 @@ describe('文件宠物条目 —— 全局默认（用户层作基座）+ 种类
         name: '小猪',
         size: 300,
         balanceEnabled: false,
-        display: 'none',
+        display: 'web',
         position: { corner: 'top-left', marginX: 10, marginY: 10 },
       },
     ],

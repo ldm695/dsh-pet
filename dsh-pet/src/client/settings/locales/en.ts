@@ -20,13 +20,6 @@ export const en: Record<Key, string> = {
   globalTitle: 'Global switches',
   globalHint:
     'Shared by every pet (a pet pack may override them in its own kind file). These switches only change local state and are written to the user config on "Save" (never written immediately); system notifications re-read right after saving, no page refresh needed.',
-  displayPriorityLabel: 'Pet window priority',
-  displayPriorityHint:
-    'Global desktop-mode setting. Windows detects foreground fullscreen apps; fullscreen or maximized mode also hides pets on the monitor with a maximized window. macOS follows fullscreen Spaces; Linux does not detect other application windows.',
-  'displayPriority.always-on-top': 'Always on top',
-  'displayPriority.hide-on-fullscreen': 'Hide during fullscreen',
-  'displayPriority.hide-on-fullscreen-or-maximized': 'Hide during fullscreen or maximized windows',
-  'displayPriority.normal': 'Normal window level',
   cornerHint: 'Which screen corner the pet sticks to (per-monitor work area in desktop mode).',
   marginXHint: 'Horizontal distance from the chosen corner (px); any number.',
   marginYHint: 'Vertical distance from the chosen corner (px); any number.',
@@ -88,7 +81,8 @@ export const en: Record<Key, string> = {
   fixedEnabledHint:
     'When enabled, the random chain no longer turns this pet or walks it away — only idle and in-place actions play. Right-click picks, API triggers and balance / whisper / work-status animations are unaffected.',
   horizontalOnly: 'Horizontal movement only',
-  horizontalOnlyHint: 'Automatic roaming and movement animations stay at the same height and do not tilt.',
+  horizontalOnlyHint:
+    'When enabled, automatic movement and seam avoidance stay at the same height. Turn it off to allow diagonal movement.',
   displayLabel: 'Display',
   displayHint: 'web = browser only / desktop = desktop only / both = both / none = neither',
   'display.web': 'Browser only',
@@ -163,6 +157,16 @@ export const en: Record<Key, string> = {
   confineToggle: 'Lock to the current screen',
   confineToggleHint:
     'Multi-monitor: when on, the pet stays inside the screen it is currently on — a thrown pet bounces only inside the screen it was released on (screen seams act as walls, so it never flies to the neighbouring monitor), and autonomous wandering only walks within the screen it is currently on (a step that would cross the seam is simply cancelled). Turn this off to let it cross screens as usual. Desktop only — the browser overlay always stays inside the viewport anyway.',
+  petDisplayPriority: 'Pet display behavior',
+  uiThemeLabel: 'App theme',
+  uiThemeSystem: 'System',
+  uiThemeLight: 'Light',
+  uiThemeDark: 'Dark',
+  priorityAlwaysOnTop: 'Always on top',
+  priorityHideFullscreen: 'Hide on fullscreen',
+  priorityHideMaximized: 'Hide on fullscreen or maximized',
+  priorityNormal: 'Normal window',
+
   trayToggle: 'System tray',
   trayToggleHint:
     'Shows a tray icon (notification area on Windows, menu bar on macOS) once desktop mode is running. It lists every pet in the config and toggles each one between desktop and web/none — including pets that are currently off the desktop and therefore have no window to right-click. With it off, bringing a pet back to the desktop requires opening the browser (the settings page, or right-clicking a web pet there). Windows already folds third-party icons into the "hidden icons" overflow. Desktop mode only.',
@@ -182,6 +186,11 @@ export const en: Record<Key, string> = {
   voiceNotifyEnabledHint:
     'Speaks a configured work-status line when a task completes, fails, or waits for your confirmation. Like system notifications, it only speaks while you are away from this page (switched away, unfocused, minimized) — no interruption while you are looking at the screen. Only the configured line is spoken, never the task detail. Off by default.',
   voiceNameLabel: 'Voice',
+  voiceNameHint:
+    'Which voice reads the text. Voices come from the synthesis implementation; more appear when another implementation is installed.',
+  speechProviderLabel: 'Speech recognition',
+  speechProviderHint:
+    'Which implementation transcribes a held recording. More than one option appears only when a matching voice-input plugin is installed; the choice is saved to your config and a missing provider fails explicitly instead of falling back.',
   voiceVolumeLabel: 'Volume',
   voiceVolumeHint:
     'Playback volume as a 0–1 decimal: 1 is full volume (100%), 0 is muted. Changes loudness only and never re-synthesizes audio, so adjusting it costs nothing extra. All four kinds of speech share this one volume.',

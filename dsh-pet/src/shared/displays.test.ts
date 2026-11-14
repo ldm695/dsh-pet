@@ -21,8 +21,6 @@ import {
   indexAtPoint,
   nearestIndex,
   rebaseCenter,
-  rebaseRect,
-  relocateRectFromDisplayGap,
   rectAtPoint,
   regionHoleRatio,
   translateRects,
@@ -498,63 +496,5 @@ describe('rebaseCenter —— 显示器拓扑变化后保持世界坐标（#193�
     // 主屏中心在旧视口里的相对坐标 x=3316，远超新视口宽度 1512 —— 这就是误判的来源
     const stale = clampPointToRegion(AREAS_B, 3316, 491);
     assert.equal(stale.x, BUILTIN.width - 1, '旧实现必然把仍在屏内的宠物夹到右缘');
-  });
-});
-
-describe('桌宠显示器完整落位与拖拽重基准', () => {
-  test('拖拽期间移除左侧显示器：宠物与拖拽锚点使用同一新视口坐标', () => {
-    const fromView = { x: -1920, y: 0 };
-    const toView = { x: 0, y: 0 };
-    const area = [{ x: 0, y: 0, width: 1920, height: 1080 }];
-    const before = { x: 2620, y: 300, width: 240, height: 135 };
-    const after = rebaseRect(before, fromView, toView, area);
-    const dragAnchorX = before.x + (after.x - before.x);
-    const pointerDeltaX = 18;
-
-    assert.equal(after.x, 700);
-    assert.equal(dragAnchorX + pointerDeltaX, 718);
-    assert.equal(after.x + pointerDeltaX, 718, '拖动后窗口应继续跟随当前屏幕坐标系中的光标');
-  });
-
-  test('宠物横跨相邻显示器时，选最近的一块屏并把完整画面放入屏内', () => {
-    const displays = [
-      { x: 0, y: 0, width: 1000, height: 700 },
-      { x: 1000, y: 0, width: 1000, height: 700 },
-    ];
-    const split = { x: 900, y: 250, width: 200, height: 112.5 };
-    const moved = relocateRectFromDisplayGap(displays, split);
-
-    assert.ok(moved);
-    assert.ok(
-      displays.some(
-        (display) =>
-          moved.x >= display.x &&
-          moved.y >= display.y &&
-          moved.x + moved.width <= display.x + display.width &&
-          moved.y + moved.height <= display.y + display.height,
-      ),
-    );
-    assert.equal(moved.x, 1000, '屏缝正好经过宠物中心时优先落到移动方向一侧');
-    assert.equal(relocateRectFromDisplayGap(displays, moved), null, '安全落位后不应再次移动');
-  });
-
-  test('宠物落入两块错位显示器之间的实际空隙时，自动挑最近的完整落位', () => {
-    const displays = [
-      { x: 0, y: 0, width: 800, height: 600 },
-      { x: 1000, y: 0, width: 800, height: 600 },
-    ];
-    const inGap = { x: 850, y: 200, width: 100, height: 56.25 };
-    const moved = relocateRectFromDisplayGap(displays, inGap);
-
-    assert.ok(moved);
-    assert.equal(moved.x, 700, '等距时选择先枚举到的屏幕，结果稳定');
-  });
-
-  test('只从整块桌面的外侧边缘伸出时不强制归位', () => {
-    const displays = [
-      { x: 0, y: 0, width: 800, height: 600 },
-      { x: 800, y: 0, width: 800, height: 600 },
-    ];
-    assert.equal(relocateRectFromDisplayGap(displays, { x: -50, y: 200, width: 100, height: 56.25 }), null);
   });
 });

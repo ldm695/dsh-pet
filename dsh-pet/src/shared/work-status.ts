@@ -1,26 +1,27 @@
-// 工作状态联动（workStatus）——浏览器侧纯逻辑（src/shared 单一来源）。
-// host 侧（src/host/work-status.ts）有自己的自包含 reducer/store（DSH 单文件加载约束，
-// 只允许 import type 来共享传输 DTO 和状态联合类型），
-// 负责监听 session/event 聚合成快照并写进 /state 的 sections.workStatus；本模块只做：
-//   档位常量（WORK_STATUS_STATES / WORK_STATUS_INDEX，与 events.workStatus 数组索引一致）+ 叶子解析。
-//   气泡文案不在代码里：浏览器直接读配置 events.workStatusTexts（host 不内置文案）。
-// 纯函数无副作用；不依赖 React/DOM。
+/**
+ * 工作状态联动：档位常量与快照解析。
+ * 宿主半侧有自包含的实现（DSH 单文件加载约束，宿主不 import 本目录），负责监听 DSH 会话事件
+ * 聚合成快照并写进 /state 的 sections.workStatus；本模块只有档位常量与叶子解析。
+ * 气泡文案不在代码里：浏览器半侧直接读配置的 events.workStatusTexts。纯函数无副作用，不依赖 React / DOM。
+ * @module dsh-pet/src/shared/work-status
+ */
 
-/** 工作状态档位（对应 animations.events.workStatus 数组索引，顺序即档位，勿在中间插入新档） */
+/** 工作状态档位（对应 animations.events.workStatus 数组索引，顺序即档位，勿在中间插入新档）。 */
 export const WORK_STATUS_STATES = ['thinking', 'working', 'result', 'waiting', 'success', 'error'] as const;
 export type WorkStatusState = (typeof WORK_STATUS_STATES)[number];
 
-/** Agent snapshot emitted by standalone work-status bridges and consumed by the desktop pet allocator. */
+/** 一个外部工作来源的当前快照；桌面窗口 broker 会把每个来源稳定交给一只桌宠。 */
 export interface WorkStatusAgentSnapshot {
   key: string;
   state: WorkStatusState;
-  sourceName?: string;
   task?: string | null;
+  sourceName?: string;
   revision: number;
   startedAt: number;
+  eventAt: number;
 }
 
-/** 档位 → workStatus 数组索引（与 events.workStatus 数组顺序严格一致） */
+/** 档位 → workStatus 数组索引（与 events.workStatus 的顺序严格一致）。 */
 export const WORK_STATUS_INDEX: Record<WorkStatusState, number> = {
   thinking: 0, // turn/start → 思考
   working: 1, // tool/call → 工作
@@ -30,28 +31,18 @@ export const WORK_STATUS_INDEX: Record<WorkStatusState, number> = {
   error: 5, // turn/end error/max-tokens → 出错
 };
 
-/** 工作状态快照（= /state 里 sections.workStatus 的 data，与 host 的 WorkStatusSnapshot 同构）。
- *  没有 ts：「变了没有」由叶子的 counter 承担（ts 是改造前的第二信号，已删）。
- *  text 不在此：气泡文案由客户端读配置 events.workStatusTexts，host 不生成。 */
+/** 工作状态快照（= /state 里 sections.workStatus 的 data，与宿主半侧的同构）。
+ *  没有 ts：「变了没有」由叶子的 counter 承担；text 不在此——气泡文案由客户端读配置，宿主不生成。 */
 export interface WorkStatusSnapshot {
   state: WorkStatusState | null; // null = 空闲
   task: string | null; // 当前任务详情（todo/write 提供，可 null）
-  /** Parallel sessions published by the versioned work-status bridge. */
-  agents?: WorkStatusAgentSnapshot[];
   /** 当前展示条目所属会话；空闲 / 外部槽 / 老版本宿主缺该字段时都不出现，气泡因此不可点。 */
   sessionId?: string | null;
+  /** 多来源桥接快照。缺省时消费端兼容旧的单状态载荷。 */
+  agents?: WorkStatusAgentSnapshot[];
 }
 
-/** Serialized `sections.workStatus.data` payload written by the host. */
-export interface WorkStatusSnapshotWire {
-  state: WorkStatusState | null;
-  task: string | null;
-  /** The host currently serializes null when no source is active. */
-  sourceName?: string | null;
-  agents: WorkStatusAgentSnapshot[];
-}
-
-/** 快照解析：必须包含 agents 数组；缺少新契约字段或形状非法时跳过，不回退单状态格式。 */
+/** 快照解析：档位不认识 → 归一成 null（空闲）；形状非法 → null，消费端跳过这一拍。 */
 export function toWorkStatus(raw: unknown): WorkStatusSnapshot | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as { state?: unknown; task?: unknown; sessionId?: unknown; agents?: unknown };
@@ -61,30 +52,36 @@ export function toWorkStatus(raw: unknown): WorkStatusSnapshot | null {
       : null;
   const sessionId =
     typeof r.sessionId === 'string' && r.sessionId !== '' && r.sessionId !== 'unknown' ? r.sessionId : null;
-  const agents = Array.isArray(r.agents)
-    ? r.agents.flatMap((rawAgent): WorkStatusAgentSnapshot[] => {
-        if (!rawAgent || typeof rawAgent !== 'object') return [];
-        const agent = rawAgent as Record<string, unknown>;
-        if (
-          typeof agent.key !== 'string' ||
-          !agent.key ||
-          typeof agent.state !== 'string' ||
-          !(WORK_STATUS_STATES as readonly string[]).includes(agent.state) ||
-          !Number.isSafeInteger(agent.revision) ||
-          typeof agent.startedAt !== 'number' ||
-          !Number.isFinite(agent.startedAt)
-        ) {
-          return [];
-        }
-        return [{
-          key: agent.key,
-          state: agent.state as WorkStatusState,
-          sourceName: typeof agent.sourceName === 'string' ? agent.sourceName : undefined,
-          task: typeof agent.task === 'string' ? agent.task : null,
-          revision: agent.revision as number,
-          startedAt: agent.startedAt,
-        }];
-      })
-    : undefined;
-  return { state, task: typeof r.task === 'string' ? r.task : null, sessionId, agents };
+  const agents: WorkStatusAgentSnapshot[] = [];
+  if (Array.isArray(r.agents)) {
+    for (const item of r.agents) {
+      if (!item || typeof item !== 'object') continue;
+      const agent = item as Record<string, unknown>;
+      if (
+        typeof agent.key !== 'string' ||
+        !agent.key ||
+        typeof agent.state !== 'string' ||
+        !(WORK_STATUS_STATES as readonly string[]).includes(agent.state) ||
+        !Number.isSafeInteger(agent.revision) ||
+        !Number.isFinite(agent.startedAt) ||
+        !Number.isFinite(agent.eventAt)
+      )
+        continue;
+      agents.push({
+        key: agent.key,
+        state: agent.state as WorkStatusState,
+        task: typeof agent.task === 'string' ? agent.task : null,
+        sourceName: typeof agent.sourceName === 'string' ? agent.sourceName : undefined,
+        revision: agent.revision as number,
+        startedAt: agent.startedAt as number,
+        eventAt: agent.eventAt as number,
+      });
+    }
+  }
+  return {
+    state,
+    task: typeof r.task === 'string' ? r.task : null,
+    sessionId,
+    ...(Array.isArray(r.agents) ? { agents } : {}),
+  };
 }

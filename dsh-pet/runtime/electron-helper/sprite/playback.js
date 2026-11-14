@@ -256,19 +256,25 @@ Object.assign(PetSprite.prototype, {
     // 播完由 handleEnded 清掉睡觉态再回到这里（那时 sleeping 已经为 false）。
     if (this.sleeping) return;
     this.stopMove();
+    if (this.needsRelocation && this.pet.fixedEnabled !== true && !this.inputBusy()) {
+      const relocated = this.tryMove(undefined, undefined, { relocate: true });
+      if (typeof relocated === 'string') {
+        this.playOnce(relocated);
+        return;
+      }
+    }
     const { animations, animationWeights } = { animations: this.animations, animationWeights: this.weights };
     const roll = Math.random();
-    const forceMove = this.canRelocate();
     // 宠物固定：掷骰时把「转向 / 移动」两档权重按 0 算，随机链不再让宠物自己翻朝向或走开；
     // 菜单点播与 /anim 不走这里，不受影响。
-    const k = forceMove ? 'move' : S.rollKind(roll, animationWeights, { fixed: this.pet.fixedEnabled });
+    const k = S.rollKind(roll, animationWeights, { fixed: this.pet.fixedEnabled });
     let next;
     if (k === 'idle') {
       next = S.pick(animations.idle, this.anim);
     } else if (k === 'turn') {
       next = S.pick(animations.turn, this.anim);
     } else if (k === 'move') {
-      const moved = this.tryMove(undefined, undefined, { relocate: forceMove });
+      const moved = this.tryMove();
       if (moved === false) {
         const act = S.pickCategoryAction(animations.categories, animations.idle, this.facing, this.anim);
         next = act.name;
@@ -407,89 +413,84 @@ Object.assign(PetSprite.prototype, {
     if (this.moveRef !== null || this.pendingMove || this.throwRef !== null) return true;
     const moves = this.animations.moves;
     const actions = moves.actions;
-    const preferredDrag = !!preferredName && this.animations.drag.includes(preferredName);
-    if (!actions.length && !preferredDrag) return false;
-    const chosen = preferredDrag
-      ? { name: preferredName, params: {} }
-      : preferredName
-        ? actions.find((a) => a.name === preferredName) || null
-        : actions[Math.floor(Math.random() * actions.length)];
+    if (!actions.length) return false;
+    const chosen = preferredName
+      ? actions.find((a) => a.name === preferredName) || null
+      : actions[Math.floor(Math.random() * actions.length)];
     if (!chosen) return false;
     const mp = Object.assign({}, moves.default, chosen.params || {});
-    const facingDir = this.facing === 'right' ? 1 : -1;
-    const horizontalOnly = this.pet.horizontalOnly === true;
-    const manualMove = options.manualMove === true;
-    const modeOrder = horizontalOnly
-      ? ['horizontal']
-      : preferredDrag
-        ? ['vertical']
-        : manualMove
-          ? ['horizontal']
-          : Math.random() < 0.5
-            ? ['vertical', 'horizontal']
-            : ['horizontal', 'vertical'];
+    // 朝向 → 走路方向：只看当前 facing。turn 播完会立即同步朝向，所以这里不能再做 XOR 修正，
+    // 否则方向会多翻一次（镜像朝右、人往左走）。
+    const dir = this.facing === 'right' ? 1 : -1;
     const W = VIEW.w;
     const H = VIEW.h;
     const distScale = this.size / S.PET_REF_WIDTH;
     const cx = this.currentCenterX();
     const cy = this.currentCenterY();
+    const horizontalOnly = this.pet.horizontalOnly !== false;
     // 落点按显示器判定：默认走并集（能骑缝跨屏，但走不进外接矩形里的空洞）。confineToScreen 开启时
     // 只按宠物现在所在那块屏判定，屏缝与空洞一样当墙、越界那一步直接取消。抛掷是逐帧物理边界，
     // 漫游是一次性落点规划、没有反弹语义；宠物落在空洞里时 resolveRect 取最近那块屏，仍走得动。
     const wanderArea = this.confineToScreen ? S.resolveRect(AREAS, cx, cy) : null;
-    const moveAreas = wanderArea ? [wanderArea] : AREAS;
+    const attempts = options.relocate ? 10 : 1;
     const candidates = [];
-    const attempts = options.relocate ? 12 : 1;
-    for (const mode of modeOrder) {
-      for (let attempt = 0; attempt < attempts; attempt++) {
-        for (const dir of [facingDir, -facingDir]) {
-          const angleDegrees = mode === 'vertical' ? 75 + Math.random() * 15 : horizontalOnly ? 0 : Math.random() * 45;
-          const plan = S.planMove({
-            cx,
-            cy,
-            W,
-            H,
-            dir,
-            angleDegrees,
-            verticalDir: Math.random() < 0.5 ? -1 : 1,
-            minDist: mp.minDist * distScale,
-            maxDist: mp.maxDist * distScale,
-            margin: mp.margin, // 配置值是绝对像素；页面级缩放已统一放大整窗
-            halfW: this.halfW,
-            halfH: this.halfH,
-            sideAllow: this.sideAllow,
-            areas: moveAreas,
-          });
-          if (!plan) continue;
-          const isVertical =
-            Math.abs(plan.targetYRatio - plan.startYRatio) >= Math.abs(plan.targetRatio - plan.startRatio);
-          if ((mode === 'vertical') !== isVertical) continue;
-          candidates.push({ ...plan, dir, isVertical });
-        }
-        if (candidates.length && !options.relocate) break;
-      }
-      if (candidates.length && !options.relocate) break;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const candidateDir = attempt === 0 ? dir : attempt % 2 ? -dir : dir;
+      const plan = S.planMove({
+        cx,
+        cy,
+        W,
+        H,
+        dir: candidateDir,
+        minDist: mp.minDist * distScale,
+        maxDist: mp.maxDist * distScale,
+        margin: mp.margin, // 同 position() 的 marginX/marginY：配置值不再乘 scale
+        halfW: this.halfW,
+        halfH: this.halfH,
+        angleDegrees: horizontalOnly ? 0 : Math.random() * 45,
+        verticalDir: Math.random() < 0.5 ? -1 : 1,
+        sideAllow: this.sideAllow,
+        areas: wanderArea ? [wanderArea] : AREAS,
+      });
+      if (plan) candidates.push({ ...plan, dir: candidateDir });
     }
     if (!candidates.length) return false;
-    let candidate = candidates[Math.floor(Math.random() * candidates.length)];
-    if (options.relocate) {
-      candidate = candidates.reduce((best, next) =>
-        this.endpointClearance(next) > this.endpointClearance(best) ? next : best,
-      );
-    }
-    const animationName = preferredDrag
-      ? preferredName
-      : candidate.isVertical && this.animations.drag.length
-        ? S.pick(this.animations.drag)
-        : chosen.name;
+    const plan = options.relocate
+      ? candidates.reduce((best, next) => (this.endpointClearance(next) > this.endpointClearance(best) ? next : best))
+      : candidates[0];
+    this.pendingMove = { ...plan, leadSec: mp.leadSec, tailSec: mp.tailSec, relocate: options.relocate === true };
+    this.switchTo(chosen.name, true, playbackId);
+    return chosen.name;
+  },
+
+  // 屏缝避让：用实际碰撞框检查是否仍完整处于单屏内。越过接缝后沿最近可行动作离开，
+  // 目标落在最近的可容纳屏幕内；不改窗口架构，也不把素材透明边缘当作物理尺寸。
+  startDisplayGapEscape() {
+    if (this.gapEscapePending || this.dragState.active || this.throwRef !== null) return false;
+    const body = S.bodyPixelBox({ x: this.pos.x, y: this.pos.y, size: this.size, bottomPad: this.bottomPad });
+    if (S.isCollisionRectOnSingleDisplay(body, PANELS)) return false;
+    const target = S.nearestDisplayInteriorTarget(body, AREAS, { horizontalOnly: this.pet.horizontalOnly !== false });
+    if (!target) return false;
+    const actions = this.animations.moves.actions;
+    if (!actions.length) return false;
+    const chosen = actions[Math.floor(Math.random() * actions.length)];
+    const mp = Object.assign({}, this.animations.moves.default, chosen.params || {});
+    const bodyOffsetX = body.left - this.pos.x;
+    const bodyOffsetY = body.top - this.pos.y;
+    const targetX = target.x - bodyOffsetX;
+    const targetY = target.y - bodyOffsetY;
+    this.stopMove();
+    this.gapEscapePending = true;
     this.pendingMove = {
-      ...candidate,
-      animationName,
-      playbackId: playbackId || null,
-      relocate: options.relocate === true,
-      manualMove,
+      startRatio: (this.pos.x + this.halfW) / VIEW.w,
+      startYRatio: (this.pos.y + this.halfH) / VIEW.h,
+      targetRatio: (targetX + this.halfW) / VIEW.w,
+      targetYRatio: (targetY + this.halfH) / VIEW.h,
+      leadSec: mp.leadSec,
+      tailSec: mp.tailSec,
+      gapEscape: true,
     };
-    this.switchTo(animationName, true, playbackId);
-    return animationName;
+    this.switchTo(chosen.name, true);
+    return true;
   },
 });

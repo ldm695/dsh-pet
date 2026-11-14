@@ -35,7 +35,6 @@ function makeState(
 ): PollState {
   const leaf = ([counter, data]: [number, unknown]) => ({ counter, data });
   return {
-    counter: 0,
     sections: Object.fromEntries(Object.entries(sections).map(([k, v]) => [k, leaf(v)])),
     pets: Object.fromEntries(
       Object.entries(pets).map(([petId, leaves]) => [
@@ -53,7 +52,7 @@ describe('flattenCounters —— 首拉基线', () => {
   });
 
   test('空 S → 空基线（不抛）', () => {
-    assert.deepEqual(flattenCounters({ counter: 0, sections: {}, pets: {} }), {});
+    assert.deepEqual(flattenCounters({ sections: {}, pets: {} }), {});
   });
 });
 

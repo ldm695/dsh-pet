@@ -37,6 +37,9 @@ export async function handleChatRoutes(deps: PetRouteDeps, input: RouteInput): P
   // 记忆唯一读写方是 host（memory.json），浏览器与桌面天然共享同一份。
   if (rest === 'chat') {
     if (method !== 'GET' && method !== 'POST' && method !== 'DELETE') return methodNotAllowed();
+    if (method === 'POST' && deps.ctx?.standaloneAi?.isChatEnabled?.() === false) {
+      return failResult('provider-missing', 'AI 对话已在设置中关闭。');
+    }
     try {
       // `?rounds=`：GET 专属的查看参数——只决定这次读多少轮（不写记忆，也不改变后续对话
       // 往上下文里带多少，所以 POST 不认它）。与 surface 同一处境：参数级校验放在读盘之前。

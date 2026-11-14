@@ -6,7 +6,7 @@
  */
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { anchorPixel, fitWindowInArea } from './motion.ts';
+import { anchorPixel, fitWindowInArea, planMove } from './motion.ts';
 
 /** 实测窗口尺寸：左右余量 0.5×size，上余量取气泡/待办面板高度的最大值。 */
 const WINDOW = { width: 880, height: 782 };
@@ -16,6 +16,42 @@ const BODY = { width: 440, height: 247.5 };
 const INSET = { x: 220, y: 294 };
 /** 1920×1080 减去 40px 任务栏。 */
 const AREA = { x: 0, y: 0, width: 1920, height: 1040 };
+
+describe('planMove —— 横向与斜向路线', () => {
+  const base = {
+    cx: 500,
+    cy: 400,
+    W: 1920,
+    H: 1040,
+    dir: 1 as const,
+    minDist: 100,
+    maxDist: 100,
+    margin: 0,
+    halfW: 40,
+    halfH: 30,
+  };
+
+  test('未指定角度时维持上游横向路径', () => {
+    assert.deepEqual(planMove(base), {
+      startRatio: 500 / 1920,
+      startYRatio: 400 / 1040,
+      targetRatio: 600 / 1920,
+      targetYRatio: 400 / 1040,
+      totalRatio: 100 / 1920,
+    });
+  });
+
+  test('允许斜向时按角度和上下方向计算目标', () => {
+    const move = planMove({ ...base, angleDegrees: 30, verticalDir: -1 });
+    assert.ok(move);
+    assert.ok(move.targetRatio > base.cx / base.W);
+    assert.ok(move.targetYRatio < base.cy / base.H);
+  });
+
+  test('斜向目标超出垂直边界时拒绝路线', () => {
+    assert.equal(planMove({ ...base, cy: 20, angleDegrees: 45, verticalDir: -1 }), null);
+  });
+});
 
 /** 与调用方一致的入参：本体位置取配置的右下角 + 边距。 */
 const fitOf = (bodyX: number, bodyY: number, extra: Partial<Parameters<typeof fitWindowInArea>[0]> = {}) =>

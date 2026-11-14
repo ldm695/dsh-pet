@@ -60,8 +60,9 @@ function setup(): Harness {
   const listeners: Listener[] = [];
   const disposers: Array<() => void> = [];
   const noop = (): void => {};
-  const services = new Map<string, unknown>();
   apply({
+    // 对外 Cordis 服务（ctx.provide）：与 DSH 一致，返回释放函数
+    provide: () => noop,
     effect: (fn: () => unknown) => {
       try {
         const ret = fn();
@@ -75,8 +76,6 @@ function setup(): Harness {
       if (name === 'session/event') listeners.push(cb);
       return noop;
     },
-    provide: (name: string, service: unknown) => services.set(name, service),
-    get: (name: string) => services.get(name),
     webServer: { register: (spec: { handler: typeof handler }) => ((handler = spec.handler), noop) },
     commands: { register: () => noop },
     logger: { warn: () => {}, info: () => {}, debug: () => {}, error: () => {} },

@@ -7,6 +7,7 @@
  */
 
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -15,11 +16,9 @@ import { dshHomeDir } from '../host/helper-process.ts';
 import { apply } from '../host/index.ts';
 import { createFileLogger, setDefaultLogger } from '../host/log-file.ts';
 import { createStandaloneAi } from '../standalone/ai-provider.ts';
+import { createStandaloneWorkStatusBridge } from '../standalone/work-status-bridge.ts';
 import { packageVersion } from '../standalone/check.ts';
 import { createStandaloneContext, type RegisteredRoute } from '../standalone/context.ts';
-import { standaloneAiEnvironmentApiKey } from '../standalone/deepseek.ts';
-import { createMigrationRecoveryRoutes, openMigrationBackupFolder } from '../standalone/migration-recovery-routes.ts';
-import { prepareStandaloneMigrations } from '../standalone/migrations.ts';
 import { configPathsFor } from '../standalone/options.ts';
 import { createRequestSecurity } from '../standalone/request-security.ts';
 
@@ -54,6 +53,23 @@ const { app, session } = createRequire(import.meta.url)('electron') as {
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, '..');
 const helperMain = join(packageRoot, 'runtime', 'electron-helper', 'main.js');
+const packageMetadata = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')) as {
+  dshPetEdition?: unknown;
+  dshPetDisplayName?: unknown;
+  dshPetAppUserModelId?: unknown;
+  dshPetTrayIcon?: unknown;
+};
+const appEdition = typeof packageMetadata.dshPetEdition === 'string' ? packageMetadata.dshPetEdition : 'public';
+const appDisplayName =
+  typeof packageMetadata.dshPetDisplayName === 'string' ? packageMetadata.dshPetDisplayName : 'DSH Pet';
+process.env.DSH_PET_EDITION = appEdition;
+process.env.DSH_PET_DISPLAY_NAME = appDisplayName;
+process.env.DSH_PET_APP_USER_MODEL_ID =
+  typeof packageMetadata.dshPetAppUserModelId === 'string'
+    ? packageMetadata.dshPetAppUserModelId
+    : 'cloud.ldm695.dsh-pet.public';
+process.env.DSH_PET_TRAY_ICON =
+  typeof packageMetadata.dshPetTrayIcon === 'string' ? packageMetadata.dshPetTrayIcon : 'logo.png';
 
 const log = (message: string): void => console.log(`[dsh-pet-app] ${message}`);
 
@@ -105,28 +121,16 @@ async function boot(): Promise<void> {
   const routes: RegisteredRoute[] = [];
   let port = 0;
 
-  const migration = await prepareStandaloneMigrations({
-    home: dshHomeDir(),
-    packageRoot,
-    environmentApiKey: standaloneAiEnvironmentApiKey(),
-    logger,
-  });
-
   // 与 CLI 同一套安全模型：令牌只经「配置页地址的 #token=」递给浏览器，不进日志
   const security = createRequestSecurity();
-  const ai = createStandaloneAi(dshHomeDir(), logger, { initialApiKey: migration.initialApiKey });
-  routes.push(
-    ...createMigrationRecoveryRoutes({
-      home: dshHomeDir(),
-      openBackupFolder: openMigrationBackupFolder,
-      shutdown: () => app.exit(0),
-    }),
-  );
+  const ai = createStandaloneAi(dshHomeDir(), logger);
+  const workStatusBridge = createStandaloneWorkStatusBridge(dshHomeDir(), (message) => logger.warn(message));
   const context = createStandaloneContext({
     port: () => port,
     logger,
     routes,
     ai,
+    workStatusBridge,
     authenticatedUrl: security.authenticatedUrl,
   });
 
@@ -193,13 +197,7 @@ async function boot(): Promise<void> {
  */
 function desktopPets(): Array<{ id: string; size: number }> {
   try {
-    const merged = readAllConfig(configPathsFor(packageRoot, dshHomeDir()));
-    const priority = merged.main?.petDisplayPriority;
-    process.env.DSH_PET_DISPLAY_PRIORITY =
-      priority === 'hide-on-fullscreen' || priority === 'hide-on-fullscreen-or-maximized' || priority === 'normal'
-        ? priority
-        : 'always-on-top';
-    const pets = flattenPetList(merged);
+    const pets = flattenPetList(readAllConfig(configPathsFor(packageRoot, dshHomeDir())));
     const desktop = pets
       .filter((pet) => pet.display === 'desktop' || pet.display === 'both')
       .map((pet) => ({ id: String(pet.id), size: Number(pet.size) }));

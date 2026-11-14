@@ -11,6 +11,56 @@ import { HOST_WORK_STATUS_STATES, TASK_TEXT_MAX, type HostWorkStatusState } from
 import type { PetRouteDeps, RouteInput } from './types.ts';
 import { failResult, invalidJson, methodNotAllowed, okResult, payloadTooLarge } from './result.ts';
 
+const standaloneWorkStatusFingerprints = new WeakMap<object, string>();
+
+/** 独立模式把文件桥接与 /work-status 外部槽汇总到同一轮询叶子。 */
+function refreshStandaloneWorkStatus(deps: PetRouteDeps): void {
+  const bridge = deps.standaloneWorkStatus();
+  if (!bridge) return;
+  const agents = bridge.readAgents();
+  const external = deps.workStatus.snapshot();
+  if (external.state) {
+    agents.push({
+      key: 'api:client',
+      state: external.state,
+      task: external.task,
+      sourceName: '外部应用',
+      revision: external.ts,
+      startedAt: external.ts,
+      eventAt: external.ts,
+    });
+  }
+  const inProgress = agents.filter((agent) => ['thinking', 'working', 'result', 'waiting'].includes(agent.state));
+  const candidates = inProgress.length ? inProgress : agents;
+  const latest = candidates.reduce(
+    (best, agent) => (!best || agent.eventAt > best.eventAt ? agent : best),
+    undefined as (typeof agents)[number] | undefined,
+  );
+  const payload = {
+    state: latest?.state ?? null,
+    task: latest?.task ?? null,
+    sourceName: latest?.sourceName ?? null,
+    agents,
+  };
+  const fingerprint = JSON.stringify(payload);
+  if (standaloneWorkStatusFingerprints.get(deps.state) !== fingerprint) {
+    standaloneWorkStatusFingerprints.set(deps.state, fingerprint);
+    deps.state.writeSection('workStatus', payload);
+  }
+  const notification = bridge.takeNotification();
+  if (notification) {
+    deps.state.writeSection('notify', {
+      type: 'standalone',
+      source: 'dsh',
+      revision: notification.revision,
+      sourceForeground: notification.sourceForeground,
+      title: notification.title,
+      body: notification.body,
+      icon: notification.icon,
+    });
+  }
+}
+
 /** 轮询状态领域：未命中返回 undefined，命中返回应答。 */
 export async function handleStateRoutes(deps: PetRouteDeps, input: RouteInput): Promise<RouteResult | undefined> {
   const { EXTERNAL_WORK_SESSION, ctx, nextExternalWorkSeq, publishWorkStatus, state, workStatus } = deps;
@@ -66,6 +116,7 @@ export async function handleStateRoutes(deps: PetRouteDeps, input: RouteInput): 
   // 不带 = 立刻返回全量。等待语义与 GET /playback/{id} 的 wait 同一套（上限同值、断线同一个 signal）。
   if (rest === 'state') {
     if (method !== 'GET') return methodNotAllowed();
+    refreshStandaloneWorkStatus(deps);
     const headers = { 'cache-control': 'no-cache, no-store' };
     const parsed = parseStateWaitQuery(url.searchParams.get('since'), url.searchParams.get('timeout'));
     // since/timeout 是业务参数：给错了是调用方的问题，但仍属「请求已进处理器」

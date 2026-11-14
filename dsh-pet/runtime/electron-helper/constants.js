@@ -10,24 +10,17 @@
 const S = window.PetShared;
 
 const params = new URLSearchParams(location.search);
-let petLayouts = [];
-try {
-  const parsedPetLayouts = JSON.parse(params.get('petLayouts') || '[]');
-  if (Array.isArray(parsedPetLayouts)) petLayouts = parsedPetLayouts;
-} catch {
-  // 老启动参数或损坏参数不应阻止单只默认桌宠启动。
-}
 const CONFIG = {
   configUrl: params.get('configUrl') || 'http://127.0.0.1:3080/dsh-pet-7340/config',
   scale: Number(params.get('scale') || '1'),
   petIndex: Number(params.get('petIndex') || '0'),
-  petLayouts,
   notificationWorker: params.get('notificationWorker') === '1',
   topInsetRatio: Number(params.get('topInsetRatio') || '0'),
   // 窗口是否被系统钳在工作区内：X11 的窗口管理器如此（Windows / macOS 允许窗口探出屏幕），
   // 由主进程按平台注入。开启时窗口探不出屏幕，本体靠窗口内偏移贴边（见 fitWindow）。
   isWindowClampedToWorkArea: params.get('isWindowClampedToWorkArea') === '1',
 };
+window.__dshPetMenuCapabilities = { chatEnabled: true, balanceSupported: true };
 
 // 坐标系约定：主进程对窗口 setZoomFactor(CONFIG.scale) 后，DOM 度量、事件坐标、桌面几何与全部
 // shared 组件同在 CSS 像素里；与主进程交换的物理像素只在 toScreen/toLocal 两处换算，
@@ -156,6 +149,8 @@ const POSE_REPORT_URL = BASE + '/pose/report';
 // （到点读当前值推一次），否则第三方读到的永远是走位中途的位置，且没有任何报错。
 const POSE_THROTTLE_MS = 400;
 const BUBBLE_DURATION_MS = 10 * 1000; // 余额/碎碎念气泡展示时长（与浏览器一致：定时消失，与动画解耦）
+// 说话气泡戳破动画时长（ms）：与 index.html 的 popOut 同值，动画播完才真正收起气泡（与浏览器 WHISPER_POP_MS 一致）
+const WHISPER_POP_MS = 420;
 // 余额气泡换内容前的等待（ms）：与 .pet-bubble 的 opacity 过渡同为 .25s，淡出走完再换，
 // 否则内容会在半透明时被替换 = 看得见的硬切（与浏览器 bubble.ts 同值）
 const BALANCE_FADE_MS = 250;
@@ -187,6 +182,5 @@ window.__dshPetDebug = {
   bootAt: Date.now(),
 };
 window.addEventListener('error', (event) => {
-  const detail = event.error?.stack || event.message || event.error;
-  window.__dshPetDebug.errors.push(String(detail));
+  window.__dshPetDebug.errors.push(String(event.message || event.error));
 });

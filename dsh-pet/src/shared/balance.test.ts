@@ -1,11 +1,10 @@
 /**
- * 余额「不可用」路径的契约测试：**必须有可见反馈**，由 shared 判定、桌面外壳负责呈现。
+ * 余额「不可用」路径的契约测试：必须有可见反馈，且两端（浏览器 overlay / 桌面外壳）只走一份判定。
  *
- * 背景：`/dsh-pet-7340/balance` 对未登记的服务商返回 `{ ok:false, reason:'unsupported' }`（HTTP 200），
- * 桌面渲染器原本在渲染处硬性要求 `balance.ok`，且气泡只由「拉取成功」的 tick 驱动——于是未登记的服务商
- * **界面上完全没有任何反应**：不播动画、不弹气泡、连 console 都特意不打。
- * 现在改为：不可用时弹「文字说明」气泡；弹不弹由 src/shared 的 decideBalanceNotice 统一判定
- * （显式请求必弹；自动轮询仅在原因变化时弹一次），桌面渲染器负责把行数据显示出来。
+ * 背景：`/dsh-pet-7340/balance` 对未登记的服务商返回 `{ ok:false, reason:'unsupported' }`（HTTP 200）。
+ * 若客户端在渲染处硬性要求 `balance.ok`、气泡只由「拉取成功」的 tick 驱动，页面上就完全没有任何反应：
+ * 不播动画、不弹气泡、连 console 都不打。现在由 src/shared 的 decideBalanceNotice 统一判定弹不弹
+ * （显式请求必弹；自动轮询仅在原因变化时弹一次），两端各自只负责把行数据画出来。
  *
  * 本文件把四件事钉住：
  *   ① 不可用状态的文案（含 provider/凭证名，且不留空行、不出现双重「缺少凭证」前缀）；
@@ -26,12 +25,16 @@ import {
   balancePageCount,
   balancePageView,
   balancePercent,
+  customClickable,
+  customViews,
   decideBalanceNotice,
   toBalanceState,
   urgentWindow,
+  CUSTOM_LIMITS,
   type BalanceState,
   type BalanceView,
-} from './balance.ts';
+  type CustomBalance,
+} from './balance/index.ts';
 
 /** 包内文件源码（守卫用；相对 src/shared/ 解析） */
 const readSource = (rel: string): string => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
@@ -51,14 +54,14 @@ describe('balanceBubbleView —— 不可用状态必须给出可读的文字说
 
   test('credential-missing：host 的 message 已带前缀，不再叠加（无双重「缺少凭证」）', () => {
     const rows = balanceBubbleView({
-      provider: 'commandcode',
+      provider: 'deepseek-official',
       ok: false,
       reason: 'credential-missing',
-      message: '缺少凭证 COMMANDCODE_API_KEY',
+      message: '缺少凭证 DEEPSEEK_API_KEY',
     });
     assert.deepEqual(rows, [
       { role: 'error', text: '缺少余额查询凭证' },
-      { role: 'sub', text: '缺少凭证 COMMANDCODE_API_KEY' },
+      { role: 'sub', text: '缺少凭证 DEEPSEEK_API_KEY' },
     ]);
     assert.equal(
       rows.filter((r) => r.text.includes('缺少凭证')).length,
@@ -525,31 +528,265 @@ describe('money —— 档位基准由数据带出（展示层不再写死任何
   });
 });
 
-describe('points —— 第三方积分余额使用独立展示形态', () => {
-  test('单位、余额与档位基准解析后用于气泡和动画百分比', () => {
-    const state = toBalanceState({
-      ok: true,
+describe('points 形态 —— 积分/点数余额（非货币）', () => {
+  const leaf = (data: Record<string, unknown>) => ({
+    ok: true,
+    provider: 'local-gateway',
+    shape: 'points',
+    data,
+  });
+
+  test('toBalanceState：unit + total 必有，full 可选', () => {
+    const s = toBalanceState(leaf({ unit: '积分', total: '800', full: '1000' }));
+    assert.ok(s && s.ok && s.shape === 'points');
+    assert.deepEqual(s.points, { unit: '积分', total: '800', full: '1000' });
+
+    const noFull = toBalanceState(leaf({ unit: '点数', total: '0' }));
+    assert.ok(noFull && noFull.ok && noFull.shape === 'points');
+    assert.equal(noFull.points?.full, undefined, '没给基准 → 不参与档位折算');
+    assert.equal(noFull.points?.total, '0', '0 是合法余额，不像 0 元那样被过滤');
+
+    const emptyFull = toBalanceState(leaf({ unit: '积分', total: '800', full: '' }));
+    assert.ok(emptyFull && emptyFull.ok && emptyFull.shape === 'points');
+    assert.equal(emptyFull.points?.full, undefined, '空串基准 → 视为没给');
+  });
+
+  test('toBalanceState：缺 unit / total → null（认不出，不渲染这一拍）', () => {
+    assert.equal(toBalanceState(leaf({ total: '800' })), null, '缺 unit = 拼不出「800 积分」');
+    assert.equal(toBalanceState(leaf({ unit: '积分' })), null, '缺 total = 没有数字可展示');
+    assert.equal(toBalanceState(leaf({ unit: '', total: '800' })), null);
+    assert.equal(toBalanceState(leaf({ unit: '积分', total: '' })), null);
+    assert.equal(toBalanceState({ ok: true, provider: 'x', shape: 'points' }), null, '缺 data 段');
+  });
+
+  test('balancePercent：按 points.full 折算；没有基准 → undefined（不播档位）', () => {
+    const view = (total: string, full?: string): BalanceView => ({
       provider: 'local-gateway',
       shape: 'points',
-      data: { unit: '积分', total: '8', full: '20' },
+      ok: true,
+      points: { unit: '积分', total, full },
     });
-    if (!state || !state.ok || state.shape !== 'points') assert.fail('应解析为 points 余额');
-    assert.deepEqual(state.points, { unit: '积分', total: '8', full: '20' });
-    assert.deepEqual(balanceBubbleView(state), [{ role: 'label', text: '余额 8 积分' }]);
-    assert.deepEqual(balanceDetailView(state), [{ role: 'label', text: '余额 8 积分' }]);
-    assert.equal(balancePercent(state), 60);
-    assert.equal(urgentWindow(state), undefined, '积分不是时间窗口额度');
+    assert.equal(balancePercent(view('1000', '1000')), 0);
+    assert.equal(balancePercent(view('800', '1000')), 20);
+    assert.equal(balancePercent(view('0', '1000')), 100);
+    assert.equal(balancePercent(view('1200', '1000')), 0, '超出基准 → 夹到 0');
+    assert.equal(balancePercent(view('-50', '1000')), 100, '负数与 0 等价');
+    assert.equal(balancePercent(view('800')), undefined, '没有基准 → 不播档位');
+    assert.equal(balancePercent(view('800', '0')), undefined, '基准为 0 → 不折算');
+    assert.equal(balancePercent(view('abc', '1000')), undefined, '非法数字 → 不播');
   });
 
-  test('没有 full 基准时仍显示真实余额，但不伪造档位百分比', () => {
-    const state = toBalanceState({ ok: true, provider: 'gateway', shape: 'points', data: { unit: '点', total: '0' } });
-    if (!state || !state.ok || state.shape !== 'points') assert.fail('应解析为 points 余额');
-    assert.deepEqual(balanceBubbleView(state), [{ role: 'label', text: '余额 0 点' }]);
-    assert.equal(balancePercent(state), undefined);
+  test('balanceBubbleView：一行「余额 800 积分」，不套货币符号', () => {
+    assert.deepEqual(
+      balanceBubbleView({
+        provider: 'local-gateway',
+        shape: 'points',
+        ok: true,
+        points: { unit: '积分', total: '800', full: '1000' },
+      }),
+      [{ role: 'label', text: '余额 800 积分' }],
+    );
+    // 单位换了也不会退化成 ¥
+    assert.deepEqual(
+      balanceBubbleView({
+        provider: 'local-gateway',
+        shape: 'points',
+        ok: true,
+        points: { unit: '点数', total: '12' },
+      }),
+      [{ role: 'label', text: '余额 12 点数' }],
+    );
   });
 
-  test('缺失 unit 或 total 时拒绝无法显示的 points 数据', () => {
-    assert.equal(toBalanceState({ ok: true, provider: 'gateway', shape: 'points', data: { total: '3' } }), null);
-    assert.equal(toBalanceState({ ok: true, provider: 'gateway', shape: 'points', data: { unit: '积分' } }), null);
+  test('balanceDetailView / urgentWindow：points 没有窗口可展开、没有告急窗口', () => {
+    const view: BalanceView = {
+      provider: 'local-gateway',
+      shape: 'points',
+      ok: true,
+      points: { unit: '积分', total: '800', full: '1000' },
+    };
+    assert.deepEqual(balanceDetailView(view), balanceBubbleView(view), '展开态与收起态一致');
+    assert.equal(urgentWindow(view), undefined, '积分没有「最紧迫窗口」');
+  });
+});
+
+/**
+ * custom 形态（第三方自定义节点树）的契约测试。
+ *
+ * 为什么这些断言重要：节点树是外部输入，解析层是唯一一道防线（渲染器不做二次校验）。
+ * 这里钉住四件事：白名单裁剪、容量上限、失败即整拍跳过（不画缺块的树）、以及"行数据通道为空"
+ * —— 后者保证两端渲染入口必须走 tree 分支，不会误渲染成空气泡而不自知。
+ */
+describe('custom 形态 —— 第三方自定义气泡（节点树）', () => {
+  const leaf = (data: Record<string, unknown>): unknown => ({
+    ok: true,
+    provider: 'weird-provider',
+    shape: 'custom',
+    data,
+  });
+  const customOf = (raw: unknown): CustomBalance | undefined => {
+    const s = toBalanceState(raw);
+    return s && s.ok && s.shape === 'custom' ? s.custom : undefined;
+  };
+  const twoSpans = (): Record<string, unknown> => ({
+    tag: 'div',
+    style: { display: 'flex', gap: '4px' },
+    children: [
+      { tag: 'span', text: '额度', style: { color: '#666' } },
+      { tag: 'b', text: '8.16' },
+    ],
+  });
+
+  test('合法树原样解析：tag / 文本 / 样式 / 子节点全部保留', () => {
+    assert.deepEqual(customOf(leaf({ rows: twoSpans() }))?.views[0], {
+      tag: 'div',
+      style: { display: 'flex', gap: '4px' },
+      children: [
+        { tag: 'span', text: '额度', style: { color: '#666' } },
+        { tag: 'b', text: '8.16' },
+      ],
+    });
+  });
+
+  test('views 多页：按顺序保留；多于 1 页才可点（一页不可点）', () => {
+    const three = customOf(
+      leaf({ views: [twoSpans(), { tag: 'div', text: '第二页' }, { tag: 'div', text: '第三页' }] }),
+    );
+    assert.equal(three?.views.length, 3);
+    assert.equal(three?.views[1]?.text, '第二页');
+    assert.equal(three?.views[2]?.text, '第三页');
+
+    const multi = toBalanceState(leaf({ views: [twoSpans(), twoSpans()] }))!;
+    assert.equal(customClickable(multi), true, '两页可点');
+    assert.equal(customClickable(toBalanceState(leaf({ rows: twoSpans() }))!), false, '一页不可点');
+  });
+
+  test('views 与 rows/detailRows 同时给：views 优先（老字段只作兼容）', () => {
+    const v = customOf(
+      leaf({
+        views: [{ tag: 'div', text: '新' }],
+        rows: { tag: 'div', text: '旧' },
+        detailRows: { tag: 'div', text: '旧2' },
+      }),
+    );
+    assert.equal(v?.views.length, 1);
+    assert.equal(v?.views[0]?.text, '新');
+  });
+
+  test('页数超过上限 → null；正好上限 → 通过', () => {
+    const pages = Array.from({ length: CUSTOM_LIMITS.maxViews + 1 }, () => ({ tag: 'div', text: 'x' }));
+    assert.equal(toBalanceState(leaf({ views: pages })), null);
+    assert.ok(customOf(leaf({ views: pages.slice(0, CUSTOM_LIMITS.maxViews) })));
+  });
+
+  test('老两页写法（rows + detailRows）等价于 views: [rows, detailRows]', () => {
+    const legacy = customOf(leaf({ rows: twoSpans(), detailRows: { tag: 'div', text: '第二页' } }));
+    assert.equal(legacy?.views.length, 2);
+    assert.equal(legacy?.views[1]?.text, '第二页');
+    assert.equal(toBalanceState(leaf({ rows: twoSpans(), detailRows: { tag: 'script' } })), null);
+  });
+
+  test('img 节点只认 http/https（file: 等本地协议整树作废）', () => {
+    assert.equal(
+      customOf(leaf({ views: [{ tag: 'div', children: [{ tag: 'img', src: 'https://cdn.example/a.png' }] }] }))
+        ?.views[0]?.children?.[0]?.src,
+      'https://cdn.example/a.png',
+    );
+    assert.equal(toBalanceState(leaf({ views: [{ tag: 'img', src: 'file:///C:/secret.png' }] })), null);
+  });
+
+  test('样式只留下白名单键；外部资源 / 表达式 / 超长值被丢，且不影响其余样式', () => {
+    const style = customOf(
+      leaf({
+        views: [
+          {
+            tag: 'div',
+            style: {
+              color: '#123456',
+              gap: '4px',
+              position: 'absolute', // 白名单外：能让内容跑出气泡
+              background: 'url(https://tracker.example/x.png)', // 外部资源引用
+              width: 'expression(alert(1))', // 表达式
+              fontSize: 'x'.repeat(CUSTOM_LIMITS.maxStyleValue + 1), // 超长
+            },
+          },
+        ],
+      }),
+    )?.views[0]?.style;
+    assert.deepEqual(style, { color: '#123456', gap: '4px' });
+  });
+
+  test('文本超长按上限截断（内容仍可读，不整树作废）', () => {
+    const text = customOf(leaf({ views: [{ tag: 'span', text: 'x'.repeat(500) }] }))?.views[0]?.text;
+    assert.equal(text?.length, CUSTOM_LIMITS.maxText);
+  });
+
+  test('非白名单 tag → null（整拍跳过，绝不画一棵缺块的树）', () => {
+    assert.equal(toBalanceState(leaf({ views: [{ tag: 'script', text: 'alert(1)' }] })), null);
+    assert.equal(toBalanceState(leaf({ views: [{ tag: 'div', children: [{ tag: 'iframe' }] }] })), null);
+    assert.equal(toBalanceState(leaf({ rows: { tag: 'script', text: 'alert(1)' } })), null, '老写法同样受白名单约束');
+  });
+
+  test('任一页非法 → null（不做「前几页正常、翻到后面崩」的半坏状态）', () => {
+    assert.equal(toBalanceState(leaf({ views: [twoSpans(), { tag: 'script' }] })), null);
+    assert.ok(customOf(leaf({ views: [twoSpans(), twoSpans()] })));
+  });
+
+  test('子节点数 / 树深 / 全树节点数超限 → null', () => {
+    const many = Array.from({ length: CUSTOM_LIMITS.maxChildren + 1 }, () => ({ tag: 'span', text: 'x' }));
+    assert.equal(toBalanceState(leaf({ views: [{ tag: 'div', children: many }] })), null);
+
+    // 嵌套到深度上限以外（根为 0，第 maxDepth 层即非法）
+    let deep: Record<string, unknown> = { tag: 'span', text: 'x' };
+    for (let i = 0; i < CUSTOM_LIMITS.maxDepth; i++) deep = { tag: 'div', children: [deep] };
+    assert.equal(toBalanceState(leaf({ views: [deep] })), null);
+
+    // 1 + 24 + 576 > maxNodes（每层都没超 maxChildren，但总量超了）
+    const grandchildren = Array.from({ length: CUSTOM_LIMITS.maxChildren }, () => ({ tag: 'span', text: 'x' }));
+    const huge = Array.from({ length: CUSTOM_LIMITS.maxChildren }, () => ({
+      tag: 'div',
+      children: grandchildren,
+    }));
+    assert.equal(toBalanceState(leaf({ views: [{ tag: 'div', children: huge }] })), null);
+  });
+
+  test('percent：夹到 0-100；非数字 → 不播档位动画（undefined）', () => {
+    assert.equal(customOf(leaf({ rows: twoSpans(), percent: 140 }))?.percent, 100);
+    assert.equal(customOf(leaf({ rows: twoSpans(), percent: -5 }))?.percent, 0);
+    assert.equal(customOf(leaf({ rows: twoSpans(), percent: 'abc' }))?.percent, undefined);
+    assert.equal(
+      balancePercent({ provider: 'p', shape: 'custom', ok: true, custom: { views: [{ tag: 'div' }] } }),
+      undefined,
+    );
+    assert.equal(
+      balancePercent({ provider: 'p', shape: 'custom', ok: true, custom: { views: [{ tag: 'div' }], percent: 40 } }),
+      40,
+    );
+  });
+
+  test('行数据通道为空：balanceBubbleView 对 custom 返回 []（渲染入口必须走树）', () => {
+    const state = toBalanceState(leaf({ views: [twoSpans()] }))!;
+    assert.deepEqual(balanceBubbleView(state), []);
+    assert.deepEqual(balanceDetailView(state), []);
+    // 唯有树访问器拿得到内容，两端渲染入口据此判断
+    assert.equal(customViews(state)?.length, 1);
+    assert.equal(customClickable(state), false, '只有一页 = 不可点');
+  });
+
+  test('customViews / customClickable：只对 custom 且 ok 的状态有值', () => {
+    const state = toBalanceState(leaf({ views: [twoSpans(), twoSpans()] }))!;
+    assert.equal(customViews(state)?.length, 2);
+    assert.equal(customClickable(state), true);
+    assert.equal(customViews(unsupported), undefined, '不可用状态没有树');
+    assert.equal(
+      customViews({
+        provider: 'p',
+        shape: 'money',
+        ok: true,
+        wallets: [{ currency: 'CNY', total: '1', granted: '0', toppedUp: '0' }],
+      }),
+      undefined,
+      '内置形态没有树',
+    );
   });
 });

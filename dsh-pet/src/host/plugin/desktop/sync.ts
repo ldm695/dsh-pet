@@ -13,7 +13,7 @@ import type { DesktopSpawn } from './spawn.ts';
 
 /** DesktopSync的输入。 */
 export type DesktopSyncInput = Pick<DesktopHelperDeps, 'log'> &
-  Pick<DesktopPets, 'logDesktopDecision' | 'desktopPetList' | 'getDisplayPriority'> &
+  Pick<DesktopPets, 'logDesktopDecision' | 'desktopPetList'> &
   Pick<DesktopSpawn, 'startHelper' | 'stopHelperAndWait'>;
 
 /** 应用模式下由内嵌 helper 注册的重建钩子；双进程模式下不存在。 */
@@ -23,7 +23,7 @@ type RebuildHook = (() => Promise<void>) | undefined;
  * 创建DesktopSync。
  */
 export function createDesktopSync(deps: DesktopSyncInput) {
-  const { log, logDesktopDecision, desktopPetList, getDisplayPriority, startHelper, stopHelperAndWait } = deps;
+  const { log, logDesktopDecision, desktopPetList, startHelper, stopHelperAndWait } = deps;
 
   /** 同进程内跑 helper（打包应用）：没有子进程可重启，只能让 helper 自己重建窗口。 */
   const inProcessHost = process.env.DSH_PET_IN_PROCESS === '1';
@@ -39,10 +39,6 @@ export function createDesktopSync(deps: DesktopSyncInput) {
           // 先把新列表喂给渲染侧，再让它关窗重建：只动窗口、不动宿主进程，
           // 位置与运行状态都留着（整应用重启会把它们一起清掉）。
           process.env.DSH_PET_PETS = JSON.stringify(desktopPetList());
-          process.env.DSH_PET_DISPLAY_PRIORITY = getDisplayPriority();
-          (globalThis as { __dshPetSetDisplayPriority?: (priority: string) => void }).__dshPetSetDisplayPriority?.(
-            getDisplayPriority(),
-          );
           await (globalThis as { __dshPetRebuildUi?: RebuildHook }).__dshPetRebuildUi?.();
           return;
         }

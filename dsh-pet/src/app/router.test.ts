@@ -10,6 +10,7 @@ async function start(
   routes: RegisteredRoute[] = [],
   log: (message: string) => void = () => {},
   chatPanelScript?: () => string | undefined,
+  petConfigScript?: () => string | undefined,
 ) {
   const security = createRequestSecurity();
   const server = await startRouter(routes, {
@@ -18,6 +19,7 @@ async function start(
     status: (port) => ({ audit: true, port }),
     landingPage: () => '<html>local app</html>',
     ...(chatPanelScript ? { chatPanelScript } : {}),
+    ...(petConfigScript ? { petConfigScript } : {}),
   });
   return { ...server, security, base: `http://127.0.0.1:${server.port}` };
 }
@@ -193,6 +195,39 @@ test('设置页对话面板脚本：产物缺失时 → 404 并提示重新构�
   );
   try {
     const response = await fetch(server.base + '/standalone-ai/chat-panel.js');
+    assert.equal(response.status, 404);
+    assert.match(await response.text(), /重新构建/);
+  } finally {
+    await server.close();
+  }
+});
+
+test('设置页桌宠配置 React 脚本：通过 app 静态路由提供', async () => {
+  const server = await start(
+    [],
+    () => {},
+    undefined,
+    () => 'window.__PET_CONFIG__ = 1;',
+  );
+  try {
+    const response = await fetch(server.base + '/standalone-ai/pet-config.js');
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type') ?? '', /^text\/javascript/);
+    assert.equal(await response.text(), 'window.__PET_CONFIG__ = 1;');
+  } finally {
+    await server.close();
+  }
+});
+
+test('设置页桌宠配置 React 脚本缺失时明确返回 404', async () => {
+  const server = await start(
+    [],
+    () => {},
+    undefined,
+    () => undefined,
+  );
+  try {
+    const response = await fetch(server.base + '/standalone-ai/pet-config.js');
     assert.equal(response.status, 404);
     assert.match(await response.text(), /重新构建/);
   } finally {

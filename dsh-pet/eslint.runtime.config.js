@@ -34,7 +34,6 @@ const browserGlobals = {
   navigator: 'readonly',
   location: 'readonly',
   Audio: 'readonly',
-  Notification: 'readonly',
   // 语音输入：shared/hear 在渲染端开 16kHz 采集上下文（经 shared-core.js 进 bundle）
   AudioContext: 'readonly',
   Image: 'readonly',
@@ -86,6 +85,7 @@ const scriptGlobals = {
   POSE_REPORT_URL: 'readonly',
   POSE_THROTTLE_MS: 'readonly',
   BUBBLE_DURATION_MS: 'readonly',
+  WHISPER_POP_MS: 'readonly',
   BALANCE_FADE_MS: 'readonly',
   STATE_WAIT_MS: 'readonly',
   WINDOW_MARGIN_RATIO: 'readonly',

@@ -88,7 +88,6 @@ Object.assign(PetSprite.prototype, {
       // 偏移变大，只能按上报值算，不能按「窗口宽/4」反推（见 spriteHitRect）。
       toScreen(fit.offsetX),
       toScreen(fit.offsetY),
-      this.dragState.active || !!this.throwState,
     );
   },
 });
