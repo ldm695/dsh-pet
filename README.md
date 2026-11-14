@@ -26,6 +26,8 @@ AI 生成动画的配方     源视频 → 透明动画的管线    运行在 DS
 
 任何人 clone 本仓库，都可以**从零生成自己的桌面宠物**——换角色、换动作、换风格，全流程可复现。
 
+> 本 Fork 的 Windows 独立版与本地改动见 [Fork 改动说明](FORK_CUSTOMIZATIONS.md)。[2026-10-23 上游合并计划](UPSTREAM-MERGE-PLAN-2026-10-23.md)为历史记录；当前接入结果见 [Fork 功能接入清单](FORK_REINTEGRATION.md)。
+
 ---
 
 ## 快速开始（安装插件）
